@@ -236,20 +236,21 @@ except Exception as e:
     sys.exit(1)
 
 try:
-    # --- Obtain reference outputs and inputs ---
+    # Inputs are ALWAYS regenerated locally via get_inputs() — it's
+    # deterministic (fixed torch.manual_seed) and shipping input tensors in
+    # reference.pt would bloat the per-eval tarball (esp. for large ops).
+    from {ref_file} import get_inputs, get_init_inputs
+    init_inputs = get_init_inputs()
+    ref_inputs = get_inputs()
+
+    # --- Obtain reference outputs ---
     if os.path.exists(REF_PT):
         ref_data = torch.load(REF_PT, map_location="cpu", weights_only=False)
-        ref_inputs = ref_data["inputs"]
         out_ref = ref_data["outputs"]
-        # Need init_inputs for ModelNew — pull from reference.py.
-        from {ref_file} import get_init_inputs
-        init_inputs = get_init_inputs()
         ref_source = "cached"
     else:
-        from {ref_file} import Model, get_inputs, get_init_inputs
-        init_inputs = get_init_inputs()
+        from {ref_file} import Model
         model_ref = Model(*init_inputs).cpu().eval()
-        ref_inputs = get_inputs()
         with torch.no_grad():
             out_ref = model_ref(*ref_inputs)
         if isinstance(out_ref, torch.Tensor):
@@ -258,7 +259,7 @@ try:
             out_ref = [out_ref]
         ref_source = "inline"
 
-    # --- Run kernel on device with SAME inputs as ref was captured with ---
+    # --- Run kernel on device with the same deterministic inputs ---
     model_new = ModelNew(*init_inputs).to(device).eval()
     inputs = [x.to(device) if hasattr(x, "to") else x for x in ref_inputs]
 

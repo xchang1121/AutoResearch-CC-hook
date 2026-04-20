@@ -45,8 +45,10 @@ try:
     elif not isinstance(outs, (list, tuple)):
         outs = [outs]
 
+    # ONLY save outputs + input metadata. Input tensors are regenerable from
+    # get_inputs() (deterministic seed) and storing them would bloat the
+    # reference.pt that ships in every eval tarball.
     payload = {{
-        "inputs": [x.detach().cpu() if hasattr(x, "detach") else x for x in inputs],
         "outputs": [o.detach().cpu() for o in outs],
         "input_shapes":  [tuple(x.shape) if hasattr(x, "shape") else None for x in inputs],
         "input_dtypes":  [str(x.dtype) if hasattr(x, "dtype") else None for x in inputs],
