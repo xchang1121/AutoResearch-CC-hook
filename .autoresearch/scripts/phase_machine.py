@@ -100,11 +100,157 @@ def clear_task_dir():
     if os.path.exists(_ACTIVE_TASK_FILE):
         os.remove(_ACTIVE_TASK_FILE)
 
-# Phases where Claude can edit editable_files (typically kernel.py)
-CODE_EDIT_PHASES = {EDIT, GENERATE_KERNEL}
+# ---------------------------------------------------------------------------
+# Phase rules — the declarative authority on what's allowed per phase.
+#
+# Hooks are thin dispatchers: they call check_bash() / check_edit() below and
+# pass the verdict to Claude Code's decision channel. The phase machine owns
+# every per-phase allow/block decision so adding or changing a phase never
+# requires editing hook files.
+# ---------------------------------------------------------------------------
 
-# Phases where Claude can write reference.py
-REF_WRITE_PHASES = {GENERATE_REF}
+# Scripts that are never callable via the user-facing Bash tool — they're
+# subprocess children of pipeline.py and should never be user-invoked.
+_GLOBAL_BASH_BANS = {
+    "eval_wrapper.py":   "subprocess-only (invoked by pipeline.py)",
+    "keep_or_discard.py": "subprocess-only (invoked by pipeline.py)",
+    "quick_check.py":    "subprocess-only (invoked by pipeline.py)",
+    "settle.py":         "subprocess-only (invoked by pipeline.py)",
+}
+
+# Read-only command prefixes allowed in every phase.
+_READONLY_PATTERNS = [
+    r"^(ls|cat|head|tail|wc|find|grep|git\s+(log|diff|status|show|branch))",
+    r"dashboard\.py",
+    r"^echo\s",
+    r"^pwd$",
+]
+
+
+class _BashPolicy:
+    """Per-phase Bash rule. Two modes:
+
+    strict:     command must match one of `required` substrings (or be
+                readonly / activation). Everything else → block.
+    permissive: command is allowed UNLESS it matches one of `banned`
+                substrings (or the global ban list).
+
+    "strict" fits narrow phases (INIT/BASELINE/GENERATE_*) where Claude
+    should only be running the one script that advances the phase.
+    "permissive" fits work phases (PLAN/EDIT/DIAGNOSE/REPLAN) where Claude
+    legitimately needs ad-hoc shell access (git log, Python one-liners,
+    reading files) and we only block a few known-wrong actions.
+    """
+    __slots__ = ("mode", "required", "banned")
+
+    def __init__(self, mode, required=None, banned=None):
+        assert mode in ("strict", "permissive")
+        self.mode = mode
+        self.required = set(required or ())
+        self.banned = set(banned or ())
+
+
+_BASH_RULES = {
+    INIT:            _BashPolicy("strict", required={"export AR_TASK_DIR="}),
+    BASELINE:        _BashPolicy("strict", required={"baseline.py"}),
+    GENERATE_REF:    _BashPolicy("strict", required=set()),
+    GENERATE_KERNEL: _BashPolicy("strict", required=set()),
+    PLAN:            _BashPolicy("permissive", banned=set()),
+    DIAGNOSE:        _BashPolicy("permissive", banned=set()),
+    REPLAN:          _BashPolicy("permissive", banned=set()),
+    # EDIT is permissive for ad-hoc shell, but blocks create_plan.py —
+    # Claude must finish the current plan item via pipeline before replanning.
+    EDIT:            _BashPolicy("permissive", banned={"create_plan.py"}),
+    FINISH:          _BashPolicy("permissive", banned=set()),
+}
+
+# Edit/Write rules: which file classes may be written per phase.
+#   "ref"      — reference.py
+#   "editable" — anything in task.yaml:editable_files
+# plan.md is never in any set — it's machine-generated.
+_EDIT_RULES = {
+    GENERATE_REF:    {"ref"},
+    GENERATE_KERNEL: {"editable"},
+    EDIT:            {"editable"},
+    # All other phases: no writable user files.
+}
+
+# Phases where Claude can edit editable_files (typically kernel.py).
+# Kept as a set for hook_post_edit's `phase in CODE_EDIT_PHASES` check; it
+# mirrors _EDIT_RULES.
+CODE_EDIT_PHASES = {p for p, classes in _EDIT_RULES.items() if "editable" in classes}
+REF_WRITE_PHASES = {p for p, classes in _EDIT_RULES.items() if "ref" in classes}
+
+
+def _is_readonly_bash(command: str) -> bool:
+    for pat in _READONLY_PATTERNS:
+        if re.search(pat, command.strip()):
+            return True
+    return False
+
+
+def check_bash(phase: str, command: str) -> tuple:
+    """Return (allowed: bool, reason: str) for a Bash command at `phase`.
+
+    Decision order:
+      1. Global bans (subprocess-only scripts, `git commit`) — always block.
+      2. Read-only commands — always allow.
+      3. Activation (`export AR_TASK_DIR=…`) — always allow; hook_post_bash
+         uses it to switch tasks regardless of current phase.
+      4. Phase policy (strict whitelist or permissive blocklist).
+    """
+    for ban, why in _GLOBAL_BASH_BANS.items():
+        if ban in command:
+            return False, f"'{ban}' — {why}"
+    if "git commit" in command:
+        return False, ("manual 'git commit' forbidden — commits are produced "
+                       "by pipeline.py via keep_or_discard")
+
+    if _is_readonly_bash(command):
+        return True, ""
+    if "export AR_TASK_DIR=" in command:
+        return True, ""
+
+    policy = _BASH_RULES.get(phase)
+    if policy is None:
+        return False, f"unknown phase {phase!r}"
+
+    if policy.mode == "strict":
+        for req in policy.required:
+            if req in command:
+                return True, ""
+        required_txt = sorted(policy.required) or "(no user bash legal here; only file edits)"
+        return False, f"phase {phase}: allowed commands = {required_txt}"
+
+    for b in policy.banned:
+        if b in command:
+            return False, f"phase {phase}: '{b}' is blocked here"
+    return True, ""
+
+
+def check_edit(phase: str, rel_path: str, editable_files) -> tuple:
+    """Return (allowed: bool, reason: str) for an Edit/Write on `rel_path`
+    (task-dir-relative, forward-slash form) at `phase`.
+
+    plan.md is machine-generated and always blocked. Internal state under
+    .ar_state/ is always allowed (hooks and scripts use it).
+    """
+    if rel_path == ".ar_state/plan.md":
+        return False, (
+            "plan.md is machine-generated — never hand-edit it. Use "
+            "`python .autoresearch/scripts/create_plan.py \"<task_dir>\" '<items_json>'` "
+            "to propose a new plan."
+        )
+    if rel_path.startswith(".ar_state/"):
+        return True, ""
+
+    allowed_classes = _EDIT_RULES.get(phase, set())
+    if "ref" in allowed_classes and rel_path == "reference.py":
+        return True, ""
+    if "editable" in allowed_classes and rel_path in set(editable_files or ()):
+        return True, ""
+
+    return False, f"phase {phase} does not allow writing {rel_path!r}"
 
 
 # ---------------------------------------------------------------------------
