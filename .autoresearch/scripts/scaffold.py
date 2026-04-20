@@ -39,17 +39,6 @@ import yaml
 
 
 # ---------------------------------------------------------------------------
-# Backend presets (same as run_autoresearch.py)
-# ---------------------------------------------------------------------------
-
-_BACKEND_PRESETS = {
-    "ascend": {"dsl": "triton_ascend", "backend": "ascend", "arch": "ascend910b4"},
-    "cuda":   {"dsl": "triton_cuda",   "backend": "cuda",   "arch": "a100"},
-    "cpu":    {"dsl": "cpp",           "backend": "cpu",    "arch": "x86_64"},
-}
-
-
-# ---------------------------------------------------------------------------
 # Reference validation
 # ---------------------------------------------------------------------------
 
@@ -207,19 +196,24 @@ def main():
 
     args = parser.parse_args()
 
-    # Apply backend presets
+    # Apply backend/DSL/arch defaults from .autoresearch/config.yaml.
+    # Inference rules when --backend is omitted:
+    #   - `--dsl triton_cuda` / anything with "cuda" → cuda preset
+    #   - `--dsl cpp`                                → cpu preset
+    #   - otherwise                                  → config default_backend
+    from settings import backend_preset, default_backend
     preset_key = args.backend or (
         "cuda" if args.dsl and "cuda" in args.dsl else
         "cpu" if args.dsl == "cpp" else
-        "ascend"
+        default_backend()
     )
-    preset = _BACKEND_PRESETS.get(preset_key, _BACKEND_PRESETS["ascend"])
+    preset = backend_preset(preset_key) or backend_preset(default_backend())
     if args.dsl is None:
-        args.dsl = preset["dsl"]
+        args.dsl = preset.get("dsl")
     if args.backend is None:
-        args.backend = preset["backend"]
+        args.backend = preset_key
     if args.arch is None:
-        args.arch = preset["arch"]
+        args.arch = preset.get("arch")
 
     # Derive op-name if not provided
     if not args.op_name:
@@ -229,10 +223,6 @@ def main():
             args.op_name = "_".join(w.lower() for w in words) or "custom_op"
         else:
             args.op_name = "custom_op"
-
-    # Resolve reference: --ref (file) or --desc (LLM generates)
-    device_map = {"ascend": "npu", "cuda": "cuda", "cpu": "cpu"}
-    device = device_map.get(args.backend, "npu")
 
     if args.ref:
         if not os.path.isfile(args.ref):

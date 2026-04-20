@@ -69,10 +69,13 @@ _CHINESE_RUN_RE = re.compile(r"[\u4e00-\u9fff]{3,}")
 _AUTOTUNE_RE = re.compile(r"@triton\.autotune\s*\(", re.MULTILINE)
 _RESTORE_VALUE_RE = re.compile(r"restore_value\s*=")
 
-# Modules that live only on the worker (Ascend NPU / CUDA). Checking for their
-# importability on the local dev box would generate false positives, so we
-# skip them — the worker's verify step catches any real import error.
-_WORKER_ONLY_MODULES = frozenset({"triton", "torch_npu", "torch_npu_extension"})
+# Modules that live only on the worker rig (NPU / GPU). Checking their
+# importability on the local dev box would false-positive; the worker's
+# verify step catches real import errors. List maintained in
+# .autoresearch/config.yaml `worker_only_modules`.
+def _worker_only_modules() -> frozenset:
+    from settings import worker_only_modules
+    return worker_only_modules()
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +249,7 @@ class CodeChecker:
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     top = alias.name.split(".")[0]
-                    if top in checked or top in _WORKER_ONLY_MODULES:
+                    if top in checked or top in _worker_only_modules():
                         continue
                     checked.add(top)
                     if not self._is_module_available(top):
@@ -262,7 +265,7 @@ class CodeChecker:
                     continue
                 if node.module:
                     top = node.module.split(".")[0]
-                    if top in checked or top in _WORKER_ONLY_MODULES:
+                    if top in checked or top in _worker_only_modules():
                         continue
                     checked.add(top)
                     if not self._is_module_available(top):

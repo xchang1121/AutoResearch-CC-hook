@@ -18,25 +18,18 @@ from hook_utils import read_hook_input
 from phase_machine import (
     read_phase, get_guidance, get_task_dir, touch_heartbeat, check_bash,
 )
+from settings import hallucinated_scripts
 
 # Real scripts that live under .autoresearch/scripts/.
 _BLESSED_SCRIPTS = {
     "quick_check.py", "eval_wrapper.py", "keep_or_discard.py",
     "scaffold.py", "baseline.py", "_baseline_init.py", "dashboard.py",
     "create_plan.py", "settle.py", "pipeline.py", "resume.py",
-    "reference_capture.py",
+    "reference_capture.py", "code_checker.py",
 }
 
-# Names Claude sometimes hallucinates → real script it should use instead.
-_HALLUCINATED_SCRIPTS = {
-    "eval.py":     "eval_wrapper.py",
-    "run_eval.py": "eval_wrapper.py",
-    "verify.py":   "eval_wrapper.py",
-    "check.py":    "quick_check.py",
-    "run.py":      "eval_wrapper.py",
-    "test.py":     "quick_check.py",
-    "profile.py":  "eval_wrapper.py",
-}
+# Alias → real script mapping lives in .autoresearch/config.yaml under
+# `hallucinated_scripts`; loaded lazily so the config can be hot-edited.
 
 
 def _block(reason):
@@ -53,8 +46,9 @@ def _script_name_check(command: str):
     script_path = m.group(1).replace("\\", "/")
     script_name = os.path.basename(script_path)
 
-    if script_name in _HALLUCINATED_SCRIPTS:
-        real = _HALLUCINATED_SCRIPTS[script_name]
+    aliases = hallucinated_scripts()
+    if script_name in aliases:
+        real = aliases[script_name]
         _block(f"[AR] '{script_name}' does not exist. "
                f"Use: python .autoresearch/scripts/{real}")
     if ".autoresearch/scripts/" in script_path and script_name not in _BLESSED_SCRIPTS:

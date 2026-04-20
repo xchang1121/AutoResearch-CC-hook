@@ -178,13 +178,10 @@ def _select_worker(worker_urls: list) -> Optional[str]:
 
 
 def _detect_device_type(config: TaskConfig) -> str:
-    """Detect device type string for torch from backend."""
-    backend = (config.backend or "").lower()
-    if "ascend" in backend:
-        return "npu"
-    elif "cuda" in backend:
-        return "cuda"
-    return "cpu"
+    """torch.device prefix ('npu' / 'cuda' / 'cpu') derived from backend.
+    Mapping lives in .autoresearch/config.yaml `backends.*.device_type`."""
+    from settings import device_type_for
+    return device_type_for(config.backend, fallback="cpu")
 
 
 def _gen_verify_script(config: TaskConfig, device_id: int = 0) -> str:
