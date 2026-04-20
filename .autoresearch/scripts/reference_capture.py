@@ -11,12 +11,58 @@ round and decouples ref capture from kernel correctness.
 Usage:
     python .autoresearch/scripts/reference_capture.py <task_dir>
 """
+import json
 import os
 import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 from phase_machine import state_path
+
+
+_REMOTE_CACHE_ROOT = "/tmp/ar_cache"  # worker-side cache dir; predictable
+
+
+def _remote_cache_path(task_dir: str) -> str:
+    """Absolute path on the worker where reference.pt is cached."""
+    return f"{_REMOTE_CACHE_ROOT}/{os.path.basename(os.path.abspath(task_dir))}/reference.pt"
+
+
+def _upload_to_worker(local_pt: str, task_dir: str, ssh_host: str) -> bool:
+    """scp reference.pt to the worker under /tmp/ar_cache/<task_basename>/.
+
+    Returns True on success. Writes a marker file so _build_package can
+    detect the upload and skip bundling reference.pt in the tarball.
+    """
+    remote_path = _remote_cache_path(task_dir)
+    remote_dir = os.path.dirname(remote_path)
+    try:
+        subprocess.run(
+            ["ssh", ssh_host, f"mkdir -p {remote_dir}"],
+            check=True, capture_output=True, text=True, timeout=120,
+        )
+        size_mb = os.path.getsize(local_pt) / 1e6
+        print(f"[reference_capture] scp {size_mb:.1f}MB -> {ssh_host}:{remote_path}",
+              file=sys.stderr)
+        # 30 min ceiling: covers slow-handshake / low-bandwidth tunnels.
+        subprocess.run(
+            ["scp", "-q", local_pt, f"{ssh_host}:{remote_path}"],
+            check=True, capture_output=True, text=True, timeout=1800,
+        )
+    except subprocess.CalledProcessError as e:
+        print(f"[reference_capture] UPLOAD FAILED: {e.stderr or e}",
+              file=sys.stderr)
+        return False
+    except subprocess.TimeoutExpired:
+        print("[reference_capture] UPLOAD TIMED OUT (>30 min)", file=sys.stderr)
+        return False
+
+    marker = state_path(task_dir, ".ref_on_worker")
+    with open(marker, "w", encoding="utf-8") as f:
+        json.dump({"ssh_host": ssh_host, "remote_path": remote_path}, f)
+    print(f"[reference_capture] cached on worker; eval tarballs will skip "
+          f"reference.pt", file=sys.stderr)
+    return True
 
 
 _CAPTURE_SCRIPT = r'''
@@ -85,13 +131,11 @@ def main():
     code = _CAPTURE_SCRIPT.format(
         task_dir=task_dir, ref_mod=ref_mod, out_path=out_path,
     )
-    # - CPU-only (avoid device dependencies; .pt is device-agnostic)
-    # - KMP_DUPLICATE_LIB_OK: defuse Windows libiomp5 conflict when multiple
-    #   MKL-linked libs coexist (anaconda + torch). Linux is unaffected.
     env = {
         **os.environ,
         "CUDA_VISIBLE_DEVICES": "",
         "ASCEND_RT_VISIBLE_DEVICES": "",
+        # Windows libiomp5 double-load workaround (no-op on Linux).
         "KMP_DUPLICATE_LIB_OK": "TRUE",
     }
     r = subprocess.run(
@@ -107,6 +151,21 @@ def main():
 
     # Forward the child's JSON
     print(r.stdout, end="")
+
+    # Optional: scp to the worker's /tmp cache so future eval tarballs can
+    # skip bundling reference.pt. Triggered by task.yaml worker.ssh_host.
+    # (Stale marker from a prior run is dropped — upload failure should not
+    #  leave us claiming the worker still has the file.)
+    marker = state_path(task_dir, ".ref_on_worker")
+    if os.path.exists(marker):
+        os.remove(marker)
+    try:
+        from task_config import load_task_config
+        cfg = load_task_config(task_dir)
+    except Exception:
+        cfg = None
+    if cfg and cfg.worker_ssh_host:
+        _upload_to_worker(out_path, task_dir, cfg.worker_ssh_host)
 
 
 if __name__ == "__main__":

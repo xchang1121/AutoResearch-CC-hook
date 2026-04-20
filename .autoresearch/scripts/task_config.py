@@ -71,6 +71,12 @@ class TaskConfig:
     """Worker Service URLs, e.g. ["http://127.0.0.1:9111"].
     When non-empty, eval is routed to remote workers instead of local subprocess."""
 
+    worker_ssh_host: Optional[str] = None
+    """SSH alias of the same machine the worker runs on (e.g. "npu"). When
+    set, reference_capture scp's the captured reference.pt to the worker's
+    /tmp cache once, and subsequent eval tarballs omit it — big speed win
+    for large-tensor ops."""
+
 
 @dataclass
 class EvalResult:
@@ -119,6 +125,7 @@ def load_task_config(task_dir: str) -> Optional[TaskConfig]:
     worker_urls = worker_block.get("urls", [])
     if isinstance(worker_urls, str):
         worker_urls = [u.strip() for u in worker_urls.split(",") if u.strip()]
+    worker_ssh_host = worker_block.get("ssh_host")
 
     return TaskConfig(
         name=name,
@@ -141,6 +148,7 @@ def load_task_config(task_dir: str) -> Optional[TaskConfig]:
         smoke_test_timeout=smoke_block.get("timeout", 10),
         max_rounds=agent_block.get("max_rounds", 30),
         worker_urls=worker_urls,
+        worker_ssh_host=worker_ssh_host,
     )
 
 
@@ -184,21 +192,24 @@ def _detect_device_type(config: TaskConfig) -> str:
     return device_type_for(config.backend, fallback="cpu")
 
 
-def _gen_verify_script(config: TaskConfig, device_id: int = 0) -> str:
+def _gen_verify_script(config: TaskConfig, device_id: int = 0,
+                       worker_ref_path: Optional[str] = None) -> str:
     """Generate verify_{op_name}.py for the Worker Service.
 
-    Two-phase precision check (AKG-style):
-      - If `reference.pt` is present in the work dir, load cached PyTorch
-        outputs and compare kernel against them. No PyTorch forward pass
-        needed — much faster and decouples ref capture from kernel verify.
-      - If `reference.pt` is missing (backward compat), fall back to
-        importing Model and running it inline, like the old behavior.
+    reference.pt resolution order (first hit wins):
+      1. `worker_ref_path` absolute path (e.g. /tmp/ar_cache/<task>/reference.pt)
+         — set by _build_package when reference_capture already scp'd the
+         file to the worker. Tarball no longer bundles reference.pt.
+      2. `reference.pt` in the extract dir (legacy / no-ssh-host setups).
+      3. Inline fallback: import Model, run with get_inputs(). Slowest but
+         always correct.
     """
     device = _detect_device_type(config)
     kernel_file = config.editable_files[0].replace(".py", "")
     ref_file = (config.ref_file or "reference.py").replace(".py", "")
     atol = config.correctness_atol
     rtol = config.correctness_rtol
+    worker_ref_literal = repr(worker_ref_path) if worker_ref_path else "None"
     return f'''\
 #!/usr/bin/env python3
 """Auto-generated verify script for Worker Service."""
@@ -222,7 +233,16 @@ else:
 
 ATOL = {atol!r}
 RTOL = {rtol!r}
-REF_PT = "reference.pt"
+# Resolution order for reference.pt: worker-side cache (scp'd once) →
+# extract-dir bundle → inline recompute.
+WORKER_REF_PT = {worker_ref_literal}
+LOCAL_REF_PT = "reference.pt"
+if WORKER_REF_PT and os.path.isfile(WORKER_REF_PT):
+    REF_PT = WORKER_REF_PT
+elif os.path.isfile(LOCAL_REF_PT):
+    REF_PT = LOCAL_REF_PT
+else:
+    REF_PT = ""
 
 # ModelNew is the ONLY import we require to succeed — ref is usually loaded
 # from the cached .pt. Import failure here means the kernel file itself is
@@ -244,10 +264,10 @@ try:
     ref_inputs = get_inputs()
 
     # --- Obtain reference outputs ---
-    if os.path.exists(REF_PT):
+    if REF_PT:
         ref_data = torch.load(REF_PT, map_location="cpu", weights_only=False)
         out_ref = ref_data["outputs"]
-        ref_source = "cached"
+        ref_source = "cached-worker" if REF_PT == WORKER_REF_PT else "cached-bundled"
     else:
         from {ref_file} import Model
         model_ref = Model(*init_inputs).cpu().eval()
@@ -490,12 +510,22 @@ def _build_package(task_dir: str, config: TaskConfig, device_id: int = 0) -> byt
                 if os.path.isfile(fpath):
                     tar.add(fpath, arcname=f)
 
-        # Cached PyTorch reference outputs (AKG-style): verify script loads
-        # this if present and skips running Model inline. Placed at the root
-        # of the tarball as `reference.pt` so the worker's extract dir has
-        # it alongside the scripts.
+        # Cached PyTorch reference outputs. Two paths:
+        #   (a) Marker `.ar_state/.ref_on_worker` present (reference_capture
+        #       successfully scp'd the file to the worker's /tmp cache) —
+        #       skip bundling; verify script reads the absolute path instead.
+        #   (b) No marker — bundle reference.pt into the tarball (legacy
+        #       path, used when worker.ssh_host isn't configured).
         ref_pt = os.path.join(task_dir, ".ar_state", "reference.pt")
-        if os.path.isfile(ref_pt):
+        marker = os.path.join(task_dir, ".ar_state", ".ref_on_worker")
+        worker_ref_path = None
+        if os.path.isfile(marker):
+            try:
+                info = json.load(open(marker, encoding="utf-8"))
+                worker_ref_path = info.get("remote_path")
+            except Exception:
+                worker_ref_path = None
+        if worker_ref_path is None and os.path.isfile(ref_pt):
             tar.add(ref_pt, arcname="reference.pt")
 
         # Generate and add worker scripts
@@ -506,7 +536,8 @@ def _build_package(task_dir: str, config: TaskConfig, device_id: int = 0) -> byt
             tar.addfile(info, io.BytesIO(data))
 
         _add_script(f"verify_{op_name}.py",
-                     _gen_verify_script(config, device_id))
+                     _gen_verify_script(config, device_id,
+                                        worker_ref_path=worker_ref_path))
         _add_script(f"profile_{op_name}_base.py",
                      _gen_profile_script(config, device_id, mode="base"))
         _add_script(f"profile_{op_name}_generation.py",

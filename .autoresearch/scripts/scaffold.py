@@ -75,6 +75,7 @@ def scaffold_task_dir(
     backend: str = "",
     arch: str = "",
     worker_urls: list | None = None,
+    worker_ssh_host: str | None = None,
     max_rounds: int = 20,
     eval_timeout: int = 120,
     output_dir: str | None = None,
@@ -125,8 +126,13 @@ def scaffold_task_dir(
     }
 
     # Add worker config if provided
-    if worker_urls:
-        task_yaml["worker"] = {"urls": worker_urls}
+    if worker_urls or worker_ssh_host:
+        worker_cfg = {}
+        if worker_urls:
+            worker_cfg["urls"] = worker_urls
+        if worker_ssh_host:
+            worker_cfg["ssh_host"] = worker_ssh_host
+        task_yaml["worker"] = worker_cfg
 
     yaml_content = yaml.dump(task_yaml, default_flow_style=False, allow_unicode=True)
     _write(task_dir, "task.yaml", yaml_content)
@@ -187,6 +193,12 @@ def main():
     parser.add_argument("--framework", default="torch")
     parser.add_argument("--worker-url", default=None,
                         help="Remote worker URL(s), comma-separated")
+    parser.add_argument("--worker-ssh-host", default=None,
+                        help=("SSH alias of the machine running the worker "
+                              "(e.g. 'npu'). When set, reference.pt is "
+                              "scp'd to the worker's /tmp cache once and "
+                              "every eval tarball skips bundling it — use "
+                              "this for ops with large input tensors."))
     parser.add_argument("--max-rounds", type=int, default=20)
     parser.add_argument("--eval-timeout", type=int, default=120)
     parser.add_argument("--output-dir", default=None,
@@ -266,6 +278,7 @@ def main():
         backend=args.backend,
         arch=args.arch,
         worker_urls=worker_urls,
+        worker_ssh_host=args.worker_ssh_host,
         max_rounds=args.max_rounds,
         eval_timeout=args.eval_timeout,
         output_dir=args.output_dir,
