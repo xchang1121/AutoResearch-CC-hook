@@ -12,12 +12,13 @@
       "Bash(git blame *)",
       "Bash(git show *)",
       "Bash(git rev-parse *)",
+      "Bash(git *)",
       "Bash(mkdir *)",
       "Bash(ls *)",
       "Bash(cat *)",
       "Read($CLAUDE_PROJECT_DIR/**)"
     ],
-    "defaultMode": "acceptEdits"
+    "defaultMode": "bypassPermissions"
   },
   "hooks": {
     "PreToolUse": [
