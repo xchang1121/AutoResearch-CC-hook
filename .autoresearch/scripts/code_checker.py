@@ -30,63 +30,44 @@ from typing import Dict, List, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
-# Constants
+# Policy — loaded once from .autoresearch/code_checker.yaml via settings.py.
+# Missing/malformed keys surface as KeyError at import time.
+# `worker_only_modules` lives in config.yaml, not code_checker.yaml.
 # ---------------------------------------------------------------------------
+from settings import (
+    code_checker_triton_decorators,
+    code_checker_torch_call_prefixes,
+    code_checker_hard_ops,
+    code_checker_soft_ops,
+    code_checker_kernel_class_name,
+    code_checker_kernel_forward_method,
+    code_checker_triton_module_name,
+    code_checker_dsl_compliance_prefix,
+    code_checker_stray_text_re,
+    code_checker_autotune_re,
+    code_checker_restore_value_re,
+    worker_only_modules,
+)
 
-_TRITON_DECORATORS = frozenset({"jit", "autotune", "heuristics"})
+_TRITON_DECORATORS = code_checker_triton_decorators()
+_TORCH_CALL_PREFIXES = code_checker_torch_call_prefixes()
+_TORCH_OPS_HARD = code_checker_hard_ops()
+_TORCH_OPS_SOFT = code_checker_soft_ops()
+_KERNEL_CLASS = code_checker_kernel_class_name()
+_KERNEL_FORWARD = code_checker_kernel_forward_method()
+_TRITON_MODULE = code_checker_triton_module_name()
+_DSL_PREFIX = code_checker_dsl_compliance_prefix()
+_STRAY_TEXT_RE = code_checker_stray_text_re()
+_AUTOTUNE_RE = code_checker_autotune_re()
+_RESTORE_VALUE_RE = code_checker_restore_value_re()
+_WORKER_ONLY = worker_only_modules()
 
-# HARD ops: forbidden in forward() regardless of whether a triton kernel is
-# launched. These are complete sub-computations that MUST live inside the
-# kernel (matmul, conv, norm, softmax, pooling, embedding, ...).
-_TORCH_COMPUTE_OPS_HARD = frozenset({
-    "matmul", "mm", "bmm", "addmm", "addmv", "addbmm", "baddbmm",
-    "einsum", "dot", "mv", "inner", "outer", "linear",
-    "conv1d", "conv2d", "conv3d",
-    "conv_transpose1d", "conv_transpose2d", "conv_transpose3d",
-    "layer_norm", "batch_norm", "group_norm", "instance_norm",
-    "softmax", "log_softmax", "logsumexp",
-    "max_pool1d", "max_pool2d", "max_pool3d",
-    "avg_pool1d", "avg_pool2d", "avg_pool3d", "adaptive_avg_pool2d",
-    "embedding", "interpolate", "cumsum", "cumprod",
-})
-
-# SOFT ops: forbidden only when no triton kernel is launched. When a kernel
-# IS launched, these may be legit pre/post processing (a fused op may still
-# do cheap elementwise work in python).
-_TORCH_COMPUTE_OPS_SOFT = frozenset({
-    "relu", "gelu", "silu", "sigmoid", "tanh",
-    "leaky_relu", "elu", "hardswish", "mish",
-    "exp", "log", "sqrt", "rsqrt", "pow",
-    "sin", "cos", "abs",
-    "clamp", "clamp_min", "clamp_max",
-    "sum", "mean", "prod", "norm",
-    "amax", "amin", "argmax", "argmin",
-})
-
-_TORCH_CALL_PREFIXES = frozenset({"torch", "F"})
-
-_CHINESE_RUN_RE = re.compile(r"[\u4e00-\u9fff]{3,}")
-_AUTOTUNE_RE = re.compile(r"@triton\.autotune\s*\(", re.MULTILINE)
-_RESTORE_VALUE_RE = re.compile(r"restore_value\s*=")
-
-# Modules that live only on the worker rig (NPU / GPU). Checking their
-# importability on the local dev box would false-positive; the worker's
-# verify step catches real import errors. List maintained in
-# .autoresearch/config.yaml `worker_only_modules`.
-def _worker_only_modules() -> frozenset:
-    from settings import worker_only_modules
-    return worker_only_modules()
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _is_triton_decorator(node: ast.expr) -> bool:
     if isinstance(node, ast.Attribute):
         return (
             isinstance(node.value, ast.Name)
-            and node.value.id == "triton"
+            and node.value.id == _TRITON_MODULE
             and node.attr in _TRITON_DECORATORS
         )
     if isinstance(node, ast.Call):
@@ -96,14 +77,14 @@ def _is_triton_decorator(node: ast.expr) -> bool:
 
 def _find_model_new_class(tree: ast.Module) -> Optional[ast.ClassDef]:
     for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef) and node.name == "ModelNew":
+        if isinstance(node, ast.ClassDef) and node.name == _KERNEL_CLASS:
             return node
     return None
 
 
 def _find_forward(cls_node: ast.ClassDef) -> Optional[ast.FunctionDef]:
     for item in cls_node.body:
-        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == "forward":
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == _KERNEL_FORWARD:
             return item
     return None
 
@@ -160,7 +141,7 @@ class CodeChecker:
         )
         if not has_syntax_err:
             errors.extend(self._check_dsl_compliance(code))
-            if self.dsl.startswith("triton"):
+            if self.dsl.startswith(_DSL_PREFIX):
                 errors.extend(self._check_autotune_compliance(code))
 
         passed = len(errors) == 0
@@ -249,7 +230,7 @@ class CodeChecker:
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     top = alias.name.split(".")[0]
-                    if top in checked or top in _worker_only_modules():
+                    if top in checked or top in _WORKER_ONLY:
                         continue
                     checked.add(top)
                     if not self._is_module_available(top):
@@ -265,7 +246,7 @@ class CodeChecker:
                     continue
                 if node.module:
                     top = node.module.split(".")[0]
-                    if top in checked or top in _worker_only_modules():
+                    if top in checked or top in _WORKER_ONLY:
                         continue
                     checked.add(top)
                     if not self._is_module_available(top):
@@ -304,7 +285,7 @@ class CodeChecker:
                 tokenize.DEDENT, tokenize.ENDMARKER, tokenize.ENCODING,
             ):
                 continue
-            m = _CHINESE_RUN_RE.search(tok.string)
+            m = _STRAY_TEXT_RE.search(tok.string)
             if m:
                 line_num = tok.start[0]
                 errors.append({
@@ -321,7 +302,7 @@ class CodeChecker:
     # ------------------------------------------------------------------
 
     def _check_dsl_compliance(self, code: str) -> List[Dict]:
-        if not self.dsl.startswith("triton"):
+        if not self.dsl.startswith(_DSL_PREFIX):
             return []
         try:
             tree = ast.parse(code)
@@ -347,7 +328,10 @@ class CodeChecker:
                     f"DSL is {self.dsl} but no @triton.jit-decorated kernel function was found. "
                     f"Code likely uses torch high-level APIs in place of a triton kernel."
                 ),
-                "suggestion": "Define at least one @triton.jit kernel and launch it via kernel[grid](...) inside ModelNew.forward().",
+                "suggestion": (
+                    "Define at least one @triton.jit kernel and launch it via "
+                    "kernel[grid](...) inside ModelNew.forward()."
+                ),
                 "code_snippet": "",
             })
             return errors
@@ -369,7 +353,10 @@ class CodeChecker:
                     f"Triton kernel(s) {sorted(triton_kernels)} are defined but never launched via "
                     f"`kernel_name[grid](...)` syntax. Decorator-only kernels perform no computation."
                 ),
-                "suggestion": "In ModelNew.forward() (or a helper), invoke kernel_name[grid_size](...) to actually run the kernel.",
+                "suggestion": (
+                    "In ModelNew.forward() (or a helper), invoke kernel_name[grid_size](...) "
+                    "to actually run the kernel."
+                ),
                 "code_snippet": "",
             })
 
@@ -389,9 +376,9 @@ class CodeChecker:
                 method = node.func.attr
                 if isinstance(mod, ast.Name) and mod.id in _TORCH_CALL_PREFIXES:
                     label = f"{mod.id}.{method}"
-                    if method in _TORCH_COMPUTE_OPS_HARD:
+                    if method in _TORCH_OPS_HARD:
                         hard_calls.append((node.lineno, label))
-                    elif method in _TORCH_COMPUTE_OPS_SOFT:
+                    elif method in _TORCH_OPS_SOFT:
                         soft_calls.append((node.lineno, label))
             if isinstance(node, ast.BinOp) and isinstance(node.op, ast.MatMult):
                 hard_calls.append((node.lineno, "@ (matmul operator)"))
@@ -407,10 +394,14 @@ class CodeChecker:
                 "line": hard_calls[0][0],
                 "error_type": "torch_api_instead_of_kernel",
                 "detail": (
-                    f"forward() uses {len(hard_calls)} forbidden torch high-level compute API(s): {_fmt(hard_calls)}. "
-                    f"Matrix multiply, conv, normalization, pooling, etc. must be implemented inside the triton kernel."
+                    f"forward() uses {len(hard_calls)} forbidden torch high-level compute API(s): "
+                    f"{_fmt(hard_calls)}. Matrix multiply, conv, normalization, pooling, etc. "
+                    f"must be implemented inside the triton kernel."
                 ),
-                "suggestion": "Move the flagged operations into the @triton.jit kernel. forward() should only prepare inputs, launch the kernel, and return outputs.",
+                "suggestion": (
+                    "Move the flagged operations into the @triton.jit kernel. "
+                    "forward() should only prepare inputs, launch the kernel, and return outputs."
+                ),
                 "code_snippet": "",
             })
 
@@ -419,10 +410,14 @@ class CodeChecker:
                 "line": soft_calls[0][0],
                 "error_type": "torch_api_without_kernel",
                 "detail": (
-                    f"forward() uses {len(soft_calls)} torch compute API(s) without launching any triton kernel: "
-                    f"{_fmt(soft_calls)}. The kernel is decorative only."
+                    f"forward() uses {len(soft_calls)} torch compute API(s) without launching any "
+                    f"triton kernel: {_fmt(soft_calls)}. The kernel is decorative only."
                 ),
-                "suggestion": "Ensure the triton kernel is launched. Simple ops (exp/relu/sum) may remain as kernel pre/post-processing, but only if the kernel carries the main compute.",
+                "suggestion": (
+                    "Ensure the triton kernel is launched. Simple ops (exp/relu/sum) may "
+                    "remain as kernel pre/post-processing, but only if the kernel carries the "
+                    "main compute."
+                ),
                 "code_snippet": "",
             })
 
@@ -458,12 +453,12 @@ class CodeChecker:
                 "line": autotune_line,
                 "error_type": "autotune_missing_restore_value",
                 "detail": (
-                    "@triton.autotune is missing `restore_value=`. Autotune re-runs the kernel for each "
-                    "config and output buffers pollute across runs — verification will fail."
+                    "@triton.autotune is missing `restore_value=`. Autotune re-runs the kernel "
+                    "for each config and output buffers pollute across runs — verification will fail."
                 ),
                 "suggestion": (
-                    "Add `restore_value=['<output_ptr_name>', ...]` listing every output pointer argument. "
-                    "Example:\n"
+                    "Add `restore_value=['<output_ptr_name>', ...]` listing every output pointer "
+                    "argument. Example:\n"
                     "  @triton.autotune(\n"
                     "      configs=[...],\n"
                     "      key=[...],\n"
