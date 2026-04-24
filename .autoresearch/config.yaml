@@ -1,69 +1,12 @@
-# Framework reference tables. Editing here never needs a code change.
-# Loaded once per process by .autoresearch/scripts/settings.py.
+# Framework reference tables. Loaded once per process by settings.py.
 #
-# DSL is the primary pivot (it's what the user writes code in). backend /
-# arch / framework / device_type are derived per-DSL defaults; users override
-# them with explicit --backend / --arch / --framework on /autoresearch.
+# DSL is the only user-visible classifier. backend / device_type are pure
+# functions of DSL (see hw_detect.py). arch is derived from hardware
+# (local: npu-smi / nvidia-smi / uname; remote: worker /api/v1/status).
+# None of those need to appear in this file.
 
 # When /autoresearch is invoked without --dsl, scaffold uses this key.
 default_dsl: triton_ascend
-
-# DSL → default (backend, arch, framework, device_type) mapping. Factory
-# (ar_vendored/op/verifier/adapters/factory.py) validates the DSL name
-# independently; this table only supplies defaults for missing flags.
-# `device_type` is the `torch.device` prefix emitted into the auto-generated
-# verify / profile scripts ("npu" / "cuda" / "cpu").
-dsls:
-  triton_ascend:
-    backend: ascend
-    arch: ascend910b4
-    framework: torch
-    device_type: npu
-  triton_cuda:
-    backend: cuda
-    arch: a100
-    framework: torch
-    device_type: cuda
-  ascendc:
-    backend: ascend
-    arch: ascend910b4
-    framework: torch
-    device_type: npu
-  cuda_c:
-    backend: cuda
-    arch: a100
-    framework: torch
-    device_type: cuda
-  cpp:
-    backend: cpu
-    arch: x86_64
-    framework: torch
-    device_type: cpu
-  tilelang_cuda:
-    backend: cuda
-    arch: a100
-    framework: torch
-    device_type: cuda
-  tilelang_npuir:
-    backend: ascend
-    arch: ascend910b4
-    framework: torch
-    device_type: npu
-  pypto:
-    backend: cuda
-    arch: a100
-    framework: torch
-    device_type: cuda
-  swft:
-    backend: ascend
-    arch: ascend910b4
-    framework: torch
-    device_type: npu
-  torch:
-    backend: cpu
-    arch: x86_64
-    framework: torch
-    device_type: cpu
 
 # Modules that live only on the remote worker (NPU / GPU rig). Static code
 # check skips import availability for these — the local dev box typically

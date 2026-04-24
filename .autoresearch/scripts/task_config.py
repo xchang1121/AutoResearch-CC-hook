@@ -82,6 +82,11 @@ class TaskConfig:
     """Worker Service URLs, e.g. ["http://127.0.0.1:9111"].
     When non-empty, eval is routed to remote workers instead of local subprocess."""
 
+    # Local devices
+    devices: list = field(default_factory=list)
+    """Device IDs for local eval (written by scaffold from --devices). When
+    non-empty, run_local_eval uses devices[0] as default device_id."""
+
 
 @dataclass
 class EvalResult:
@@ -132,6 +137,17 @@ def load_task_config(task_dir: str) -> Optional[TaskConfig]:
     if isinstance(worker_urls, str):
         worker_urls = [u.strip() for u in worker_urls.split(",") if u.strip()]
 
+    # Parse devices list. Accepts [5] / "5" / "0,1,2".
+    devices_raw = raw.get("devices", [])
+    if isinstance(devices_raw, int):
+        devices = [devices_raw]
+    elif isinstance(devices_raw, str):
+        devices = [int(d.strip()) for d in devices_raw.split(",") if d.strip()]
+    elif isinstance(devices_raw, list):
+        devices = [int(d) for d in devices_raw]
+    else:
+        devices = []
+
     return TaskConfig(
         name=name,
         description=raw.get("description", ""),
@@ -153,6 +169,7 @@ def load_task_config(task_dir: str) -> Optional[TaskConfig]:
         code_checker_enabled=bool(code_checker_block.get("enabled", True)),
         max_rounds=agent_block.get("max_rounds", 30),
         worker_urls=worker_urls,
+        devices=devices,
     )
 
 
@@ -190,10 +207,16 @@ def _select_worker(worker_urls: list) -> Optional[str]:
 
 
 def _detect_device_type(config: TaskConfig) -> str:
-    """torch.device prefix ('npu' / 'cuda' / 'cpu') derived from DSL preset.
-    Mapping lives in .autoresearch/config.yaml `dsls.<name>.device_type`."""
-    from settings import device_type_for_dsl
-    return device_type_for_dsl(config.dsl, fallback="cpu")
+    """torch.device prefix ('npu' / 'cuda' / 'cpu'). Derived from DSL via
+    hw_detect (DSL → backend → device_type)."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
+    from hw_detect import device_type_for_dsl
+    try:
+        return device_type_for_dsl(config.dsl or "")
+    except Exception:
+        return "cpu"
 
 
 def _get_dsl_adapter(dsl: Optional[str]):
@@ -911,7 +934,12 @@ def run_local_eval(task_dir: str, config: TaskConfig,
     """
     from local_worker import local_verify, local_profile
 
-    dev = 0 if device_id is None else int(device_id)
+    if device_id is not None:
+        dev = int(device_id)
+    elif config.devices:
+        dev = int(config.devices[0])
+    else:
+        dev = 0
     try:
         package = _build_package(task_dir, config, device_id=dev)
     except Exception as e:

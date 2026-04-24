@@ -13,22 +13,26 @@ one, or kick off the optimization. The hook machine takes it from there.
 - **Init flags** — new task from an existing reference file:
   `--ref <file> --op-name <name>
    [--dsl triton_ascend|triton_cuda|ascendc|cuda_c|cpp|tilelang_cuda|tilelang_npuir|pypto|swft|torch]
-   [--backend ascend|cuda|cpu] [--arch <arch>] [--framework torch|mindspore|numpy]
-   [--kernel <file>] [--worker-url <host:port>] [--max-rounds <N>]`
+   [--framework torch|mindspore|numpy]
+   (--devices <N[,M,...]> | --worker-url <host:port>)
+   [--kernel <file>] [--max-rounds <N>]`
 
-  **`--dsl` is the primary pivot**, not `--backend`. It selects which
-  ar_vendored adapter drives verify/profile script generation. When `--dsl`
-  is omitted, the config.yaml `default_dsl` is used. `--backend` / `--arch` /
-  `--framework` are optional overrides of the DSL's preset — if given, they
-  must agree with the DSL (e.g. `--dsl triton_ascend --backend cuda` is a
-  hard error, no silent correction). See config.yaml `dsls:` for the full
-  preset table.
+  **Hardware spec is exactly one of `--devices` (local eval) or
+  `--worker-url` (remote).**
+
+  - `--devices 5` → scaffold queries `npu-smi info -i 5` (or `nvidia-smi`,
+    `uname -m`) to derive arch. task.yaml gets `devices: [5]`, arch derived.
+  - `--worker-url 127.0.0.1:9070` → scaffold GETs `/api/v1/status` on that
+    worker, uses its reported backend + arch + devices.
+  - `--dsl` is the primary classifier. backend is a pure function of DSL
+    (triton_ascend → ascend; cuda_c → cuda; ...). **`--backend` and `--arch`
+    are not user flags** — they're auto-derived, never typed.
 
   Convention: source `--ref` / `--kernel` files live in `workspace/`, named
   `workspace/<op_name>_ref.py` and `workspace/<op_name>_kernel.py`. Put new
   candidates there before invoking `/autoresearch`.
 - **Desc mode** — new task from a natural-language description:
-  `--desc "fused ReLU + LayerNorm, (32,1024), fp16" --dsl triton_cuda`
+  `--desc "fused ReLU + LayerNorm, (32,1024), fp16" --dsl triton_cuda --worker-url ...`
 
 Required init flags: `--ref` (or `--desc`) and `--op-name`. `--output-dir`
 defaults to `ar_tasks`.

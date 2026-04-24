@@ -317,17 +317,37 @@ def check_edit(phase: str, rel_path: str, editable_files) -> tuple:
     """Return (allowed: bool, reason: str) for an Edit/Write on `rel_path`
     (task-dir-relative, forward-slash form) at `phase`.
 
-    plan.md is machine-generated and always blocked. Internal state under
-    .ar_state/ is always allowed (hooks and scripts use it).
+    Writes under .ar_state/ are restricted to a precise allowlist. Phase,
+    progress, history, plan.md, heartbeat, and markers are all machine-
+    maintained — letting Claude Edit them would let the model skip phases,
+    rewrite counters, or forge history. Only two paths are writable by the
+    agent:
+      - .ar_state/plan_items.xml: the XML input file /autoresearch hands to
+        create_plan.py (see .claude/commands/autoresearch.md).
+      - .ar_state/ranking.md: the FINISH-phase summary (phase-gated).
     """
-    if rel_path == f".ar_state/{PLAN_FILE}":
-        return False, (
-            "plan.md is machine-generated — never hand-edit it. Use "
-            "`python .autoresearch/scripts/create_plan.py \"<task_dir>\" '<items_json>'` "
-            "to propose a new plan."
-        )
     if rel_path.startswith(".ar_state/"):
-        return True, ""
+        if rel_path == ".ar_state/plan_items.xml":
+            return True, ""
+        if rel_path == ".ar_state/ranking.md":
+            if phase == FINISH:
+                return True, ""
+            return False, (
+                "ranking.md is only writable in the FINISH phase — "
+                "finish the optimization loop first."
+            )
+        if rel_path == f".ar_state/{PLAN_FILE}":
+            return False, (
+                "plan.md is machine-generated — never hand-edit it. Use "
+                "`python .autoresearch/scripts/create_plan.py "
+                "\"<task_dir>\" @<path>` to propose a new plan."
+            )
+        return False, (
+            f"{rel_path!r} is machine-maintained state. Only "
+            ".ar_state/plan_items.xml (plan input) and .ar_state/ranking.md "
+            "(FINISH summary) are writable under .ar_state/; everything else "
+            "is owned by hooks and scripts."
+        )
 
     allowed_classes = _EDIT_RULES.get(phase, set())
     if "ref" in allowed_classes and rel_path == "reference.py":

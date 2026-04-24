@@ -96,8 +96,23 @@ def main():
         "commit": baseline_commit,
     })
 
+    # Hard-fail when baseline correctness is False. Downstream (PLAN/EDIT)
+    # assumes the seed is a correct kernel; if it isn't, every improvement
+    # comparison is meaningless and the loop will spin generating "optimizations"
+    # against a broken reference point. Leave phase pinned at BASELINE so
+    # hook_post_bash's retry/demote logic fires and routes back to
+    # GENERATE_KERNEL for a manual fix. eval_wrapper.py intentionally exits 0
+    # even on correctness failure (metrics may still be informative), so this
+    # is the single correct place to gate phase advancement.
     if not correctness:
-        print(f"[baseline] WARNING: Baseline eval failed correctness check", file=sys.stderr)
+        print(
+            f"[baseline] ERROR: baseline eval failed correctness check.\n"
+            f"[baseline] seed {config.primary_metric}={seed_val} but output "
+            f"did not match reference. Phase stays at BASELINE; "
+            f"hook_post_bash will demote to GENERATE_KERNEL for a fix.",
+            file=sys.stderr,
+        )
+        sys.exit(3)
 
     # Hard-fail when seed didn't profile — proceeding would compare future
     # rounds against ref instead of seed, producing misleading "speedup" numbers.

@@ -44,24 +44,16 @@ def default_dsl() -> str:
     return str(_raw().get("default_dsl", "triton_ascend"))
 
 
-def dsls() -> Dict[str, dict]:
-    return dict(_raw().get("dsls", {}))
-
-
-def dsl_preset(name: Optional[str]) -> dict:
-    """Return the DSL preset dict for `name`. Unknown name → empty dict.
-
-    The factory (ar_vendored/op/verifier/adapters/factory.py) is the
-    authoritative list of supported DSLs; this table only fills in default
-    backend/arch/framework/device_type when the user omits those flags.
-    """
-    if not name:
-        return {}
-    return dict(dsls().get(name.lower(), {}))
-
-
 def device_type_for_dsl(dsl: Optional[str], fallback: str = "cpu") -> str:
-    return dsl_preset(dsl).get("device_type", fallback)
+    """Shim over hw_detect — kept here so task_config can call settings
+    without importing hw_detect directly."""
+    if not dsl:
+        return fallback
+    try:
+        from hw_detect import device_type_for_dsl as _impl
+        return _impl(dsl)
+    except Exception:
+        return fallback
 
 
 def worker_only_modules() -> frozenset:

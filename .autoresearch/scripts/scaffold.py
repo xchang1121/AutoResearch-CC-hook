@@ -13,17 +13,17 @@ Zero external dependency. Creates a self-contained task directory with:
   - .git/ (baseline commit)
 
 Usage:
-    # From a reference file (most common):
-    python .autoresearch/scripts/scaffold.py --ref reference.py --op-name my_op --backend ascend --arch ascend910b3
+    # Local eval on NPU 5 (arch auto-derived via npu-smi):
+    python .autoresearch/scripts/scaffold.py --ref reference.py --op-name my_op --dsl triton_ascend --devices 5
 
-    # With initial kernel (skip KernelGen):
-    python .autoresearch/scripts/scaffold.py --ref reference.py --kernel kernel.py --op-name my_op --backend cuda
+    # With initial kernel:
+    python .autoresearch/scripts/scaffold.py --ref reference.py --kernel kernel.py --op-name my_op --dsl triton_cuda --devices 0
 
-    # With remote worker:
-    python .autoresearch/scripts/scaffold.py --ref reference.py --op-name my_op --backend ascend --arch ascend910b3 --worker-url 127.0.0.1:9111
+    # Remote worker (arch fetched from /api/v1/status):
+    python .autoresearch/scripts/scaffold.py --ref reference.py --op-name my_op --dsl triton_ascend --worker-url 127.0.0.1:9111
 
     # Custom output directory:
-    python .autoresearch/scripts/scaffold.py --ref reference.py --op-name my_op --backend cuda --output-dir /tmp/tasks
+    python .autoresearch/scripts/scaffold.py --ref reference.py --op-name my_op --dsl triton_cuda --devices 0 --output-dir /tmp/tasks
 
 Output (last line of stdout):
     {"task_dir": "/absolute/path/to/task_dir", "status": "ok"}
@@ -77,6 +77,7 @@ def scaffold_task_dir(
     framework: str = "torch",
     backend: str = "",
     arch: str = "",
+    devices: list | None = None,
     worker_urls: list | None = None,
     max_rounds: int = 20,
     eval_timeout: int = 120,
@@ -134,6 +135,8 @@ def scaffold_task_dir(
             "max_rounds": max_rounds,
         },
     }
+    if devices:
+        task_yaml["devices"] = list(devices)
 
     # Only emit the code_checker block when disabled — default-true tasks
     # stay clean. quick_check.py and phase_machine.validate_kernel honor
@@ -195,25 +198,25 @@ def main():
                         help="Path to initial kernel file (optional, skips generation)")
     parser.add_argument("--op-name", default=None,
                         help="Operator name (auto-derived from --desc if omitted)")
-    # DSL is the primary pivot. backend / arch / framework default from the
-    # DSL preset in config.yaml; user-supplied overrides must match the DSL
-    # (no implicit inference — incompatible combos error out).
+    # DSL = primary pivot. backend is a pure function of DSL; arch is
+    # derived from hardware (local: npu-smi on --devices; remote: worker
+    # /api/v1/status). Neither needs to be user-facing.
     parser.add_argument("--dsl", default=None,
-                        help="DSL name — one of the keys in config.yaml:dsls "
-                             "(triton_ascend, triton_cuda, ascendc, cuda_c, "
-                             "cpp, tilelang_cuda, tilelang_npuir, pypto, "
-                             "swft, torch). Defaults to config.yaml:default_dsl.")
-    parser.add_argument("--backend", default=None,
-                        help="Override the DSL's default backend "
-                             "(ascend / cuda / cpu). Must match the DSL.")
-    parser.add_argument("--arch", default=None,
-                        help="Override the DSL's default arch "
-                             "(e.g. ascend910b3, a100, x86_64).")
-    parser.add_argument("--framework", default=None,
-                        help="Override the DSL's default framework "
-                             "(torch / mindspore / numpy).")
+                        help="DSL name (triton_ascend, triton_cuda, ascendc, "
+                             "cuda_c, cpp, tilelang_cuda, tilelang_npuir, "
+                             "pypto, swft, torch). Defaults to "
+                             "config.yaml:default_dsl.")
+    parser.add_argument("--framework", default="torch",
+                        choices=["torch", "mindspore", "numpy"],
+                        help="Framework for the reference/kernel code "
+                             "(default: torch).")
+    parser.add_argument("--devices", default=None,
+                        help="Comma-separated device IDs for local eval "
+                             "(e.g. '5' or '0,1,2,3'). Mutually exclusive "
+                             "with --worker-url.")
     parser.add_argument("--worker-url", default=None,
-                        help="Remote worker URL(s), comma-separated")
+                        help="Remote worker URL(s), comma-separated. "
+                             "Mutually exclusive with --devices.")
     parser.add_argument("--max-rounds", type=int, default=20)
     parser.add_argument("--eval-timeout", type=int, default=120)
     parser.add_argument("--output-dir", default=None,
@@ -233,57 +236,94 @@ def main():
 
     args = parser.parse_args()
 
-    # Resolve DSL → backend / arch / framework. DSL is the single source of
-    # truth: user picks a DSL, preset supplies defaults, explicit overrides
-    # must be compatible with the DSL's preset (no string-match inference).
-    from settings import dsl_preset, default_dsl
-    args.dsl = (args.dsl or default_dsl()).lower()
-
-    # Validate DSL against the vendored factory (authoritative list of
-    # supported adapters). Unknown DSL → hard error with the full set.
+    # Resolve DSL (and via it, backend).
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from settings import default_dsl
+    from hw_detect import (
+        backend_for_dsl, derive_arch, fetch_worker_hardware,
+    )
+    from ar_vendored.op.verifier.adapters.factory import (
+        get_dsl_adapter, get_framework_adapter,
+    )
+
+    args.dsl = (args.dsl or default_dsl()).lower()
     try:
-        from ar_vendored.op.verifier.adapters.factory import (
-            get_dsl_adapter, get_backend_adapter, get_framework_adapter,
-        )
         get_dsl_adapter(args.dsl)
     except Exception as e:
         print(json.dumps({"status": "error",
                           "error": f"unsupported --dsl {args.dsl!r}: {e}"}))
         sys.exit(1)
 
-    preset = dsl_preset(args.dsl)
-    if not preset:
-        print(json.dumps({"status": "error",
-                          "error": (f"DSL {args.dsl!r} is valid at the factory "
-                                    f"but has no entry in config.yaml:dsls. "
-                                    f"Add it to unblock scaffold.")}))
+    try:
+        args.backend = backend_for_dsl(args.dsl)
+    except ValueError as e:
+        print(json.dumps({"status": "error", "error": str(e)}))
         sys.exit(1)
 
-    args.backend = (args.backend or preset["backend"]).lower()
-    args.arch = args.arch or preset["arch"]
-    args.framework = (args.framework or preset["framework"]).lower()
+    try:
+        get_framework_adapter(args.framework)
+    except Exception as e:
+        print(json.dumps({"status": "error",
+                          "error": f"unsupported --framework "
+                                   f"{args.framework!r}: {e}"}))
+        sys.exit(1)
 
-    # Cross-validate: each explicit override must also be a known adapter,
-    # and the (dsl, backend) pair must be internally consistent with the
-    # DSL's preset. Mismatch = hard error, no silent correction.
-    for label, value, getter in (
-        ("backend", args.backend, get_backend_adapter),
-        ("framework", args.framework, get_framework_adapter),
-    ):
-        try:
-            getter(value)
-        except Exception as e:
+    # Hardware resolution: --devices XOR --worker-url.
+    devices_list: list = []
+    worker_urls: list = []
+    args.arch = None
+
+    if args.devices and args.worker_url:
+        print(json.dumps({"status": "error",
+                          "error": "--devices and --worker-url are mutually "
+                                   "exclusive. Pick one (--devices for local "
+                                   "eval, --worker-url for remote worker)."}))
+        sys.exit(1)
+
+    if args.devices:
+        devices_list = [int(d.strip()) for d in args.devices.split(",")
+                        if d.strip()]
+        if not devices_list:
             print(json.dumps({"status": "error",
-                              "error": f"unsupported --{label} {value!r}: {e}"}))
+                              "error": "--devices parsed to an empty list"}))
+            sys.exit(1)
+        args.arch = derive_arch(args.backend, devices_list[0])
+        if not args.arch:
+            print(json.dumps({"status": "error",
+                              "error": (f"could not derive arch from "
+                                        f"{args.backend} device "
+                                        f"{devices_list[0]} "
+                                        f"(is the SMI tool on PATH?)")}))
             sys.exit(1)
 
-    if args.backend != preset["backend"]:
+    elif args.worker_url:
+        worker_urls = [u.strip() for u in args.worker_url.split(",")
+                       if u.strip()]
+        status = fetch_worker_hardware(worker_urls[0])
+        if not status:
+            print(json.dumps({"status": "error",
+                              "error": (f"worker {worker_urls[0]} unreachable "
+                                        f"or /api/v1/status failed")}))
+            sys.exit(1)
+        worker_backend = str(status.get("backend", "")).lower()
+        worker_arch = str(status.get("arch", "")).lower()
+        if worker_backend and worker_backend != args.backend:
+            print(json.dumps({"status": "error",
+                              "error": (f"worker backend {worker_backend!r} "
+                                        f"incompatible with --dsl {args.dsl!r} "
+                                        f"(requires {args.backend!r})")}))
+            sys.exit(1)
+        args.arch = worker_arch or None
+        if not args.arch:
+            print(json.dumps({"status": "error",
+                              "error": (f"worker /api/v1/status returned no "
+                                        f"arch: {status}")}))
+            sys.exit(1)
+
+    else:
         print(json.dumps({"status": "error",
-                          "error": (f"--backend {args.backend!r} is incompatible "
-                                    f"with --dsl {args.dsl!r} (DSL preset "
-                                    f"requires backend={preset['backend']!r}). "
-                                    f"Pick one — they must agree.")}))
+                          "error": "must pass exactly one of --devices "
+                                   "(local eval) or --worker-url (remote)."}))
         sys.exit(1)
 
     # Derive op-name if not provided
@@ -319,12 +359,7 @@ def main():
         with open(args.kernel, "r", encoding="utf-8") as f:
             kernel_code = f.read()
 
-    # Parse worker URLs
-    worker_urls = None
-    if args.worker_url:
-        worker_urls = [u.strip() for u in args.worker_url.split(",") if u.strip()]
-
-    # Scaffold
+    # worker_urls / devices_list were resolved above.
     print(f"[scaffold] Creating task directory for {args.op_name}...", file=sys.stderr)
 
     task_dir = scaffold_task_dir(
@@ -335,6 +370,7 @@ def main():
         dsl=args.dsl,
         framework=args.framework,
         backend=args.backend,
+        devices=devices_list,
         arch=args.arch,
         worker_urls=worker_urls,
         max_rounds=args.max_rounds,
@@ -380,7 +416,24 @@ def main():
         baseline_cmd = [sys.executable, os.path.join(script_dir, "baseline.py"), task_dir]
         if args.worker_url:
             baseline_cmd.extend(["--worker-url", args.worker_url])
-        subprocess.run(baseline_cmd)
+        rc = subprocess.run(baseline_cmd).returncode
+        if rc != 0:
+            # /autoresearch reads the JSON from scaffold stdout and proceeds
+            # straight to `export AR_TASK_DIR=...`; if baseline failed but we
+            # still printed status=ok, the slash command would resume as if
+            # the task were in PLAN. Surface the failure so the caller stops
+            # and surfaces it to the user instead.
+            print(json.dumps({
+                "status": "error",
+                "task_dir": task_dir,
+                "error": (f"baseline eval failed (exit {rc}); "
+                          f"see [baseline]/[eval] stderr above"),
+                "hint": ("Inspect kernel.py / reference.py / worker logs, "
+                         "fix, then re-run: "
+                         f"python .autoresearch/scripts/baseline.py "
+                         f"\"{task_dir}\""),
+            }))
+            sys.exit(3)
     elif args.run_baseline:
         print(f"[scaffold] --run-baseline skipped: kernel.py not provided. "
               f"GENERATE_KERNEL phase will produce it; baseline runs after that.\n"
