@@ -40,6 +40,54 @@ FINISH = "FINISH"
 ALL_PHASES = {INIT, GENERATE_REF, GENERATE_KERNEL, BASELINE, PLAN, EDIT,
               DIAGNOSE, REPLAN, FINISH}
 
+# ---------------------------------------------------------------------------
+# Canonical filenames and templates
+# ---------------------------------------------------------------------------
+
+# Reference / kernel filenames at the task_dir root.
+DEFAULT_REF_FILE = "reference.py"
+
+# Files inside <task_dir>/.ar_state/. All path helpers below use these.
+PHASE_FILE = ".phase"
+PROGRESS_FILE = "progress.json"
+HISTORY_FILE = "history.jsonl"
+PLAN_FILE = "plan.md"
+EDIT_MARKER_FILE = ".edit_started"
+HEARTBEAT_FILE = ".heartbeat"
+ACTIVE_TASK_FILE = ".active_task"  # under .autoresearch/, not .ar_state/
+
+# Scaffold writes this when --kernel is omitted, so the placeholder is
+# distinguishable from a real seed kernel. The matching predicate lives in
+# `is_placeholder_file()` below — keep them in lockstep.
+KERNEL_PLACEHOLDER = (
+    "# TODO: GENERATE_KERNEL phase will fill this in.\n"
+    "# Read reference.py and write an initial seed kernel.\n"
+    "# Must define class ModelNew (may inherit from Model).\n"
+)
+
+# Maximum body length for a file to still count as the scaffold placeholder.
+# 200 chars is well above the placeholder template (~150 chars) and well
+# below any real implementation, even a one-liner ModelNew that imports
+# torch.nn.
+_PLACEHOLDER_MAX_LEN = 200
+
+
+def is_placeholder_file(path: str) -> bool:
+    """True iff `path` is missing OR is the scaffold TODO placeholder.
+
+    Single source of truth used by hook_post_edit, hook_post_bash._fresh_start,
+    and validate_kernel. Update this rule and the placeholder template
+    (`KERNEL_PLACEHOLDER`) together.
+    """
+    if not os.path.exists(path):
+        return True
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except OSError:
+        return True
+    return "TODO" in content and len(content) < _PLACEHOLDER_MAX_LEN
+
 # File-based task_dir tracking (env vars don't persist across Bash calls)
 # Use a FIXED absolute path derived from the project root, not __file__
 def _find_project_root() -> str:
@@ -52,7 +100,7 @@ def _find_project_root() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 _PROJECT_ROOT = _find_project_root()
-_ACTIVE_TASK_FILE = os.path.join(_PROJECT_ROOT, ".autoresearch", ".active_task")
+_ACTIVE_TASK_FILE = os.path.join(_PROJECT_ROOT, ".autoresearch", ACTIVE_TASK_FILE)
 
 
 def get_task_dir() -> str:
@@ -83,16 +131,19 @@ def touch_heartbeat(task_dir: str):
     """Update .ar_state/.heartbeat file to signal this task is active.
 
     Called from every hook invocation. resume.py checks mtime to detect
-    conflicting concurrent Claude Code sessions.
+    conflicting concurrent Claude Code sessions. A failed touch is reported
+    to stderr — silently swallowing it would make the session look dead in
+    a way that's nearly impossible to debug.
     """
     try:
-        heartbeat = state_path(task_dir, ".heartbeat")
+        heartbeat = state_path(task_dir, HEARTBEAT_FILE)
         os.makedirs(os.path.dirname(heartbeat), exist_ok=True)
+        import time
         with open(heartbeat, "w") as f:
-            import time
             f.write(f"{int(time.time())}\n")
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[AR] WARNING: heartbeat write failed ({e}); resume.py may "
+              f"misreport this task as inactive.", file=sys.stderr)
 
 
 def clear_task_dir():
@@ -269,7 +320,7 @@ def check_edit(phase: str, rel_path: str, editable_files) -> tuple:
     plan.md is machine-generated and always blocked. Internal state under
     .ar_state/ is always allowed (hooks and scripts use it).
     """
-    if rel_path == ".ar_state/plan.md":
+    if rel_path == f".ar_state/{PLAN_FILE}":
         return False, (
             "plan.md is machine-generated — never hand-edit it. Use "
             "`python .autoresearch/scripts/create_plan.py \"<task_dir>\" '<items_json>'` "
@@ -298,19 +349,19 @@ def state_path(task_dir: str, name: str) -> str:
 
 
 def plan_path(task_dir: str) -> str:
-    return state_path(task_dir, "plan.md")
+    return state_path(task_dir, PLAN_FILE)
 
 
 def progress_path(task_dir: str) -> str:
-    return state_path(task_dir, "progress.json")
+    return state_path(task_dir, PROGRESS_FILE)
 
 
 def history_path(task_dir: str) -> str:
-    return state_path(task_dir, "history.jsonl")
+    return state_path(task_dir, HISTORY_FILE)
 
 
 def edit_marker_path(task_dir: str) -> str:
-    return state_path(task_dir, ".edit_started")
+    return state_path(task_dir, EDIT_MARKER_FILE)
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +370,7 @@ def edit_marker_path(task_dir: str) -> str:
 
 def read_phase(task_dir: str) -> str:
     """Read current phase. Returns INIT if no phase file."""
-    path = state_path(task_dir, ".phase")
+    path = state_path(task_dir, PHASE_FILE)
     if not os.path.exists(path):
         return INIT
     with open(path, "r") as f:
@@ -330,7 +381,7 @@ def read_phase(task_dir: str) -> str:
 def write_phase(task_dir: str, phase: str):
     """Write phase to .ar_state/.phase."""
     assert phase in ALL_PHASES, f"Invalid phase: {phase}"
-    path = state_path(task_dir, ".phase")
+    path = state_path(task_dir, PHASE_FILE)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         f.write(phase)
@@ -369,6 +420,161 @@ def validate_plan(task_dir: str) -> tuple[bool, str]:
         return False, f"Must have exactly 1 (ACTIVE) pending item, found {len(active_items)}"
 
     return True, ""
+
+
+# ---------------------------------------------------------------------------
+# Reference / kernel runnability validators
+#
+# These are the single authority used by both hook_post_edit.py and
+# hook_post_bash.py to decide whether a fresh / just-edited reference.py or
+# kernel.py is real enough to advance the phase. Failure does NOT raise —
+# returns (False, human-readable reason) so callers can keep the phase pinned
+# and emit guidance for Claude to re-Edit.
+# ---------------------------------------------------------------------------
+
+# Subprocess template for running reference.py end-to-end on CPU. We only
+# care that import + Model(*get_init_inputs())(*get_inputs()) survives;
+# outputs are discarded (the worker captures them on first verify).
+_REF_RUNCHECK_SCRIPT = r'''
+import json, sys, traceback
+sys.path.insert(0, {task_dir!r})
+try:
+    import torch
+    from {ref_mod} import Model, get_inputs, get_init_inputs
+except Exception as e:
+    traceback.print_exc()
+    print(json.dumps({{"ok": False, "stage": "import", "error": str(e)}}))
+    sys.exit(1)
+try:
+    init_inputs = get_init_inputs()
+    model = Model(*init_inputs).cpu().eval()
+    inputs = get_inputs()
+    inputs = [x.cpu() if hasattr(x, "cpu") else x for x in inputs]
+    with torch.no_grad():
+        outs = model(*inputs)
+    if outs is None:
+        print(json.dumps({{"ok": False, "stage": "forward",
+                           "error": "Model.forward() returned None"}}))
+        sys.exit(1)
+    print(json.dumps({{"ok": True}}))
+except Exception as e:
+    traceback.print_exc()
+    print(json.dumps({{"ok": False, "stage": "run", "error": str(e)}}))
+    sys.exit(1)
+'''
+
+
+def validate_reference(task_dir: str) -> tuple[bool, str]:
+    """Two-stage runnability check on <task_dir>/reference.py.
+
+    Stage 1: AST symbol presence — delegates to scaffold.validate_ref so the
+             rule lives in exactly one place.
+    Stage 2: Subprocess that imports the module and runs Model.forward() on
+             CPU. CUDA / Ascend devices are masked off; KMP_DUPLICATE_LIB_OK
+             is set for Windows libiomp5 double-load.
+
+    Never raises. Returns (True, "") on success, (False, reason) otherwise.
+    """
+    ref_path = os.path.join(task_dir, "reference.py")
+    if not os.path.exists(ref_path):
+        return False, "reference.py does not exist"
+
+    try:
+        with open(ref_path, "r", encoding="utf-8") as f:
+            ref_code = f.read()
+    except OSError as e:
+        return False, f"cannot read reference.py: {e}"
+
+    # Stage 1: AST symbols.
+    try:
+        sys.path.insert(0, os.path.dirname(__file__))
+        from scaffold import validate_ref as _validate_ref_ast
+        _validate_ref_ast(ref_code, ref_path)
+    except ValueError as e:
+        return False, str(e)
+    except Exception as e:
+        return False, f"AST check failed: {e}"
+
+    # Stage 2: subprocess import + forward.
+    code = _REF_RUNCHECK_SCRIPT.format(task_dir=task_dir, ref_mod="reference")
+    env = {
+        **os.environ,
+        "CUDA_VISIBLE_DEVICES": "",
+        "ASCEND_RT_VISIBLE_DEVICES": "",
+        "KMP_DUPLICATE_LIB_OK": "TRUE",
+    }
+    try:
+        r = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True, text=True, env=env, cwd=task_dir, timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "reference.py runnability check timed out (>60s)"
+    except Exception as e:
+        return False, f"subprocess launch failed: {e}"
+
+    if r.returncode == 0:
+        return True, ""
+
+    # Parse the child's last JSON line for a clean error message; fall back to
+    # the raw stderr tail if the child crashed before printing JSON.
+    info = parse_last_json_line(r.stdout)
+    if info and not info.get("ok", False):
+        stage = info.get("stage", "?")
+        err = info.get("error", "(no detail)")
+        return False, f"reference.py failed at {stage}: {err}"
+    tail = (r.stderr or "")[-400:].strip()
+    return False, f"reference.py runnability check failed: {tail or '(no stderr)'}"
+
+
+def validate_kernel(task_dir: str) -> tuple[bool, str]:
+    """Static check on every editable file (typically kernel.py).
+
+    Rejects the TODO placeholder up front, then delegates to
+    quick_check._check_editable_files (which runs the CodeChecker pipeline:
+    syntax → compile → imports → stray-text → DSL → autotune).
+
+    Never raises. Returns (True, "") on success, (False, reason) otherwise.
+    """
+    sys.path.insert(0, os.path.dirname(__file__))
+    try:
+        from task_config import load_task_config
+    except Exception as e:
+        return False, f"cannot import task_config: {e}"
+
+    config = load_task_config(task_dir)
+    if config is None:
+        return False, "task.yaml not found or invalid"
+
+    # Placeholder fast-path: if any editable file is still the scaffold TODO,
+    # the kernel hasn't been generated yet. Subprocess CodeChecker would
+    # technically pass on a comment-only file, but the intent is to hold the
+    # phase at GENERATE_KERNEL until real code lands.
+    for fname in config.editable_files:
+        fpath = os.path.join(task_dir, fname)
+        if not os.path.exists(fpath):
+            return False, f"editable file missing: {fname}"
+        if is_placeholder_file(fpath):
+            return False, (f"{fname} is still the scaffold TODO placeholder — "
+                           f"write the seed kernel (must define class ModelNew)")
+
+    try:
+        from quick_check import _check_editable_files
+    except Exception as e:
+        return False, f"cannot import quick_check: {e}"
+
+    try:
+        issues = _check_editable_files(task_dir, config)
+    except Exception as e:
+        return False, f"CodeChecker pipeline crashed: {e}"
+
+    if not issues:
+        return True, ""
+
+    parts = []
+    for it in issues:
+        parts.append(f"- {it.get('file', '?')}: {it.get('report', '(no report)')}")
+    return False, "CodeChecker found issues:\n" + "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -417,11 +623,12 @@ def compute_resume_phase(task_dir: str) -> str:
     if eval_rounds >= max_rounds:
         return FINISH
 
-    # Baseline hasn't produced a valid seed metric yet → stay in BASELINE so
-    # the user re-runs it after fixing the kernel. Otherwise we'd silently
-    # jump to PLAN and start optimizing against no baseline.
+    # Baseline hasn't produced a valid seed metric yet → demote to
+    # GENERATE_KERNEL so Edit on kernel.py is permitted again (BASELINE phase
+    # blocks editable_files writes). Live-session baseline failure routes the
+    # same way; resume just mirrors that.
     if progress.get("seed_metric") is None:
-        return BASELINE
+        return GENERATE_KERNEL
 
     if not os.path.exists(plan_path(task_dir)) or status == "no_plan":
         return PLAN

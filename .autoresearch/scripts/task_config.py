@@ -1,11 +1,13 @@
 """
 Standalone task.yaml parser + eval execution.
 
-Parses the task config, generates the tarball shipped to the remote worker
-(reference.py, kernel.py, auto-generated verify/profile scripts), and
-dispatches to remote or local eval. Reference outputs are never shipped:
-worker self-caches them under /tmp/ar_cache/<op>_<sha(reference.py)>/
-reference.pt on first verify.
+Parses the task config, builds the tar.gz package (reference.py + editable
+files + auto-generated verify/profile scripts), and dispatches eval to
+either the remote worker (HTTP) or the in-process local backend
+(`local_worker`). Both transports consume the same package and converge on
+`_assemble_eval_result`. Reference outputs are never shipped: worker
+self-caches them under /tmp/ar_cache/<op>_<sha(reference.py)>/reference.pt
+on first verify; local backend recomputes on each run.
 
 Only requires: stdlib + pyyaml.
 """
@@ -43,9 +45,8 @@ class TaskConfig:
     arch: Optional[str] = None
 
     # Files
-    eval_script: Optional[str] = None
     editable_files: list = field(default_factory=list)
-    ref_file: Optional[str] = None
+    ref_file: str = "reference.py"
 
     # Eval params
     eval_timeout: int = 600
@@ -73,11 +74,6 @@ class TaskConfig:
     worker_urls: list = field(default_factory=list)
     """Worker Service URLs, e.g. ["http://127.0.0.1:9111"].
     When non-empty, eval is routed to remote workers instead of local subprocess."""
-
-    worker_ssh_host: Optional[str] = None
-    """Deprecated. Previously used to scp a locally captured reference.pt
-    to the worker; now worker self-caches on first verify, so this field is
-    ignored. Kept for yaml back-compat."""
 
 
 @dataclass
@@ -127,7 +123,6 @@ def load_task_config(task_dir: str) -> Optional[TaskConfig]:
     worker_urls = worker_block.get("urls", [])
     if isinstance(worker_urls, str):
         worker_urls = [u.strip() for u in worker_urls.split(",") if u.strip()]
-    worker_ssh_host = worker_block.get("ssh_host")
 
     return TaskConfig(
         name=name,
@@ -136,9 +131,8 @@ def load_task_config(task_dir: str) -> Optional[TaskConfig]:
         framework=raw.get("framework"),
         backend=raw.get("backend"),
         arch=raw.get("arch"),
-        eval_script=raw.get("eval_script"),
         editable_files=raw.get("editable_files", []),
-        ref_file=agent_block.get("ref_file"),
+        ref_file=agent_block.get("ref_file") or "reference.py",
         eval_timeout=eval_block.get("timeout", 600),
         primary_metric=metric_block.get("primary", "score"),
         lower_is_better=metric_block.get("lower_is_better", True),
@@ -150,7 +144,6 @@ def load_task_config(task_dir: str) -> Optional[TaskConfig]:
         smoke_test_timeout=smoke_block.get("timeout", 10),
         max_rounds=agent_block.get("max_rounds", 30),
         worker_urls=worker_urls,
-        worker_ssh_host=worker_ssh_host,
     )
 
 
@@ -207,7 +200,7 @@ def _gen_verify_script(config: TaskConfig, device_id: int = 0,
     """
     device = _detect_device_type(config)
     kernel_file = config.editable_files[0].replace(".py", "")
-    ref_file = (config.ref_file or "reference.py").replace(".py", "")
+    ref_file = config.ref_file.replace(".py", "")
     atol = config.correctness_atol
     rtol = config.correctness_rtol
     return f'''\
@@ -355,7 +348,7 @@ def _gen_profile_script(config: TaskConfig, device_id: int = 0,
     """
     device = _detect_device_type(config)
     kernel_file = config.editable_files[0].replace(".py", "")
-    ref_file = (config.ref_file or "reference.py").replace(".py", "")
+    ref_file = config.ref_file.replace(".py", "")
 
     if mode == "base":
         import_line = f"from {ref_file} import Model as TargetModel, get_inputs, get_init_inputs"
@@ -493,7 +486,7 @@ def _compute_worker_ref_path(task_dir: str, config: TaskConfig) -> str:
     Different reference.py content → different path → automatic invalidation.
     Same reference.py across many kernel iterations → cache hits after round 1.
     """
-    ref_file = config.ref_file or "reference.py"
+    ref_file = config.ref_file
     ref_full = os.path.join(task_dir, ref_file)
     if os.path.isfile(ref_full):
         with open(ref_full, "rb") as f:
@@ -526,11 +519,10 @@ def _build_package(task_dir: str, config: TaskConfig, device_id: int = 0) -> byt
             if os.path.exists(fpath):
                 tar.add(fpath, arcname=fname)
 
-        # Add reference file
-        if config.ref_file:
-            ref_path = os.path.join(task_dir, config.ref_file)
-            if os.path.exists(ref_path):
-                tar.add(ref_path, arcname=config.ref_file)
+        # Add reference file (always set; default is "reference.py")
+        ref_path = os.path.join(task_dir, config.ref_file)
+        if os.path.exists(ref_path):
+            tar.add(ref_path, arcname=config.ref_file)
 
         # Add any other .py files in task_dir root (support files)
         for f in os.listdir(task_dir):
@@ -661,6 +653,76 @@ def _worker_profile(worker_url: str, package: bytes, task_id: str,
     return _multipart_post(url, fields, files, timeout=timeout + 30)
 
 
+def _assemble_eval_result(verify_resp: dict, profile_resp: dict) -> EvalResult:
+    """Combine verify + profile responses into an EvalResult.
+
+    Shared by `run_remote_eval` (HTTP transport) and `run_local_eval`
+    (subprocess transport). Both transports return the same dict shape:
+
+        verify_resp:  {"success": bool, "log": str, "artifacts": {...}}
+        profile_resp: {"gen_time": float|None, "base_time": float|None,
+                       "log": str, "artifacts": {...}}
+
+    so this function is the single place that decides correctness, picks
+    metrics, and computes speedup. Keeping it transport-agnostic means
+    fixing a parsing bug in one place fixes it for both.
+    """
+    correctness = verify_resp.get("success", False)
+    verify_log = verify_resp.get("log", "")
+
+    metrics: dict = {}
+    gen_time = profile_resp.get("gen_time")
+    base_time = profile_resp.get("base_time")
+    artifacts = profile_resp.get("artifacts", {}) or {}
+
+    # Fallback: parse from artifact JSON files (when the transport returns
+    # timing only inside result files, not in top-level fields).
+    if gen_time is None and "generation_profile_result.json" in artifacts:
+        try:
+            gen_time = json.loads(artifacts["generation_profile_result.json"]).get("avg_time_us")
+        except (json.JSONDecodeError, TypeError):
+            pass
+    if base_time is None and "base_profile_result.json" in artifacts:
+        try:
+            base_time = json.loads(artifacts["base_profile_result.json"]).get("avg_time_us")
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    def _valid(v):
+        return isinstance(v, (int, float)) and 0 < v < float("inf")
+
+    gen_ok, base_ok = _valid(gen_time), _valid(base_time)
+    if gen_ok:
+        metrics["latency_us"] = gen_time
+    else:
+        print(f"[eval] WARNING: no valid gen_time (got {gen_time!r}) — "
+              f"kernel profile likely failed", file=sys.stderr)
+    if base_ok:
+        metrics["ref_latency_us"] = base_time
+    else:
+        print(f"[eval] WARNING: no valid base_time (got {base_time!r}) — "
+              f"speedup vs reference unavailable", file=sys.stderr)
+    if gen_ok and base_ok:
+        metrics["speedup_vs_ref"] = base_time / gen_time
+    elif profile_resp.get("speedup"):
+        metrics["speedup_vs_ref"] = profile_resp["speedup"]
+
+    for k, v in profile_resp.items():
+        if k not in ("success", "log", "gen_time", "base_time", "speedup",
+                     "artifacts", "task_id", "returncode") \
+                and isinstance(v, (int, float)):
+            metrics[k] = v
+
+    profile_log = profile_resp.get("log", "")
+    return EvalResult(
+        correctness=correctness,
+        metrics=metrics,
+        error=None if correctness else
+              "verify failed (kernel broken); ref profile may still be present",
+        raw_output=(verify_log + "\n" + profile_log)[-4096:],
+    )
+
+
 def run_remote_eval(task_dir: str, config: TaskConfig,
                     worker_urls: Optional[list] = None) -> EvalResult:
     """Run eval via remote Worker Service.
@@ -713,9 +775,6 @@ def run_remote_eval(task_dir: str, config: TaskConfig,
         except Exception as e:
             return EvalResult(correctness=False, error=f"verify request failed: {e}")
 
-        correctness = verify_resp.get("success", False)
-        log = verify_resp.get("log", "")
-
         # Step 2: Profile — ALWAYS run it, even if verify failed. The profile
         # endpoint runs both profile_base.py (PyTorch reference, uses
         # reference.py only) and profile_generation.py (the seed/kernel,
@@ -728,73 +787,14 @@ def run_remote_eval(task_dir: str, config: TaskConfig,
             )
         except Exception as e:
             return EvalResult(
-                correctness=correctness,
+                correctness=verify_resp.get("success", False),
                 metrics={},
-                error=f"verify={correctness}; profile request failed: {e}",
-                raw_output=log[-2048:],
+                error=f"verify={verify_resp.get('success', False)}; "
+                      f"profile request failed: {e}",
+                raw_output=verify_resp.get("log", "")[-2048:],
             )
 
-        # Parse profile metrics — try top-level fields first, then artifacts
-        metrics = {}
-        gen_time = profile_resp.get("gen_time")
-        base_time = profile_resp.get("base_time")
-
-        # Fallback: parse from artifacts JSON files (when profiler returns
-        # timing in result files rather than top-level response fields)
-        artifacts = profile_resp.get("artifacts", {})
-        if gen_time is None and "generation_profile_result.json" in artifacts:
-            try:
-                gen_data = json.loads(artifacts["generation_profile_result.json"])
-                gen_time = gen_data.get("avg_time_us")
-            except (json.JSONDecodeError, TypeError):
-                pass
-        if base_time is None and "base_profile_result.json" in artifacts:
-            try:
-                base_data = json.loads(artifacts["base_profile_result.json"])
-                base_time = base_data.get("avg_time_us")
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-        # Worker returns inf when a profile script didn't produce a result file
-        # (cross-backend, script crash, missing JSON). Treat inf/None/<=0 as
-        # "no data" so downstream doesn't compute bogus speedups.
-        def _valid(v):
-            return isinstance(v, (int, float)) and 0 < v < float("inf")
-
-        gen_ok, base_ok = _valid(gen_time), _valid(base_time)
-        if gen_ok:
-            metrics["latency_us"] = gen_time
-        else:
-            print(f"[remote_eval] WARNING: no valid gen_time (got {gen_time!r}) — kernel profile likely failed",
-                  file=sys.stderr)
-        if base_ok:
-            metrics["ref_latency_us"] = base_time
-        else:
-            print(f"[remote_eval] WARNING: no valid base_time (got {base_time!r}) — speedup vs reference unavailable",
-                  file=sys.stderr)
-        if gen_ok and base_ok:
-            metrics["speedup_vs_ref"] = base_time / gen_time
-        elif profile_resp.get("speedup"):
-            metrics["speedup_vs_ref"] = profile_resp["speedup"]
-
-        # Also capture any extra numeric metrics from profile response
-        for k, v in profile_resp.items():
-            if k not in ("success", "log", "gen_time", "base_time", "speedup",
-                         "artifacts", "task_id") and isinstance(v, (int, float)):
-                metrics[k] = v
-
-        profile_log = profile_resp.get("log", "")
-
-        # Propagate verify failure via correctness=False, but keep any ref
-        # timing we managed to capture. Downstream (_baseline_init.py,
-        # keep_or_discard) treats correctness=False as FAIL, which is exactly
-        # what a broken kernel should produce.
-        return EvalResult(
-            correctness=correctness,
-            metrics=metrics,
-            error=None if correctness else "verify failed (kernel broken); ref profile may still be present",
-            raw_output=(log + "\n" + profile_log)[-4096:],
-        )
+        return _assemble_eval_result(verify_resp, profile_resp)
 
     finally:
         # Always release device
@@ -803,75 +803,36 @@ def run_remote_eval(task_dir: str, config: TaskConfig,
 
 
 # ---------------------------------------------------------------------------
-# Local eval execution (subprocess-based)
+# Local eval execution (subprocess-based, same generated scripts as remote)
 # ---------------------------------------------------------------------------
-
-def _resolve_eval_command(task_dir: str, config: TaskConfig) -> Optional[list]:
-    """Determine the eval command to run."""
-    if config.eval_script:
-        eval_script = os.path.join(task_dir, config.eval_script)
-        if not os.path.exists(eval_script):
-            return None
-        return [sys.executable, eval_script]
-    return None
-
-
-def _resolve_env(config: TaskConfig, device_id: Optional[int] = None) -> dict:
-    """Build environment variables for eval subprocess."""
-    env = os.environ.copy()
-    if device_id is not None:
-        env["CUDA_VISIBLE_DEVICES"] = str(device_id)
-        env["ASCEND_RT_VISIBLE_DEVICES"] = str(device_id)
-    return env
-
 
 def run_local_eval(task_dir: str, config: TaskConfig,
                    device_id: Optional[int] = None) -> EvalResult:
-    """Run eval via local subprocess.
+    """Run eval entirely in local subprocesses.
 
-    Eval script protocol:
-      - stdout last line must be JSON: {"correctness": true/false, "latency_us": ...}
-      - exit code 0 = correctness pass, 1 = fail or crash
+    Builds the same tar.gz package the remote worker would receive, then runs
+    the auto-generated `verify_<op>.py` and `profile_<op>_*.py` scripts via
+    `local_worker.local_verify` / `local_worker.local_profile`. Both
+    transports converge on `_assemble_eval_result` so downstream code can't
+    tell them apart.
+
+    The pre-refactor implementation ran `config.eval_script` as a
+    user-supplied entry point. That field was never set by scaffold and is
+    no longer consulted; it stays in TaskConfig only for yaml back-compat.
     """
-    cmd = _resolve_eval_command(task_dir, config)
-    if cmd is None:
-        return EvalResult(
-            correctness=False,
-            error=f"eval script not found: {config.eval_script or '(none specified)'}",
-        )
+    from local_worker import local_verify, local_profile
 
-    env = _resolve_env(config, device_id)
-
+    dev = 0 if device_id is None else int(device_id)
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True,
-            timeout=config.eval_timeout, cwd=task_dir, env=env,
-        )
-    except subprocess.TimeoutExpired:
-        return EvalResult(correctness=False, error=f"eval timed out after {config.eval_timeout}s")
+        package = _build_package(task_dir, config, device_id=dev)
     except Exception as e:
-        return EvalResult(correctness=False, error=f"eval failed to launch: {e}")
+        return EvalResult(correctness=False, error=f"failed to build package: {e}")
 
-    raw_output = (result.stdout or "") + (result.stderr or "")
-
-    # Contract: eval script prints a JSON object as its last stdout line.
-    from phase_machine import parse_last_json_line  # lazy: avoid import cycle
-    data = parse_last_json_line(result.stdout)
-    if data is not None:
-        correctness = data.get("correctness", False)
-        metrics = {k: v for k, v in data.items() if k != "correctness"}
-        error = None
-    else:
-        correctness = False
-        metrics = {}
-        if result.returncode != 0:
-            stderr_tail = (result.stderr or "")[-500:]
-            stdout_tail = (result.stdout or "")[-500:]
-            error = f"exit code {result.returncode}\n{stderr_tail}\n{stdout_tail}".strip()
-        else:
-            error = "eval produced no JSON output"
-
-    return EvalResult(correctness=correctness, metrics=metrics, error=error, raw_output=raw_output)
+    print(f"[local_eval] Running verify...", file=sys.stderr)
+    verify_resp = local_verify(package, config.name, config.eval_timeout, dev)
+    print(f"[local_eval] Running profile...", file=sys.stderr)
+    profile_resp = local_profile(package, config.name, config.eval_timeout, dev)
+    return _assemble_eval_result(verify_resp, profile_resp)
 
 
 # ---------------------------------------------------------------------------
@@ -881,17 +842,39 @@ def run_local_eval(task_dir: str, config: TaskConfig,
 def run_eval(task_dir: str, config: TaskConfig,
              device_id: Optional[int] = None,
              worker_urls: Optional[list] = None) -> EvalResult:
-    """Run eval — automatically routes to remote worker or local subprocess.
+    """Three-way routing:
 
-    Priority:
-      1. If worker_urls is passed explicitly → remote eval
-      2. If config.worker_urls is non-empty → remote eval
-      3. Otherwise → local subprocess eval
+      1. Explicit worker URLs (CLI or task.yaml) → remote.
+      2. Else, if `local_worker.detect_local_backend(config.backend)`
+         reports the runtime is available → local subprocess.
+      3. Else → EvalResult with a clear "no execution backend" error so the
+         user knows to either pass --worker-url or install the matching
+         runtime (torch / torch_npu / CUDA driver).
+
+    The local and remote branches share the same package and the same
+    result-assembly function (`_assemble_eval_result`), so downstream code
+    sees identical EvalResult shapes regardless of transport.
     """
     urls = worker_urls or config.worker_urls
     if urls:
         return run_remote_eval(task_dir, config, worker_urls=urls)
-    return run_local_eval(task_dir, config, device_id=device_id)
+
+    from local_worker import detect_local_backend
+    backend_key = (config.backend or "cpu").lower()
+    ok, why = detect_local_backend(backend_key)
+    if ok:
+        print(f"[eval] local backend ok ({backend_key}): {why}", file=sys.stderr)
+        return run_local_eval(task_dir, config, device_id=device_id)
+
+    return EvalResult(
+        correctness=False,
+        error=(
+            f"no execution backend available for backend={backend_key!r}: "
+            f"{why}. Either pass --worker-url to use a remote worker, or "
+            f"install the matching runtime locally (torch + torch_npu for "
+            f"ascend, torch + CUDA for cuda, torch alone for cpu)."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ from hook_utils import read_hook_input, emit_status
 from phase_machine import (
     read_phase, write_phase, get_guidance, _load_config_safe,
     get_task_dir, touch_heartbeat,
+    validate_reference, validate_kernel, is_placeholder_file,
     EDIT, BASELINE, GENERATE_REF, GENERATE_KERNEL,
 )
 
@@ -54,19 +55,35 @@ def main():
             is_editable = False
 
     if is_ref and phase == GENERATE_REF:
-        kernel = os.path.join(task_dir, "kernel.py")
-        placeholder = True
-        if os.path.exists(kernel):
-            with open(kernel, "r") as f:
-                content = f.read()
-            placeholder = "TODO" in content or len(content) < 50
-        next_phase = GENERATE_KERNEL if placeholder else BASELINE
+        ok, err = validate_reference(task_dir)
+        if not ok:
+            emit_status(
+                f"[AR] reference.py invalid — phase stays at GENERATE_REF.\n"
+                f"     {err}\n"
+                f"     Re-Edit reference.py to fix; baseline will not run "
+                f"until it passes."
+            )
+            sys.exit(0)
+        # Reference is good. Route to GENERATE_KERNEL if kernel.py is still
+        # the scaffold placeholder, else straight to BASELINE.
+        next_phase = GENERATE_KERNEL if is_placeholder_file(
+            os.path.join(task_dir, "kernel.py")
+        ) else BASELINE
         write_phase(task_dir, next_phase)
-        emit_status(f"[AR] Reference written. Phase -> {next_phase}. {get_guidance(task_dir)}")
+        emit_status(f"[AR] reference.py validated. Phase -> {next_phase}. {get_guidance(task_dir)}")
 
     elif is_editable and phase == GENERATE_KERNEL:
+        ok, err = validate_kernel(task_dir)
+        if not ok:
+            emit_status(
+                f"[AR] kernel.py invalid — phase stays at GENERATE_KERNEL.\n"
+                f"     {err}\n"
+                f"     Re-Edit kernel.py to fix; baseline will not run "
+                f"until it passes."
+            )
+            sys.exit(0)
         write_phase(task_dir, BASELINE)
-        emit_status(f"[AR] Kernel generated. Phase -> BASELINE. {get_guidance(task_dir)}")
+        emit_status(f"[AR] kernel.py validated. Phase -> BASELINE. {get_guidance(task_dir)}")
 
     elif is_editable and phase == EDIT:
         emit_status(

@@ -4,8 +4,11 @@ Task directory scaffolder for Claude Code autoresearch.
 
 Zero AKG dependency. Creates a self-contained task directory with:
   - task.yaml (config)
-  - reference.py (baseline implementation)
-  - kernel.py (editable, initially copied from reference or --kernel)
+  - reference.py (correctness baseline; required to import + run end-to-end
+    on CPU — scaffold gates on `phase_machine.validate_reference`)
+  - kernel.py (editable; --kernel writes the user file directly, otherwise
+    the canonical KERNEL_PLACEHOLDER from phase_machine — the placeholder
+    routes the task to GENERATE_KERNEL on first activation)
   - .ar_state/ (progress tracking)
   - .git/ (baseline commit)
 
@@ -75,7 +78,6 @@ def scaffold_task_dir(
     backend: str = "",
     arch: str = "",
     worker_urls: list | None = None,
-    worker_ssh_host: str | None = None,
     max_rounds: int = 20,
     eval_timeout: int = 120,
     output_dir: str | None = None,
@@ -99,9 +101,16 @@ def scaffold_task_dir(
     # Write reference.py
     _write(task_dir, "reference.py", ref_code)
 
-    # Write editable file (kernel.py)
-    # If no initial kernel provided, copy from reference as starting point
-    _write(task_dir, editable_filename, kernel_code or ref_code)
+    # Write editable file (kernel.py). With no initial kernel, write the
+    # canonical TODO placeholder from phase_machine — phase_machine.is_
+    # placeholder_file uses the matching predicate, so the routing logic
+    # in hooks/scaffold/validators stays in lockstep with this template.
+    if kernel_code is not None:
+        _write(task_dir, editable_filename, kernel_code)
+    else:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from phase_machine import KERNEL_PLACEHOLDER
+        _write(task_dir, editable_filename, KERNEL_PLACEHOLDER)
 
     # Generate task.yaml
     task_yaml = {
@@ -126,13 +135,8 @@ def scaffold_task_dir(
     }
 
     # Add worker config if provided
-    if worker_urls or worker_ssh_host:
-        worker_cfg = {}
-        if worker_urls:
-            worker_cfg["urls"] = worker_urls
-        if worker_ssh_host:
-            worker_cfg["ssh_host"] = worker_ssh_host
-        task_yaml["worker"] = worker_cfg
+    if worker_urls:
+        task_yaml["worker"] = {"urls": worker_urls}
 
     yaml_content = yaml.dump(task_yaml, default_flow_style=False, allow_unicode=True)
     _write(task_dir, "task.yaml", yaml_content)
@@ -193,10 +197,6 @@ def main():
     parser.add_argument("--framework", default="torch")
     parser.add_argument("--worker-url", default=None,
                         help="Remote worker URL(s), comma-separated")
-    parser.add_argument("--worker-ssh-host", default=None,
-                        help=("Deprecated no-op. Worker now self-caches ref "
-                              "outputs on first verify; local client never "
-                              "ships reference.pt. Kept for yaml back-compat."))
     parser.add_argument("--max-rounds", type=int, default=20)
     parser.add_argument("--eval-timeout", type=int, default=120)
     parser.add_argument("--output-dir", default=None,
@@ -276,7 +276,6 @@ def main():
         backend=args.backend,
         arch=args.arch,
         worker_urls=worker_urls,
-        worker_ssh_host=args.worker_ssh_host,
         max_rounds=args.max_rounds,
         eval_timeout=args.eval_timeout,
         output_dir=args.output_dir,
@@ -287,11 +286,33 @@ def main():
     for f in sorted(os.listdir(task_dir)):
         print(f"  {f}", file=sys.stderr)
 
+    # Runnability gate: any mode that supplied a real --ref must produce a
+    # reference.py that imports AND survives one Model.forward() pass on CPU.
+    # The reference is the correctness baseline for every subsequent verify;
+    # if it doesn't run, nothing downstream is meaningful. AST symbol presence
+    # is checked earlier (see validate_ref); this catches torch import errors,
+    # bad get_inputs shapes, missing ops, etc. Skipped in --desc mode where
+    # reference.py is still a TODO stub.
+    if args.ref:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from phase_machine import validate_reference
+        ok, err = validate_reference(task_dir)
+        if not ok:
+            print(json.dumps({
+                "status": "error",
+                "task_dir": task_dir,
+                "error": f"reference.py failed runnability check: {err}",
+                "hint": ("Fix the file under workspace/ and re-run /autoresearch. "
+                         "scaffold left the partial task_dir in place for "
+                         "inspection."),
+            }))
+            sys.exit(2)
+
     # Reference outputs are no longer captured locally. Worker side caches
     # them on the first verify round (keyed on reference.py sha) and reuses
     # across rounds. This saves a multi-GiB upload per large-tensor op.
 
-    if args.run_baseline and args.ref:
+    if args.run_baseline and args.ref and args.kernel:
         print(f"[scaffold] Running baseline eval...", file=sys.stderr)
         script_dir = os.path.dirname(os.path.abspath(__file__))
         baseline_cmd = [sys.executable, os.path.join(script_dir, "baseline.py"), task_dir]
@@ -299,7 +320,11 @@ def main():
             baseline_cmd.extend(["--worker-url", args.worker_url])
         subprocess.run(baseline_cmd)
     elif args.run_baseline:
-        print(f"[scaffold] --run-baseline skipped (--desc mode: reference not ready)",
+        print(f"[scaffold] --run-baseline skipped: kernel.py not provided. "
+              f"GENERATE_KERNEL phase will produce it; baseline runs after that.\n"
+              f"[scaffold] Tip: baseline.py uses a local execution backend "
+              f"automatically when torch / torch_npu for the selected backend "
+              f"is installed — no --worker-url needed in that case.",
               file=sys.stderr)
 
     # Output

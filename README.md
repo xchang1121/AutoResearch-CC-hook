@@ -83,7 +83,23 @@ metric:
 verify 失败时 ref 时延仍由 `/api/v1/profile` 单独测得，与 verify 解耦，
 dashboard 顶栏始终显示 PyTorch baseline。
 
-## 远程 Worker
+## 执行后端
+
+verify / profile 由 `task_config._gen_verify_script` 和 `_gen_profile_script`
+当场生成自包含 Python 脚本，两个 transport 共用：
+
+- **本地后端（默认）** — 没配 `--worker-url` 时自动启用。在
+  [.autoresearch/scripts/local_worker.py](.autoresearch/scripts/local_worker.py)
+  里把生成脚本解到 `tempfile` 跑 `subprocess`。开机自检：`torch.cuda` /
+  `torch_npu` / cpu 三选一，缺哪个报哪个。适合单机开发和调试。
+- **远端 Worker** — 通过 `--worker-url` 显式指定。框架打 tarball POST
+  到 worker，worker 端解包跑同一份脚本。适合 NPU / 多卡 / msprof 精
+  确计时场景。
+
+两条腿出来的 `EvalResult` 结构、字段、metric 名都一致，下游不需要
+区分。
+
+### 远程 Worker
 
 远端 NPU / CUDA 硬件通过 SSH tunnel 接入。评测路径复用 akg agent 的 worker
 实现：框架负责打包 + 调用 `/api/v1/verify` 和 `/api/v1/profile`，实际

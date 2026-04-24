@@ -4,10 +4,15 @@ PostToolUse hook for Bash — phase auto-advancement after user-issued commands.
 
 The only commands that advance phase from this hook are those Claude runs
 directly via the Bash tool:
-  - `export AR_TASK_DIR=...` → activate task, compute starting phase
-  - `baseline.py`             → PLAN (on success)
-  - `pipeline.py`              → whatever phase pipeline.py itself wrote
-  - `create_plan.py`           → EDIT (on plan validation pass)
+  - `export AR_TASK_DIR=...`  → activate task, compute starting phase
+                                (fresh task: validate ref/kernel and pin the
+                                appropriate GENERATE_* / BASELINE phase)
+  - `baseline.py`             → PLAN on success;
+                                GENERATE_KERNEL on seed-metric failure
+                                (capped at 3 retries via baseline_retries)
+  - `pipeline.py`             → whatever phase pipeline.py itself wrote
+  - `create_plan.py`          → EDIT on plan validation pass
+                                (called from PLAN / DIAGNOSE / REPLAN)
 
 The inner pipeline steps (quick_check / eval_wrapper / keep_or_discard /
 settle) are subprocess children of pipeline.py and never re-enter this hook,
@@ -24,7 +29,9 @@ from phase_machine import (
     read_phase, write_phase, get_guidance, compute_resume_phase,
     get_task_dir, set_task_dir, get_active_item, touch_heartbeat,
     load_progress, update_progress,
+    validate_reference, validate_kernel, is_placeholder_file,
     progress_path, history_path, plan_path, edit_marker_path, state_path,
+    PHASE_FILE,
     BASELINE, PLAN, EDIT, DIAGNOSE, REPLAN, GENERATE_REF, GENERATE_KERNEL,
 )
 
@@ -63,7 +70,7 @@ def _handle_activation(new_task_dir: str):
     set_task_dir(new_task_dir)
     _clean_stale_edit_marker(new_task_dir)
 
-    has_phase = os.path.exists(state_path(new_task_dir, ".phase"))
+    has_phase = os.path.exists(state_path(new_task_dir, PHASE_FILE))
     has_progress = os.path.exists(progress_path(new_task_dir))
 
     if has_phase:
@@ -82,28 +89,44 @@ def _handle_activation(new_task_dir: str):
 
 
 def _fresh_start(task_dir: str):
-    """Pick initial phase for a fresh task based on which files are present."""
-    def _real(path: str, needle: str = "") -> bool:
-        if not os.path.exists(path):
-            return False
-        with open(path, "r") as f:
-            content = f.read()
-        if "TODO" in content:
-            return False
-        return (len(content) > 50) and (needle in content if needle else True)
+    """Pick initial phase for a fresh task based on which files are present
+    AND validate them. `is_placeholder_file` (canonical) lets us short-
+    circuit the subprocess-import step on a known stub; otherwise the same
+    validate_reference / validate_kernel that gates phase advances also
+    pins the right phase from the moment of activation."""
+    ref_path = os.path.join(task_dir, "reference.py")
+    kernel_path = os.path.join(task_dir, "kernel.py")
 
-    ref_ok = _real(os.path.join(task_dir, "reference.py"), "class Model")
-    kernel_ok = _real(os.path.join(task_dir, "kernel.py"))
-
-    if not ref_ok:
+    if is_placeholder_file(ref_path):
         write_phase(task_dir, GENERATE_REF)
         emit_status(f"[AR] Fresh start (no reference). Phase -> GENERATE_REF. {get_guidance(task_dir)}")
-    elif not kernel_ok:
+        return
+
+    ok, err = validate_reference(task_dir)
+    if not ok:
+        write_phase(task_dir, GENERATE_REF)
+        emit_status(
+            f"[AR] reference.py present but invalid — Phase -> GENERATE_REF.\n"
+            f"     {err}"
+        )
+        return
+
+    if is_placeholder_file(kernel_path):
         write_phase(task_dir, GENERATE_KERNEL)
         emit_status(f"[AR] Fresh start (no kernel). Phase -> GENERATE_KERNEL. {get_guidance(task_dir)}")
-    else:
-        write_phase(task_dir, BASELINE)
-        emit_status(f"[AR] Fresh start. Phase -> BASELINE. {get_guidance(task_dir)}")
+        return
+
+    ok, err = validate_kernel(task_dir)
+    if not ok:
+        write_phase(task_dir, GENERATE_KERNEL)
+        emit_status(
+            f"[AR] kernel.py present but invalid — Phase -> GENERATE_KERNEL.\n"
+            f"     {err}"
+        )
+        return
+
+    write_phase(task_dir, BASELINE)
+    emit_status(f"[AR] Fresh start. Phase -> BASELINE. {get_guidance(task_dir)}")
 
 
 def _progress_update_for_plan(task_dir: str, phase: str):
@@ -141,13 +164,33 @@ def main():
         progress = load_progress(task_dir)
         if not progress:
             emit_status("[AR] Baseline failed (no progress.json). Retry.")
-        elif progress.get("seed_metric") is None:
-            emit_status(
-                "[AR] Baseline profiled NO timing for the seed kernel. "
-                "Fix kernel.py (see worker log for compile/runtime error) and "
-                f"re-run: python .autoresearch/scripts/baseline.py \"{task_dir}\""
-            )
+        elif (progress.get("seed_metric") is None
+              or progress.get("baseline_correctness") is False):
+            # Demote to GENERATE_KERNEL so Edit on kernel.py is permitted
+            # again — BASELINE's _EDIT_RULES forbid it. Cap at 3 attempts
+            # so a fundamentally-broken kernel doesn't loop forever; after
+            # that we leave the phase pinned and ask for a manual fix.
+            retries = int(progress.get("baseline_retries", 0)) + 1
+            update_progress(task_dir, baseline_retries=retries)
+            reason = ("seed kernel produced no timing"
+                      if progress.get("seed_metric") is None
+                      else "seed kernel failed correctness check")
+            if retries >= 3:
+                emit_status(
+                    f"[AR] Baseline failed {retries}x ({reason}). "
+                    f"Stopping auto-retry. Inspect the worker log, fix "
+                    f"kernel.py manually, then re-run: "
+                    f"python .autoresearch/scripts/baseline.py \"{task_dir}\""
+                )
+            else:
+                write_phase(task_dir, GENERATE_KERNEL)
+                emit_status(
+                    f"[AR] Baseline failed (attempt {retries}/3): {reason}. "
+                    f"Phase -> GENERATE_KERNEL so kernel.py becomes editable. "
+                    f"Fix the kernel, then re-run baseline.py."
+                )
         else:
+            update_progress(task_dir, baseline_retries=0)
             write_phase(task_dir, PLAN)
             emit_status(f"[AR] Baseline complete. Phase -> PLAN. {get_guidance(task_dir)}")
 
