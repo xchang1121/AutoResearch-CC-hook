@@ -194,31 +194,33 @@ worker 端同样 **不需要装 `akg_agents`**。
 
 ### 启动远端 worker
 
-把 autoresearch 整个项目同步到 NPU 机器。然后**在 remote shell 里**
-（SSH 进去或物理登录）激活好 python 环境后：
+项目唯一入口：[ar_cli.py](.autoresearch/scripts/ar_cli.py)。所有 worker
+生命周期操作都走这一条命令。**在 remote shell 里**（SSH 进去或物理登录）
+激活好 python 环境后：
 
 ```bash
-# foreground（Ctrl-C 退出）
-python .autoresearch/scripts/server_related/start_worker_service.py \
-    --backend ascend --arch ascend910b3 --devices 5 --port 9056
+# 起（daemon；detach + log → /tmp/ar_worker_9111.log）
+python .autoresearch/scripts/ar_cli.py worker --start \
+    --backend ascend --arch ascend910b3 --devices 2,5 \
+    --host 127.0.0.1 --port 9111 --bg
 
-# daemon（推荐；detach + log → /tmp/ar_worker_9056.log）
-python .autoresearch/scripts/server_related/start_worker_service.py \
-    --backend ascend --arch ascend910b3 --devices 5 --port 9056 --bg
+# 查
+python .autoresearch/scripts/ar_cli.py worker --status --port 9111
 
-# 关掉
-python .autoresearch/scripts/server_related/stop_worker_service.py --port 9056
+# 停
+python .autoresearch/scripts/ar_cli.py worker --stop --port 9111
 ```
 
-Daemon 模式会一直轮询端口到就绪（最多 30s），如果 worker 起不来会把 log
-尾部打出来，不会留下僵尸 PID。
+不加 `--bg` 就是 foreground（Ctrl-C 退出），适合调试看 uvicorn 日志。
 
-`--devices` 支持逗号分隔多卡，如 `--devices 0,1,2,3`。host 默认
-`0.0.0.0`，要换改 `--host`。跨平台（Windows/Linux/macOS）都能跑。
+Daemon 模式会轮询端口到就绪（最多 30s），worker 起不来会 dump log 尾部，
+不会留僵尸 PID。`--stop` 先用 `ss` / `lsof` 定位 PID，确认 cmdline 含
+`ar_vendored.worker.server` 才 kill — 撞到别人占同端口的 service 不会
+误伤。跨平台（Windows / Linux / macOS）。
 
-脚本不帮你激活 python 环境 — 用户自己 `conda activate` / `source env.sh`
-/ 用 venv 都行，只要进脚本时 `python -c "import fastapi, uvicorn, torch,
-torch_npu"` 能跑通。
+CLI 不帮你激活 python 环境 — 用户自己 `conda activate` / `source env.sh`
+/ 用 venv 都行，只要进 `ar_cli.py` 时 `python -c "import fastapi,
+uvicorn, torch, torch_npu"` 能跑通。
 
 worker 进程的运行期依赖（用哪个 DSL 才需要装哪些）：
 
@@ -565,8 +567,7 @@ knowledge 文档仅通过 Glob + Read 访问，不进入 `.claude/`。
 | `.autoresearch/config.yaml` | DSL → backend/arch/framework/device_type 预设表；worker_only_modules；hallucinated_scripts | ✔ |
 | `.autoresearch/code_checker.yaml` | CodeChecker 规则表（triton 模板 / autotune 合规） | ✔ |
 | `.autoresearch/scripts/ar_vendored/` | vendor 自 akg-hitl 的 DSL adapter + profiler + msprof/nsys runner + HTTP worker server | ✔ |
-| `.autoresearch/scripts/server_related/start_worker_service.py` | vendored worker 启动脚本（`--bg` daemon 模式，跨平台） | ✔ |
-| `.autoresearch/scripts/server_related/stop_worker_service.py` | 按端口关掉 daemon worker（带 cmdline 白名单校验） | ✔ |
+| `.autoresearch/scripts/ar_cli.py` | 统一 CLI：`ar_cli worker --start/--stop/--status`，支持 `--bg` daemon | ✔ |
 | `task.yaml` | 任务配置（每个 task 目录一份，含 dsl/backend/arch/framework 四字段） | 随 task 分发到 worker |
 | `.ar_state/progress.json` | 运行时状态 | — |
 | `.ar_state/plan.md` | 规划 + 结算历史（权威态） | — |
