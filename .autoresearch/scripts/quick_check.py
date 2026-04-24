@@ -28,15 +28,24 @@ from code_checker import CodeChecker
 
 
 def _check_editable_files(task_dir: str, config) -> list:
-    """Static-check every editable .py via the ported CodeChecker."""
-    checker = CodeChecker(backend=config.backend or "", dsl=config.dsl or "")
+    """Static-check every editable .py via the ported CodeChecker.
+
+    Honors `config.code_checker_enabled` — when off, only the file-existence
+    check fires; the AST/import/DSL/autotune pipeline is skipped. This is
+    the single gate consulted by both the runtime quick check and
+    `phase_machine.validate_kernel`.
+    """
     issues = []
+    use_checker = config.code_checker_enabled
+    checker = CodeChecker(backend=config.backend or "", dsl=config.dsl or "") if use_checker else None
     for fname in config.editable_files:
         if not fname.endswith(".py"):
             continue
         fpath = os.path.join(task_dir, fname)
         if not os.path.exists(fpath):
             issues.append({"file": fname, "report": "file not found", "errors": []})
+            continue
+        if not use_checker:
             continue
         with open(fpath, "r", encoding="utf-8") as f:
             code = f.read()
@@ -78,6 +87,10 @@ def main():
     if config is None:
         print(json.dumps({"ok": False, "error": "task.yaml not found"}))
         sys.exit(1)
+
+    if not config.code_checker_enabled:
+        print("[quick_check] CodeChecker disabled in task.yaml — only "
+              "file-existence and smoke test will run.", file=sys.stderr)
 
     file_issues = _check_editable_files(task_dir, config)
     smoke_errors = _run_smoke_test(task_dir, config)

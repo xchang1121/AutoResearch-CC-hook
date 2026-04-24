@@ -67,6 +67,13 @@ class TaskConfig:
     smoke_test_script: Optional[str] = None
     smoke_test_timeout: int = 10
 
+    # CodeChecker (static analysis on editable files).
+    # Default on; disable per-task via `code_checker.enabled: false` in
+    # task.yaml or scaffold's --no-code-checker flag. When off, quick_check
+    # and validate_kernel skip the AST/import/DSL pipeline but still reject
+    # the scaffold TODO placeholder.
+    code_checker_enabled: bool = True
+
     # Agent budget
     max_rounds: int = 30
 
@@ -109,6 +116,7 @@ def load_task_config(task_dir: str) -> Optional[TaskConfig]:
     metric_block = raw.get("metric", {})
     smoke_block = raw.get("smoke_test", {})
     agent_block = raw.get("agent", {})
+    code_checker_block = raw.get("code_checker", {})
 
     # Parse constraints
     constraints = {}
@@ -142,6 +150,7 @@ def load_task_config(task_dir: str) -> Optional[TaskConfig]:
         constraints=constraints,
         smoke_test_script=smoke_block.get("script"),
         smoke_test_timeout=smoke_block.get("timeout", 10),
+        code_checker_enabled=bool(code_checker_block.get("enabled", True)),
         max_rounds=agent_block.get("max_rounds", 30),
         worker_urls=worker_urls,
     )

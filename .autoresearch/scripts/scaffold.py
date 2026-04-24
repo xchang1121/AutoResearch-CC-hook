@@ -82,6 +82,7 @@ def scaffold_task_dir(
     eval_timeout: int = 120,
     output_dir: str | None = None,
     editable_filename: str = "kernel.py",
+    code_checker_enabled: bool = True,
 ) -> str:
     """Create task directory with all files. Returns absolute path.
 
@@ -133,6 +134,12 @@ def scaffold_task_dir(
             "max_rounds": max_rounds,
         },
     }
+
+    # Only emit the code_checker block when disabled — default-true tasks
+    # stay clean. quick_check.py and phase_machine.validate_kernel honor
+    # this field; placeholder rejection still fires either way.
+    if not code_checker_enabled:
+        task_yaml["code_checker"] = {"enabled": False}
 
     # Add worker config if provided
     if worker_urls:
@@ -203,6 +210,16 @@ def main():
                         help="Parent directory for the task (default: ./ar_tasks/)")
     parser.add_argument("--run-baseline", action="store_true",
                         help="Also run baseline eval after scaffolding")
+    parser.add_argument("--no-code-checker", action="store_true",
+                        help=("Disable the static CodeChecker pipeline "
+                              "(syntax / imports / DSL / autotune compliance) "
+                              "for this task. quick_check + validate_kernel "
+                              "still reject the scaffold TODO placeholder; "
+                              "everything else passes through. Useful when "
+                              "the DSL rules are too strict for the chosen "
+                              "kernel style. Writes "
+                              "`code_checker: {enabled: false}` into "
+                              "task.yaml; flip the field to re-enable later."))
 
     args = parser.parse_args()
 
@@ -279,6 +296,7 @@ def main():
         max_rounds=args.max_rounds,
         eval_timeout=args.eval_timeout,
         output_dir=args.output_dir,
+        code_checker_enabled=not args.no_code_checker,
     )
 
     print(f"[scaffold] Task directory created: {task_dir}", file=sys.stderr)

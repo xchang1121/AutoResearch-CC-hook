@@ -47,6 +47,13 @@ python .autoresearch/scripts/dashboard.py
 | `--desc "..."` | 自然语言描述 | GENERATE_REF → GENERATE_KERNEL |
 | `--desc "..." --kernel Y.py` | 自然语言 + 种子 kernel | GENERATE_REF |
 
+可选开关：
+
+- `--no-code-checker` — 关掉静态 [CodeChecker](#codechecker-静态分析)（DSL 合规、autotune
+  规则、import 检查等）。占位 kernel 拒绝逻辑仍然生效，只跳过 CodeChecker
+  pipeline。task.yaml 写入 `code_checker: {enabled: false}`，事后改 yaml
+  也能切换。
+
 Resume 形式：`/autoresearch --resume [task_dir]`。
 
 ## 单一入口：`/autoresearch`
@@ -189,6 +196,37 @@ INIT
 | PLAN / DIAGNOSE / REPLAN | `create_plan.py '<JSON>'` | plan.md（含 (ACTIVE) 标记）+ 全局 pN |
 | EDIT | Edit `kernel.py` → `pipeline.py` | history.jsonl 记录 + 可选 git commit + 下一 .phase |
 | FINISH | Write `ranking.md` | ranking.md |
+
+## CodeChecker 静态分析
+
+每轮 EDIT 完跑 [pipeline.py](.autoresearch/scripts/pipeline.py) 时，
+[quick_check.py](.autoresearch/scripts/quick_check.py) 会先对 editable
+files 跑一遍 [code_checker.py](.autoresearch/scripts/code_checker.py)
+（AST → py_compile → import 解析 → 散落中文 → DSL 合规 → @triton.autotune
+合规）。同一个 pipeline 也被 [phase_machine.validate_kernel](.autoresearch/scripts/phase_machine.py)
+在 GENERATE_KERNEL → BASELINE 推进前调一次，两边共享一份规则。
+
+何时关掉：
+
+- DSL 不在 `triton_*` 系（CodeChecker 的 triton kernel / autotune 规则
+  对你不适用）
+- 用 ad-hoc kernel 风格，故意不走 `class ModelNew + @triton.jit` 模板
+- 静态规则误报多到掩盖真实问题
+
+关掉的方式（任选一个）：
+
+```bash
+# scaffold 时
+/autoresearch --ref X.py --kernel Y.py --op-name foo --no-code-checker
+
+# 已有 task：直接改 task.yaml
+code_checker:
+  enabled: false
+```
+
+关掉后 `quick_check` / `validate_kernel` 跳过 CodeChecker pipeline；
+**占位 kernel（scaffold 写的 TODO）仍会被拒**，所以 GENERATE_KERNEL
+阶段不会被绕过。
 
 ## Hooks 与状态机
 
