@@ -190,10 +190,24 @@ def _select_worker(worker_urls: list) -> Optional[str]:
 
 
 def _detect_device_type(config: TaskConfig) -> str:
-    """torch.device prefix ('npu' / 'cuda' / 'cpu') derived from backend.
-    Mapping lives in .autoresearch/config.yaml `backends.*.device_type`."""
-    from settings import device_type_for
-    return device_type_for(config.backend, fallback="cpu")
+    """torch.device prefix ('npu' / 'cuda' / 'cpu') derived from DSL preset.
+    Mapping lives in .autoresearch/config.yaml `dsls.<name>.device_type`."""
+    from settings import device_type_for_dsl
+    return device_type_for_dsl(config.dsl, fallback="cpu")
+
+
+def _get_dsl_adapter(dsl: Optional[str]):
+    """Return the vendored DSL adapter for `dsl`. Raises if unknown.
+
+    Cached-once import — the factory touches all DSL adapter modules on first
+    call, which pulls in pandas/numpy/etc. Keep the import local to callers
+    that need it, not at module scope.
+    """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
+    from ar_vendored.op.verifier.adapters.factory import get_dsl_adapter
+    return get_dsl_adapter(dsl or "triton_ascend")
 
 
 def _gen_verify_script(config: TaskConfig, device_id: int = 0,
@@ -206,21 +220,34 @@ def _gen_verify_script(config: TaskConfig, device_id: int = 0,
     the result. On subsequent verifies it loads the cache. The cache is
     invalidated automatically when reference.py content changes (different
     sha → different path).
+
+    DSL adapter (ar_vendored.op.verifier.adapters) supplies DSL-specific
+    imports (triton autotune patches, tilelang compile patches, etc.) via
+    `get_import_statements`. The verify body itself is uniform across DSLs:
+    instantiate ModelNew, one forward, allclose vs cached reference.
     """
     device = _detect_device_type(config)
     kernel_file = config.editable_files[0].replace(".py", "")
     ref_file = config.ref_file.replace(".py", "")
     atol = config.correctness_atol
     rtol = config.correctness_rtol
+
+    adapter = _get_dsl_adapter(config.dsl)
+    dsl_imports = adapter.get_import_statements(config.framework or "torch")
+    dsl_setup = adapter.get_special_setup_code() if hasattr(adapter, "get_special_setup_code") else ""
+
     return f'''\
 #!/usr/bin/env python3
-"""Auto-generated verify script for Worker Service.
+"""Auto-generated verify script (dsl={config.dsl}, backend={config.backend}).
 
 Worker-side reference cache: if WORKER_REF_PT exists, load it; otherwise
 run Model on device once, save outputs there, then use them. No local
 PyTorch forward — local client never runs Model.
 """
 import os, sys, json, traceback
+
+# ar_vendored is bundled at the tarball root (same dir as this script).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 device_type = "{device}"
 device_id = int(os.environ.get("DEVICE_ID", {device_id}))
@@ -237,6 +264,10 @@ elif device_type == "cuda":
 else:
     import torch
     device = torch.device("cpu")
+
+# DSL-specific imports (triton / tilelang patches, etc.)
+{dsl_imports}
+{dsl_setup}
 
 ATOL = {atol!r}
 RTOL = {rtol!r}
@@ -351,29 +382,76 @@ except Exception as e:
 def _gen_profile_script(config: TaskConfig, device_id: int = 0,
                         mode: str = "generation",
                         warmup: int = 10, repeats: int = 100) -> str:
-    """Generate profile_{op_name}_{mode}.py for the Worker Service.
+    """Generate profile_{op_name}_{mode}.py, adapter-driven.
 
-    mode='base' profiles Model (reference), mode='generation' profiles ModelNew (kernel).
+    Structure:
+      1. Outer skeleton (device setup, model instantiation) — uniform.
+      2. Adapter-supplied `get_import_statements` + `get_special_setup_code`
+         — DSL-specific imports and one-time patches (triton autotune,
+         tilelang compile).
+      3. Adapter-supplied `benchmark_impl` — the timing block. For
+         triton_ascend this wraps `profiler_npu` (torch_npu.profiler); for
+         triton_cuda / tilelang_cuda it's `triton.testing.do_bench`; for
+         ascendc / cuda_c it's empty (those DSLs rely on msprof/nsys, routed
+         at local_worker.py, not here).
+      4. Fallback timing block — used when adapter's benchmark_impl is
+         empty or crashes at runtime.
+
+    mode='base' profiles Model (reference); mode='generation' profiles
+    ModelNew (kernel).
     """
+    import textwrap
+
     device = _detect_device_type(config)
     kernel_file = config.editable_files[0].replace(".py", "")
     ref_file = config.ref_file.replace(".py", "")
 
     if mode == "base":
-        import_line = f"from {ref_file} import Model as TargetModel, get_inputs, get_init_inputs"
+        target_import = (f"from {ref_file} import Model as TargetModel, "
+                         f"get_inputs, get_init_inputs")
     else:
-        import_line = f"from {kernel_file} import ModelNew as TargetModel\nfrom {ref_file} import get_inputs, get_init_inputs"
+        target_import = (f"from {kernel_file} import ModelNew as TargetModel\n"
+                         f"from {ref_file} import get_inputs, get_init_inputs")
+
+    adapter = _get_dsl_adapter(config.dsl)
+    dsl_imports = adapter.get_import_statements(config.framework or "torch")
+    dsl_setup = adapter.get_special_setup_code() if hasattr(adapter, "get_special_setup_code") else ""
+
+    # Adapter's benchmark_impl returns a code string indented 8-space for
+    # akg-hitl's kernel_verifier (which calls it inside a `for case` loop).
+    # Dedent to column 0, then re-indent at 4-space for our function body.
+    raw = adapter.benchmark_impl(
+        impl_func_name="TargetModel", inputs="inputs",
+        warmup=warmup, runs=repeats,
+        backend=config.backend or "", op_name=config.name,
+        case_idx=0, device_id=device_id,
+    )
+    if raw and raw.strip():
+        benchmark_body = textwrap.indent(textwrap.dedent(raw), "    ")
+        benchmark_source = f"adapter ({type(adapter).__name__})"
+    else:
+        # Adapter had no benchmark (ascendc / cuda_c): do_bench fallback so
+        # the local subprocess still produces a timing. Real msprof/nsys
+        # goes through local_worker.py when backend matches.
+        benchmark_body = textwrap.indent(textwrap.dedent(f"""\
+            import triton.testing
+            def _bench():
+                with torch.no_grad():
+                    return impl_model(*inputs)
+            execution_time_ms = triton.testing.do_bench(
+                _bench, warmup={warmup}, rep={repeats}, return_mode="min")
+            execution_time_us = execution_time_ms * 1000
+            method = "triton_do_bench (adapter has no benchmark_impl)"
+        """), "    ")
+        benchmark_source = "fallback-do_bench"
 
     return f'''\
 #!/usr/bin/env python3
-"""Auto-generated {mode} profile script for Worker Service.
-
-Two modes:
-  - If run under msprof/nsys (Worker's profiler): just execute forward passes,
-    profiler captures device-side timing. No CPU timing needed.
-  - If run standalone (no profiler): use CPU timing as fallback.
-"""
+"""Auto-generated {mode} profile script (dsl={config.dsl}, benchmark={benchmark_source})."""
 import os, sys, json, time
+
+# ar_vendored is bundled at tarball root (same dir as this script).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 device_type = "{device}"
 device_id = int(os.environ.get("DEVICE_ID", {device_id}))
@@ -382,100 +460,84 @@ if device_type == "npu":
     os.environ.setdefault("ASCEND_RT_VISIBLE_DEVICES", str(device_id))
     import torch
     import torch_npu
-    device = torch.device(f"npu:0")
+    device = torch.device("npu:0")
 elif device_type == "cuda":
     os.environ.setdefault("CUDA_VISIBLE_DEVICES", str(device_id))
     import torch
-    device = torch.device(f"cuda:0")
+    device = torch.device("cuda:0")
 else:
     import torch
     device = torch.device("cpu")
 
-{import_line}
+# --- DSL-specific imports + patches (from adapter.get_import_statements) ---
+{dsl_imports}
+{dsl_setup}
+
+{target_import}
 
 init_inputs = get_init_inputs()
-model = TargetModel(*init_inputs).to(device)
+impl_model = TargetModel(*init_inputs)
+if hasattr(impl_model, "to"):
+    impl_model = impl_model.to(device)
+if hasattr(impl_model, "eval"):
+    impl_model.eval()
 
 inputs = get_inputs()
 inputs = [x.to(device) if hasattr(x, "to") else x for x in inputs]
 
-warmup_times = {warmup}
-run_times = {repeats}
-
-def benchmark_fn():
-    with torch.no_grad():
-        return model(*inputs)
-
-# Try profiler_npu for accurate device-side timing (matches AKG's profiling)
-profiler_available = False
-if device_type == "npu":
-    try:
-        from akg_agents.op.verifier.profiler import profiler_npu
-        profiler_available = True
-    except ImportError:
-        pass
-
-if profiler_available:
-    execution_time_us = profiler_npu(
-        benchmark_fn,
-        warmup=warmup_times,
-        active=run_times,
-        prof_dir_name="prof_{mode}_output",
-        keep_res=False,
-        suppress_warnings=True,
-        clear_l2_cache=True,
-        dsl="triton_ascend"
-    )
-    # profiler_npu returns inf when trace data is missing (e.g., VEC-only kernels)
-    if execution_time_us < float('inf'):
+def _run_adapter_benchmark():
+    # Variables the adapter code assigns:
+    #   execution_time_us / execution_time_ms / method
+    execution_time_us = None
+    execution_time_ms = None
+    method = None
+{benchmark_body}
+    if execution_time_us is None and execution_time_ms is not None:
+        execution_time_us = execution_time_ms * 1000
+    if execution_time_ms is None and execution_time_us is not None:
         execution_time_ms = execution_time_us / 1000
-        method = "profiler_npu"
-        avg_us = execution_time_us
-        profiler_available = True  # keep as True
-    else:
-        profiler_available = False  # fallback below
+    return execution_time_us, execution_time_ms, method
 
-if not profiler_available:
-    # Fallback: triton.testing.do_bench or manual timing
-    try:
-        import triton.testing
-        execution_time_ms = triton.testing.do_bench(
-            benchmark_fn, warmup=warmup_times, rep=run_times, return_mode="min"
-        )
-        avg_us = execution_time_ms * 1000
-        method = "triton_do_bench"
-    except Exception:
-        # Last resort: manual CPU timing
-        for _ in range(warmup_times):
-            benchmark_fn()
+try:
+    avg_us, execution_time_ms, method = _run_adapter_benchmark()
+    if avg_us is None or avg_us <= 0 or avg_us == float("inf"):
+        raise RuntimeError(f"adapter benchmark returned invalid avg_us={{avg_us!r}}")
+except Exception as e:
+    import traceback
+    print(f"[profile {mode}] adapter benchmark failed: {{e}}; falling back to cpu timer",
+          file=sys.stderr)
+    traceback.print_exc()
+    for _ in range({warmup}):
+        with torch.no_grad():
+            impl_model(*inputs)
+    if device_type == "npu":
+        torch.npu.synchronize()
+    elif device_type == "cuda":
+        torch.cuda.synchronize()
+    times = []
+    for _ in range({repeats}):
         if device_type == "npu":
             torch.npu.synchronize()
         elif device_type == "cuda":
             torch.cuda.synchronize()
-
-        times = []
-        for _ in range(run_times):
-            if device_type == "npu":
-                torch.npu.synchronize()
-            elif device_type == "cuda":
-                torch.cuda.synchronize()
-            t0 = time.perf_counter()
-            benchmark_fn()
-            if device_type == "npu":
-                torch.npu.synchronize()
-            elif device_type == "cuda":
-                torch.cuda.synchronize()
-            times.append((time.perf_counter() - t0) * 1e6)
-        avg_us = sum(times) / len(times)
-        execution_time_ms = avg_us / 1000
-        method = "cpu_timer"
+        t0 = time.perf_counter()
+        with torch.no_grad():
+            impl_model(*inputs)
+        if device_type == "npu":
+            torch.npu.synchronize()
+        elif device_type == "cuda":
+            torch.cuda.synchronize()
+        times.append((time.perf_counter() - t0) * 1e6)
+    avg_us = sum(times) / len(times)
+    execution_time_ms = avg_us / 1000
+    method = "cpu_timer_fallback"
 
 result_data = {{
     "avg_time_us": avg_us,
     "execution_time_us": avg_us,
     "execution_time_ms": execution_time_ms,
-    "warmup_times": warmup_times,
-    "run_times": run_times,
+    "warmup_times": {warmup},
+    "run_times": {repeats},
     "method": method,
 }}
 result_file = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -558,7 +620,25 @@ def _build_package(task_dir: str, config: TaskConfig, device_id: int = 0) -> byt
         _add_script(f"profile_{op_name}_generation.py",
                      _gen_profile_script(config, device_id, mode="generation"))
 
+        # Bundle the vendored adapter/profiler tree at tarball root. Generated
+        # verify/profile scripts prepend sys.path with their own dir, so
+        # `import ar_vendored` resolves without any PYTHONPATH setup on the
+        # worker side. ~150 KB compressed — acceptable overhead per eval.
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        vendored_root = os.path.join(script_dir, "ar_vendored")
+        if os.path.isdir(vendored_root):
+            tar.add(vendored_root, arcname="ar_vendored",
+                    filter=_exclude_pycache)
+
     return buf.getvalue()
+
+
+def _exclude_pycache(tarinfo: tarfile.TarInfo) -> Optional[tarfile.TarInfo]:
+    """tarfile.add filter: skip __pycache__ / *.pyc / editor temp files."""
+    base = os.path.basename(tarinfo.name)
+    if base == "__pycache__" or base.endswith(".pyc") or base.startswith("."):
+        return None
+    return tarinfo
 
 
 def _multipart_post(url: str, fields: dict, files: dict, timeout: float) -> dict:
@@ -839,8 +919,12 @@ def run_local_eval(task_dir: str, config: TaskConfig,
 
     print(f"[local_eval] Running verify...", file=sys.stderr)
     verify_resp = local_verify(package, config.name, config.eval_timeout, dev)
-    print(f"[local_eval] Running profile...", file=sys.stderr)
-    profile_resp = local_profile(package, config.name, config.eval_timeout, dev)
+    print(f"[local_eval] Running profile (dsl={config.dsl}, backend={config.backend})...",
+          file=sys.stderr)
+    profile_resp = local_profile(
+        package, config.name, config.eval_timeout, dev,
+        dsl=config.dsl, backend=config.backend,
+    )
     return _assemble_eval_result(verify_resp, profile_resp)
 
 

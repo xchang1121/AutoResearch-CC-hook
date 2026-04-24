@@ -40,24 +40,28 @@ def _code_checker_raw() -> dict:
     return _load_yaml(_CODE_CHECKER_PATH)
 
 
-def default_backend() -> str:
-    return str(_raw().get("default_backend", "ascend"))
+def default_dsl() -> str:
+    return str(_raw().get("default_dsl", "triton_ascend"))
 
 
-def backends() -> Dict[str, dict]:
-    return dict(_raw().get("backends", {}))
+def dsls() -> Dict[str, dict]:
+    return dict(_raw().get("dsls", {}))
 
 
-def backend_preset(name: Optional[str]) -> dict:
-    """Return the preset dict for `name`. Unknown name → empty dict (callers
-    decide whether to fall back)."""
+def dsl_preset(name: Optional[str]) -> dict:
+    """Return the DSL preset dict for `name`. Unknown name → empty dict.
+
+    The factory (ar_vendored/op/verifier/adapters/factory.py) is the
+    authoritative list of supported DSLs; this table only fills in default
+    backend/arch/framework/device_type when the user omits those flags.
+    """
     if not name:
         return {}
-    return dict(backends().get(name.lower(), {}))
+    return dict(dsls().get(name.lower(), {}))
 
 
-def device_type_for(backend: Optional[str], fallback: str = "cpu") -> str:
-    return backend_preset(backend).get("device_type", fallback)
+def device_type_for_dsl(dsl: Optional[str], fallback: str = "cpu") -> str:
+    return dsl_preset(dsl).get("device_type", fallback)
 
 
 def worker_only_modules() -> frozenset:

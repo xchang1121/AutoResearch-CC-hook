@@ -255,17 +255,28 @@ def _avg_us_from_artifact(artifacts: dict, key: str) -> Optional[float]:
 
 
 def local_profile(package_bytes: bytes, op_name: str, timeout: int,
-                  device_id: int = 0) -> dict:
-    """Run profile_<op_name>_base.py and profile_<op_name>_generation.py.
-    Returns the same dict shape as `task_config._worker_profile`:
+                  device_id: int = 0,
+                  dsl: Optional[str] = None, backend: Optional[str] = None,
+                  warmup: int = 10, runs: int = 100) -> dict:
+    """Run profile_<op>_base.py + profile_<op>_generation.py with DSL-aware
+    execution. Returns the task_config._worker_profile shape.
 
-        {"gen_time": float|None, "base_time": float|None,
-         "log": str, "artifacts": {filename: content}}
+    Routing (mirrors akg-hitl LocalWorker.profile):
+      - DSL in {triton_*, tilelang_*, pypto, torch, cpp}, or backend=cpu →
+        direct subprocess. The adapter's benchmark_impl in the generated
+        script measures timing with torch_npu.profiler / do_bench.
+      - dsl=ascendc (backend=ascend) → msprof CLI wraps the script; timings
+        parsed from msprof op_summary CSV by analyze_prof_data.
+      - dsl=cuda_c (backend=cuda)   → nsys CLI wraps the script; timings
+        parsed from nsys rep file by analyze_nsys_data.
 
-    Both scripts are run; either can fail independently. A broken kernel
-    can still yield a valid base_time (= ref baseline), which downstream
-    needs for the speedup anchor.
+    `dsl` / `backend` default to "" → direct subprocess (legacy behavior
+    for callers that haven't been updated). Passing them enables the
+    msprof/nsys branches.
     """
+    dsl_l = (dsl or "").lower()
+    backend_l = (backend or "").lower()
+
     with tempfile.TemporaryDirectory(prefix="ar_local_profile_") as tmp:
         try:
             _extract_package(package_bytes, tmp)
@@ -276,27 +287,162 @@ def local_profile(package_bytes: bytes, op_name: str, timeout: int,
                     "gen_time": None, "base_time": None}
 
         env = _build_env(device_id)
-        log_chunks: list[str] = []
 
-        for mode in ("base", "generation"):
-            script = f"profile_{op_name}_{mode}.py"
-            if not os.path.isfile(os.path.join(tmp, script)):
-                log_chunks.append(f"[local_worker] missing {script}")
-                continue
-            rc, stdout, stderr = _run_script(tmp, script, env, timeout)
-            log_chunks.append(f"--- {script} (rc={rc}) ---")
-            if stdout:
-                log_chunks.append(stdout)
-            if stderr:
-                log_chunks.append(stderr)
+        if dsl_l == "ascendc" and backend_l == "ascend":
+            return _profile_via_msprof(tmp, op_name, timeout, env, warmup, runs)
+        if dsl_l == "cuda_c" and backend_l == "cuda":
+            return _profile_via_nsys(tmp, op_name, timeout, env, warmup, runs)
+        return _profile_via_subprocess(tmp, op_name, timeout, env)
 
-        artifacts = _collect_json_artifacts(tmp)
-        base_time = _avg_us_from_artifact(artifacts, "base_profile_result.json")
-        gen_time = _avg_us_from_artifact(artifacts, "generation_profile_result.json")
-        return {
-            "success": gen_time is not None or base_time is not None,
-            "log": "\n".join(log_chunks).strip(),
-            "artifacts": artifacts,
-            "gen_time": gen_time,
-            "base_time": base_time,
-        }
+
+def _profile_via_subprocess(tmp: str, op_name: str, timeout: int, env: dict) -> dict:
+    """Default path: run the generated scripts as plain subprocesses. The
+    scripts' adapter.benchmark_impl does the timing work internally."""
+    log_chunks: list[str] = []
+    for mode in ("base", "generation"):
+        script = f"profile_{op_name}_{mode}.py"
+        if not os.path.isfile(os.path.join(tmp, script)):
+            log_chunks.append(f"[local_worker] missing {script}")
+            continue
+        rc, stdout, stderr = _run_script(tmp, script, env, timeout)
+        log_chunks.append(f"--- {script} (rc={rc}) ---")
+        if stdout:
+            log_chunks.append(stdout)
+        if stderr:
+            log_chunks.append(stderr)
+
+    artifacts = _collect_json_artifacts(tmp)
+    base_time = _avg_us_from_artifact(artifacts, "base_profile_result.json")
+    gen_time = _avg_us_from_artifact(artifacts, "generation_profile_result.json")
+    return {
+        "success": gen_time is not None or base_time is not None,
+        "log": "\n".join(log_chunks).strip(),
+        "artifacts": artifacts,
+        "gen_time": gen_time,
+        "base_time": base_time,
+    }
+
+
+def _profile_via_msprof(tmp: str, op_name: str, timeout: int, env: dict,
+                        warmup: int, runs: int) -> dict:
+    """AscendC path: wrap each generated profile script with `msprof
+    --application=`, then parse op_summary CSV for device-side op time.
+
+    Requires msprof on PATH (shipped by CANN). If it's missing or the CLI
+    errors, we fall back to the same subprocess path as the default DSLs
+    so the user at least gets *some* timing rather than None.
+    """
+    # Import lazily — pandas is pulled in transitively; don't pay that cost
+    # for users that never touch AscendC.
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
+    try:
+        from ar_vendored.op.verifier.profiler_utils import run_msprof, analyze_prof_data
+    except Exception as e:
+        logger.warning("local_worker: ar_vendored.profiler_utils unavailable (%s); "
+                       "falling back to direct subprocess", e)
+        return _profile_via_subprocess(tmp, op_name, timeout, env)
+
+    log_chunks: list[str] = []
+    times: dict[str, Optional[float]] = {"base": None, "generation": None}
+
+    for mode in ("base", "generation"):
+        script = os.path.join(tmp, f"profile_{op_name}_{mode}.py")
+        if not os.path.isfile(script):
+            log_chunks.append(f"[local_worker] missing {script}")
+            continue
+        log_chunks.append(f"--- msprof {os.path.basename(script)} ---")
+        # msprof spawns its own subprocess; we can't propagate our env easily
+        # through shell=True, so export DEVICE_ID/ASCEND_RT_VISIBLE_DEVICES
+        # via os.environ before the call.
+        prev = {k: os.environ.get(k) for k in
+                ("DEVICE_ID", "ASCEND_RT_VISIBLE_DEVICES", "KMP_DUPLICATE_LIB_OK")}
+        os.environ.update({k: env[k] for k in prev if k in env})
+        try:
+            ok, err, prof_path = run_msprof(script, op_name=op_name,
+                                            task_id=mode, timeout=timeout)
+        finally:
+            for k, v in prev.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+        if not ok or not prof_path:
+            log_chunks.append(f"msprof failed: {err}")
+            continue
+        ok2, err2, avg_us = analyze_prof_data(prof_path, warmup, runs,
+                                              op_name=op_name, task_id=mode)
+        if not ok2 or not (0 < avg_us < float("inf")):
+            log_chunks.append(f"analyze_prof_data failed: {err2}")
+            continue
+        times[mode] = avg_us
+        log_chunks.append(f"{mode}: avg_time_us={avg_us:.4f} (msprof)")
+
+    artifacts = _collect_json_artifacts(tmp)
+    return {
+        "success": times["generation"] is not None or times["base"] is not None,
+        "log": "\n".join(log_chunks).strip(),
+        "artifacts": artifacts,
+        "gen_time": times["generation"],
+        "base_time": times["base"],
+    }
+
+
+def _profile_via_nsys(tmp: str, op_name: str, timeout: int, env: dict,
+                      warmup: int, runs: int) -> dict:
+    """CUDA_C path: wrap each profile script with nsys, parse the rep file
+    via analyze_nsys_data. Falls back to direct subprocess if nsys /
+    ar_vendored.profiler_utils is unavailable."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
+    try:
+        from ar_vendored.op.verifier.profiler_utils import run_nsys, analyze_nsys_data
+    except Exception as e:
+        logger.warning("local_worker: ar_vendored.profiler_utils unavailable (%s); "
+                       "falling back to direct subprocess", e)
+        return _profile_via_subprocess(tmp, op_name, timeout, env)
+
+    log_chunks: list[str] = []
+    times: dict[str, Optional[float]] = {"base": None, "generation": None}
+
+    for mode in ("base", "generation"):
+        script = os.path.join(tmp, f"profile_{op_name}_{mode}.py")
+        if not os.path.isfile(script):
+            log_chunks.append(f"[local_worker] missing {script}")
+            continue
+        log_chunks.append(f"--- nsys {os.path.basename(script)} ---")
+        prev = {k: os.environ.get(k) for k in
+                ("DEVICE_ID", "CUDA_VISIBLE_DEVICES", "KMP_DUPLICATE_LIB_OK")}
+        os.environ.update({k: env[k] for k in prev if k in env})
+        try:
+            ok, err, rep_path = run_nsys(script, op_name=op_name,
+                                         task_id=mode, timeout=timeout)
+        finally:
+            for k, v in prev.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+        if not ok or not rep_path:
+            log_chunks.append(f"nsys failed: {err}")
+            continue
+        ok2, err2, avg_us = analyze_nsys_data(rep_path, warmup, runs,
+                                              op_name=op_name, task_id=mode)
+        if not ok2 or not (0 < avg_us < float("inf")):
+            log_chunks.append(f"analyze_nsys_data failed: {err2}")
+            continue
+        times[mode] = avg_us
+        log_chunks.append(f"{mode}: avg_time_us={avg_us:.4f} (nsys)")
+
+    artifacts = _collect_json_artifacts(tmp)
+    return {
+        "success": times["generation"] is not None or times["base"] is not None,
+        "log": "\n".join(log_chunks).strip(),
+        "artifacts": artifacts,
+        "gen_time": times["generation"],
+        "base_time": times["base"],
+    }

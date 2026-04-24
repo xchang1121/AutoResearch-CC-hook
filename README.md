@@ -16,13 +16,17 @@ claude
 
 ```
 /autoresearch --ref workspace/sinkhorn_ref.py --kernel workspace/sinkhorn_kernel.py \
-  --op-name sinkhorn --backend ascend --arch ascend910b2 \
+  --op-name sinkhorn --dsl triton_ascend --arch ascend910b3 \
   --worker-url 127.0.0.1:9002 --max-rounds 200
 ```
 
 候选 ref / kernel 源文件统一放 [workspace/](workspace/)，命名
 `<op_name>_ref.py` / `<op_name>_kernel.py`。`/autoresearch` 的
 `--ref` / `--kernel` 直接指向这两个文件。
+
+`--dsl` 是主键，决定 verify/profile 脚本按哪个 adapter 生成；`--backend` /
+`--arch` / `--framework` 可选，不给走 DSL 预设。完整 DSL 列表和预设见
+[DSL 分派层](#dsl-分派层)。
 
 长跑使用 `/loop` 自驱模式，失败和上下文溢出会自动恢复：
 
@@ -40,12 +44,28 @@ python .autoresearch/scripts/dashboard.py
 
 ## 启动模式
 
+输入来源 × 起步阶段：
+
 | 参数 | 用例 | 起步阶段 |
 |------|------|----------|
 | `--ref X.py --kernel Y.py` | 已有 PyTorch ref 和种子 kernel | PLAN |
 | `--ref X.py` | 只有 ref，需要生成 kernel | GENERATE_KERNEL |
 | `--desc "..."` | 自然语言描述 | GENERATE_REF → GENERATE_KERNEL |
 | `--desc "..." --kernel Y.py` | 自然语言 + 种子 kernel | GENERATE_REF |
+
+DSL / backend / arch / framework 四个维度独立：
+
+| flag | 取值 | 是否必填 |
+|------|------|----------|
+| `--dsl` | `triton_ascend` / `triton_cuda` / `ascendc` / `cuda_c` / `cpp` / `tilelang_cuda` / `tilelang_npuir` / `pypto` / `swft` / `torch` | 否（默认 `config.yaml:default_dsl`） |
+| `--backend` | `ascend` / `cuda` / `cpu` | 否（默认 DSL 预设） |
+| `--arch` | 如 `ascend910b3` / `a100` / `x86_64` | 否（默认 DSL 预设） |
+| `--framework` | `torch` / `mindspore` / `numpy` | 否（默认 `torch`） |
+
+`--dsl` 是主键。`--backend` / `--arch` / `--framework` 给了就必须和
+`--dsl` 的预设一致，不一致直接报错，不做任何隐式推导。规则由 vendored
+factory ([ar_vendored/op/verifier/adapters/factory.py](.autoresearch/scripts/ar_vendored/op/verifier/adapters/factory.py))
+校验。
 
 可选开关：
 
@@ -90,21 +110,62 @@ metric:
 verify 失败时 ref 时延仍由 `/api/v1/profile` 单独测得，与 verify 解耦，
 dashboard 顶栏始终显示 PyTorch baseline。
 
+## DSL 分派层
+
+verify / profile 脚本按 DSL **独立生成**。
+[task_config._gen_verify_script](.autoresearch/scripts/task_config.py) /
+[_gen_profile_script](.autoresearch/scripts/task_config.py) 不再硬编码
+triton 模板，转而驱动 vendored 的 adapter：
+
+```python
+adapter = get_dsl_adapter(config.dsl)           # 10 个 DSL × 专属 adapter
+adapter.get_import_statements(framework)         # triton autotune patch / tilelang compile patch / ...
+adapter.benchmark_impl(warmup=..., runs=..., ...)  # profiler_npu / do_bench / nsys / msprof 的
+                                                   # 代码片段
+adapter.get_special_setup_code()                 # 一次性初始化
+```
+
+Adapter 集群整份 vendor 自 akg-hitl
+（[ar_vendored/](.autoresearch/scripts/ar_vendored/)，~3800 行，零运行期依
+赖 akg_agents）。升级跟 upstream 的步骤就是
+`cp -r akg-hitl/akg_agents/python/akg_agents/{op/verifier,op/utils,op/tools,utils/process_utils.py} .autoresearch/scripts/ar_vendored/`
+再一条 `sed s/akg_agents/ar_vendored/` 扫尾。
+
+生成出的 `verify_<op>.py` / `profile_<op>_<mode>.py` 把 `ar_vendored/` 通
+过 `sys.path.insert(0, script_dir)` 加进 path，本地 / 远端两条路径完全共
+享，不需要装 `akg_agents` pip 包。ar_vendored 也 bundle 到每个 task 的
+tarball（`_build_package`），worker 端解包就可 `import ar_vendored`。
+
+`--dsl` / `task.yaml:dsl` 的合法值和预设见
+[config.yaml:dsls](.autoresearch/config.yaml)。工厂是权威来源，config 只
+填默认 backend / arch / framework / device_type。
+
 ## 执行后端
 
-verify / profile 由 `task_config._gen_verify_script` 和 `_gen_profile_script`
-当场生成自包含 Python 脚本，两个 transport 共用：
+verify / profile 脚本按 DSL 生成后，两个 transport 共用，对 `EvalResult`
+的结构 / 字段 / metric 名一视同仁：
 
-- **本地后端（默认）** — 没配 `--worker-url` 时自动启用。在
-  [.autoresearch/scripts/local_worker.py](.autoresearch/scripts/local_worker.py)
-  里把生成脚本解到 `tempfile` 跑 `subprocess`。开机自检：`torch.cuda` /
-  `torch_npu` / cpu 三选一，缺哪个报哪个。适合单机开发和调试。
+- **本地后端（默认）** — 没配 `--worker-url` 时自动启用。
+  [local_worker.py](.autoresearch/scripts/local_worker.py) 解 tarball 到
+  `tempfile`，按 DSL 分流：
+  - `triton_*` / `tilelang_*` / `pypto` / `torch` / `cpp` →
+    `_profile_via_subprocess`（脚本 `adapter.benchmark_impl` 自测，
+    profiler_npu / do_bench）
+  - `ascendc` on `ascend` → `_profile_via_msprof`（`msprof
+    --application=` 包 script，`analyze_prof_data` 读 op_summary CSV）
+  - `cuda_c` on `cuda` → `_profile_via_nsys`（`nsys profile`，
+    `analyze_nsys_data` 读 rep）
+  - CLI 工具不在 PATH 时自动降级到 `_profile_via_subprocess`
+  
+  开机自检：`torch.cuda` / `torch_npu` / cpu 三选一，缺哪个报哪个。
 - **远端 Worker** — 通过 `--worker-url` 显式指定。框架打 tarball POST
-  到 worker，worker 端解包跑同一份脚本。适合 NPU / 多卡 / msprof 精
-  确计时场景。
+  到 [akg_agents.worker.server](../akg-hitl/akg_agents/python/akg_agents/worker/server.py)
+  的 `/api/v1/{verify,profile}`，worker 端解包跑同一份脚本 + 同一套
+  adapter。适合多卡 / DevicePool / roofline 整套场景。
 
-两条腿出来的 `EvalResult` 结构、字段、metric 名都一致，下游不需要
-区分。
+两条腿的路由决策由 `config.dsl` + `config.backend` 独立驱动；本地的
+msprof / nsys 分支和 akg-hitl `LocalWorker.profile` 的 DSL 判断条件
+**完全一致**，所以同一个 task 在本地和远端走出来的 metric 是可比的。
 
 ### 远程 Worker
 
@@ -117,11 +178,12 @@ verify / profile 执行器来自 akg agent。
 ```bash
 ssh npu 'bash -lc "source /path/to/conda/etc/profile.d/conda.sh && conda activate <env> && \
   cd /path/to/akg_agents && \
-  nohup bash scripts/server_related/start_worker_service.sh ascend ascend910b2 4 9002 \
+  nohup bash scripts/server_related/start_worker_service.sh ascend ascend910b3 4 9002 \
   > /tmp/worker_9002.log 2>&1 < /dev/null &"'
 ```
 
-位置参数：`backend arch device_id port`。
+位置参数：`backend arch device_id port`。worker 侧不需要装 autoresearch
+或 ar_vendored — tarball 自带整份 vendored adapter，worker 解包就能跑。
 
 ### 建立本地 tunnel
 
@@ -130,7 +192,7 @@ ssh -f -N -L 127.0.0.1:9002:127.0.0.1:9002 \
   -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 npu
 
 curl http://127.0.0.1:9002/api/v1/status
-# {"status":"ready","backend":"ascend","arch":"ascend910b2","devices":[4]}
+# {"status":"ready","backend":"ascend","arch":"ascend910b3","devices":[4]}
 ```
 
 任务启动加 `--worker-url 127.0.0.1:9002`。多 URL 逗号分隔，框架按可达性选择。
@@ -193,7 +255,7 @@ INIT
 | GENERATE_REF | Edit `reference.py` | reference.py |
 | GENERATE_KERNEL | Edit `kernel.py` | kernel.py (种子) |
 | BASELINE | `baseline.py` | seed_metric → progress.json |
-| PLAN / DIAGNOSE / REPLAN | `create_plan.py '<JSON>'` | plan.md（含 (ACTIVE) 标记）+ 全局 pN |
+| PLAN / DIAGNOSE / REPLAN | `create_plan.py @<xml_path>` | plan.md（含 (ACTIVE) 标记）+ 全局 pN |
 | EDIT | Edit `kernel.py` → `pipeline.py` | history.jsonl 记录 + 可选 git commit + 下一 .phase |
 | FINISH | Write `ranking.md` | ranking.md |
 
@@ -205,6 +267,11 @@ files 跑一遍 [code_checker.py](.autoresearch/scripts/code_checker.py)
 （AST → py_compile → import 解析 → 散落中文 → DSL 合规 → @triton.autotune
 合规）。同一个 pipeline 也被 [phase_machine.validate_kernel](.autoresearch/scripts/phase_machine.py)
 在 GENERATE_KERNEL → BASELINE 推进前调一次，两边共享一份规则。
+
+**当前的 DSL 合规规则专为 `triton_ascend` / `triton_cuda` 设计**
+（`class ModelNew + @triton.jit` 模板、`@triton.autotune` 强制携带
+`restore_value`）。`ascendc` / `cuda_c` / `tilelang_*` / `pypto` task 跑
+到会误报，建议 scaffold 时加 `--no-code-checker`。
 
 何时关掉：
 
@@ -448,7 +515,10 @@ knowledge 文档仅通过 Glob + Read 访问，不进入 `.claude/`。
 | 路径 | 用途 | Git |
 |------|------|-----|
 | `workspace/<op>_ref.py` / `workspace/<op>_kernel.py` | 候选 ref / kernel 源文件，`/autoresearch --ref/--kernel` 的输入 | ✔ |
-| `task.yaml` | 任务配置（每个 task 目录一份） | 随 task 分发到 worker |
+| `.autoresearch/config.yaml` | DSL → backend/arch/framework/device_type 预设表；worker_only_modules；hallucinated_scripts | ✔ |
+| `.autoresearch/code_checker.yaml` | CodeChecker 规则表（triton 模板 / autotune 合规） | ✔ |
+| `.autoresearch/scripts/ar_vendored/` | vendor 自 akg-hitl 的 DSL adapter + profiler + msprof/nsys runner | ✔ |
+| `task.yaml` | 任务配置（每个 task 目录一份，含 dsl/backend/arch/framework 四字段） | 随 task 分发到 worker |
 | `.ar_state/progress.json` | 运行时状态 | — |
 | `.ar_state/plan.md` | 规划 + 结算历史（权威态） | — |
 | `.ar_state/history.jsonl` | 每轮 decision / metrics / commit | — |
@@ -463,4 +533,14 @@ knowledge 文档仅通过 Glob + Read 访问，不进入 `.claude/`。
 - Python ≥ 3.10
 - `pip install pyyaml torch`
 - Claude Code CLI 或 VS Code 扩展
-- 远端 NPU / CUDA 机器（可选），通过 SSH tunnel 暴露 worker HTTP 端口
+- 按 DSL 追加的可选运行期依赖（autoresearch 自己不依赖；scaffold 时选了对
+  应 DSL 才会被 adapter 拉入）：
+  - `triton_ascend` / `tilelang_npuir`：`torch_npu`、`triton`、CANN（为了
+    `profiler_npu` 的 `torch_npu.profiler`）
+  - `triton_cuda` / `tilelang_cuda` / `pypto`：`triton`、CUDA runtime
+  - `ascendc`：CANN toolkit（`msprof` CLI 在 PATH）
+  - `cuda_c`：Nsight Systems（`nsys` CLI 在 PATH）
+  - 所有 DSL 走 local `_profile_via_msprof` / `_profile_via_nsys` 时需要
+    `pandas`（读 op_summary / nsys rep）
+- 远端 NPU / CUDA 机器（可选），通过 SSH tunnel 暴露 worker HTTP 端口。
+  worker 端不需要装 autoresearch — tarball 自带 `ar_vendored/`。

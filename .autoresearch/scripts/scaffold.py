@@ -195,13 +195,23 @@ def main():
                         help="Path to initial kernel file (optional, skips generation)")
     parser.add_argument("--op-name", default=None,
                         help="Operator name (auto-derived from --desc if omitted)")
+    # DSL is the primary pivot. backend / arch / framework default from the
+    # DSL preset in config.yaml; user-supplied overrides must match the DSL
+    # (no implicit inference — incompatible combos error out).
     parser.add_argument("--dsl", default=None,
-                        choices=["triton_ascend", "triton_cuda", "torch",
-                                 "cuda_c", "cpp", "ascendc", "tilelang_cuda"])
+                        help="DSL name — one of the keys in config.yaml:dsls "
+                             "(triton_ascend, triton_cuda, ascendc, cuda_c, "
+                             "cpp, tilelang_cuda, tilelang_npuir, pypto, "
+                             "swft, torch). Defaults to config.yaml:default_dsl.")
     parser.add_argument("--backend", default=None,
-                        choices=["ascend", "cuda", "cpu"])
-    parser.add_argument("--arch", default=None)
-    parser.add_argument("--framework", default="torch")
+                        help="Override the DSL's default backend "
+                             "(ascend / cuda / cpu). Must match the DSL.")
+    parser.add_argument("--arch", default=None,
+                        help="Override the DSL's default arch "
+                             "(e.g. ascend910b3, a100, x86_64).")
+    parser.add_argument("--framework", default=None,
+                        help="Override the DSL's default framework "
+                             "(torch / mindspore / numpy).")
     parser.add_argument("--worker-url", default=None,
                         help="Remote worker URL(s), comma-separated")
     parser.add_argument("--max-rounds", type=int, default=20)
@@ -223,24 +233,58 @@ def main():
 
     args = parser.parse_args()
 
-    # Apply backend/DSL/arch defaults from .autoresearch/config.yaml.
-    # Inference rules when --backend is omitted:
-    #   - `--dsl triton_cuda` / anything with "cuda" → cuda preset
-    #   - `--dsl cpp`                                → cpu preset
-    #   - otherwise                                  → config default_backend
-    from settings import backend_preset, default_backend
-    preset_key = args.backend or (
-        "cuda" if args.dsl and "cuda" in args.dsl else
-        "cpu" if args.dsl == "cpp" else
-        default_backend()
-    )
-    preset = backend_preset(preset_key) or backend_preset(default_backend())
-    if args.dsl is None:
-        args.dsl = preset.get("dsl")
-    if args.backend is None:
-        args.backend = preset_key
-    if args.arch is None:
-        args.arch = preset.get("arch")
+    # Resolve DSL → backend / arch / framework. DSL is the single source of
+    # truth: user picks a DSL, preset supplies defaults, explicit overrides
+    # must be compatible with the DSL's preset (no string-match inference).
+    from settings import dsl_preset, default_dsl
+    args.dsl = (args.dsl or default_dsl()).lower()
+
+    # Validate DSL against the vendored factory (authoritative list of
+    # supported adapters). Unknown DSL → hard error with the full set.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    try:
+        from ar_vendored.op.verifier.adapters.factory import (
+            get_dsl_adapter, get_backend_adapter, get_framework_adapter,
+        )
+        get_dsl_adapter(args.dsl)
+    except Exception as e:
+        print(json.dumps({"status": "error",
+                          "error": f"unsupported --dsl {args.dsl!r}: {e}"}))
+        sys.exit(1)
+
+    preset = dsl_preset(args.dsl)
+    if not preset:
+        print(json.dumps({"status": "error",
+                          "error": (f"DSL {args.dsl!r} is valid at the factory "
+                                    f"but has no entry in config.yaml:dsls. "
+                                    f"Add it to unblock scaffold.")}))
+        sys.exit(1)
+
+    args.backend = (args.backend or preset["backend"]).lower()
+    args.arch = args.arch or preset["arch"]
+    args.framework = (args.framework or preset["framework"]).lower()
+
+    # Cross-validate: each explicit override must also be a known adapter,
+    # and the (dsl, backend) pair must be internally consistent with the
+    # DSL's preset. Mismatch = hard error, no silent correction.
+    for label, value, getter in (
+        ("backend", args.backend, get_backend_adapter),
+        ("framework", args.framework, get_framework_adapter),
+    ):
+        try:
+            getter(value)
+        except Exception as e:
+            print(json.dumps({"status": "error",
+                              "error": f"unsupported --{label} {value!r}: {e}"}))
+            sys.exit(1)
+
+    if args.backend != preset["backend"]:
+        print(json.dumps({"status": "error",
+                          "error": (f"--backend {args.backend!r} is incompatible "
+                                    f"with --dsl {args.dsl!r} (DSL preset "
+                                    f"requires backend={preset['backend']!r}). "
+                                    f"Pick one — they must agree.")}))
+        sys.exit(1)
 
     # Derive op-name if not provided
     if not args.op_name:

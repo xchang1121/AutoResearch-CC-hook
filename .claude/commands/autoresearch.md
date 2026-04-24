@@ -11,18 +11,40 @@ one, or kick off the optimization. The hook machine takes it from there.
   (or the specified one).
 - **Task dir** — resume that specific task: `ar_tasks/my_task_123456_abc`.
 - **Init flags** — new task from an existing reference file:
-  `--ref <file> --op-name <name> --backend ascend|cuda|cpu [--arch <arch>]
-  [--kernel <file>] [--worker-url <host:port>] [--max-rounds <N>]
-  [--dsl <name>] [--framework <name>]`
+  `--ref <file> --op-name <name>
+   [--dsl triton_ascend|triton_cuda|ascendc|cuda_c|cpp|tilelang_cuda|tilelang_npuir|pypto|swft|torch]
+   [--backend ascend|cuda|cpu] [--arch <arch>] [--framework torch|mindspore|numpy]
+   [--kernel <file>] [--worker-url <host:port>] [--max-rounds <N>]`
+
+  **`--dsl` is the primary pivot**, not `--backend`. It selects which
+  ar_vendored adapter drives verify/profile script generation. When `--dsl`
+  is omitted, the config.yaml `default_dsl` is used. `--backend` / `--arch` /
+  `--framework` are optional overrides of the DSL's preset — if given, they
+  must agree with the DSL (e.g. `--dsl triton_ascend --backend cuda` is a
+  hard error, no silent correction). See config.yaml `dsls:` for the full
+  preset table.
 
   Convention: source `--ref` / `--kernel` files live in `workspace/`, named
   `workspace/<op_name>_ref.py` and `workspace/<op_name>_kernel.py`. Put new
   candidates there before invoking `/autoresearch`.
 - **Desc mode** — new task from a natural-language description:
-  `--desc "fused ReLU + LayerNorm, (32,1024), fp16" --backend cuda`
+  `--desc "fused ReLU + LayerNorm, (32,1024), fp16" --dsl triton_cuda`
 
 Required init flags: `--ref` (or `--desc`) and `--op-name`. `--output-dir`
 defaults to `ar_tasks`.
+
+### Four launch modes
+
+| mode | flags | initial phase |
+|------|-------|---------------|
+| 1 | `--ref X.py --kernel Y.py` (both source files ready) | `PLAN` (baseline runs first) |
+| 2 | `--ref X.py` (reference only, let agent author kernel) | `GENERATE_KERNEL` |
+| 3 | `--desc "..."` (prose only) | `GENERATE_REF` → `GENERATE_KERNEL` |
+| 4 | `--desc "..." --kernel Y.py` (prose + seed kernel) | `GENERATE_REF` |
+
+`--dsl` applies to all four modes; it controls what adapter drives the
+generated verify/profile scripts and which DSL-specific code_checker rules
+quick_check enforces.
 
 ## Step 1: Decide path
 
@@ -49,8 +71,9 @@ defaults to `ar_tasks`.
    `--kernel` will instead start in GENERATE_REF / GENERATE_KERNEL.) Read the
    `task_dir` from the JSON output.
 
-4. No arguments → ask the user: reference path, op name, backend, worker URL,
-   max rounds. Then use path 3.
+4. No arguments → ask the user: reference path, op name, **DSL**, worker URL,
+   max rounds. Then use path 3. (Ask for DSL by name — e.g. `triton_ascend`,
+   `ascendc`, `cuda_c` — not backend.)
 
 ## Step 2: Activate
 
