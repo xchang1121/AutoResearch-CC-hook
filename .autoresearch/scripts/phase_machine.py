@@ -643,11 +643,15 @@ def compute_resume_phase(task_dir: str) -> str:
     if eval_rounds >= max_rounds:
         return FINISH
 
-    # Baseline hasn't produced a valid seed metric yet → demote to
-    # GENERATE_KERNEL so Edit on kernel.py is permitted again (BASELINE phase
-    # blocks editable_files writes). Live-session baseline failure routes the
-    # same way; resume just mirrors that.
-    if progress.get("seed_metric") is None:
+    # Baseline didn't settle cleanly → demote to GENERATE_KERNEL so Edit on
+    # kernel.py is permitted again (BASELINE phase blocks editable_files
+    # writes). Mirrors hook_post_bash's live-session demotion: both
+    # seed_metric=None (no timing) and baseline_correctness=False (wrong
+    # output) count as failure. A seed that profiled but didn't verify is
+    # still a broken seed — letting resume enter PLAN would build a plan
+    # against a reference that the kernel doesn't actually match.
+    if (progress.get("seed_metric") is None
+            or progress.get("baseline_correctness") is False):
         return GENERATE_KERNEL
 
     if not os.path.exists(plan_path(task_dir)) or status == "no_plan":
