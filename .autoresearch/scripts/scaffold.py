@@ -2,7 +2,7 @@
 """
 Task directory scaffolder for Claude Code autoresearch.
 
-Zero AKG dependency. Creates a self-contained task directory with:
+Zero external dependency. Creates a self-contained task directory with:
   - task.yaml (config)
   - reference.py (correctness baseline; required to import + run end-to-end
     on CPU — scaffold gates on `phase_machine.validate_reference`)
@@ -86,8 +86,8 @@ def scaffold_task_dir(
 ) -> str:
     """Create task directory with all files. Returns absolute path.
 
-    Mirrors akg_agents.op.autoresearch.adapters.task_scaffolder.scaffold_task_dir
-    but with zero AKG dependency.
+    Mirrors task_scaffolder.scaffold_task_dir
+    but with zero external dependency.
     """
     # Determine base directory
     if output_dir:

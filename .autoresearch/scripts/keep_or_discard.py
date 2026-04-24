@@ -2,7 +2,7 @@
 """
 Keep-or-discard decision engine for Claude Code autoresearch.
 
-Zero AKG dependency — uses local task_config.py.
+Zero external dependency — uses local task_config.py.
 
 Usage:
     python .autoresearch/scripts/keep_or_discard.py <task_dir> <eval_json>

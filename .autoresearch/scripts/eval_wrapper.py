@@ -2,7 +2,7 @@
 """
 Eval wrapper for Claude Code autoresearch.
 
-Zero AKG dependency — uses local task_config.py for YAML parsing and eval execution.
+Zero external dependency — uses local task_config.py for YAML parsing and eval execution.
 
 Usage:
     python .autoresearch/scripts/eval_wrapper.py <task_dir> [--device-id N] [--worker-url URL,...]

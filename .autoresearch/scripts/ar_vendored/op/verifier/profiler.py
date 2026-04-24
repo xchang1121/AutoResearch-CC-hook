@@ -42,9 +42,9 @@ from .l2_cache_clear import (
 )
 
 try:
-    from ar_vendored.op.utils.triton_autotune_patch import AKG_RESTORE_COPY_KERNEL_NAME
+    from ar_vendored.op.utils.triton_autotune_patch import AR_RESTORE_COPY_KERNEL_NAME
 except ImportError:
-    AKG_RESTORE_COPY_KERNEL_NAME = "AKG_restore_copy"
+    AR_RESTORE_COPY_KERNEL_NAME = "AR_restore_copy"
 
 # 预编译正则表达式，提高性能
 # 过滤 profiler 相关的噪声输出
@@ -273,7 +273,7 @@ def collect_time(base_dir: str, active: int, clear_l2_cache_flag: bool = False,
         active: 有效测量次数
         clear_l2_cache_flag: 是否启用了 L2 cache 清除
         dsl: DSL 类型，决定如何过滤 L2 cache 清除操作
-             - "triton_ascend": 过滤名为 "AKG_l2cache_clear" 的 kernel
+             - "triton_ascend": 过滤名为 "AR_l2cache_clear" 的 kernel
              - 其他: 过滤 "ZerosLike" 类型的操作
 
     Returns:
@@ -332,12 +332,12 @@ def collect_time(base_dir: str, active: int, clear_l2_cache_flag: bool = False,
 def _filter_l2_cache_clear_ops(df: pd.DataFrame, dsl: DslType,
                                 filter_restore_copy: bool = False) -> pd.DataFrame:
     """
-    从 profiling 结果中过滤掉 AKG 框架内部操作。
+    从 profiling 结果中过滤掉 框架内部操作。
 
     过滤内容：
-      - L2 cache 清除 kernel（AKG_l2cache_clear / ZerosLike）
+      - L2 cache 清除 kernel（AR_l2cache_clear / ZerosLike）
       - restore_value 的 copy kernel（filter_restore_copy=True 时，
-        按 kernel 名字 AKG_restore_copy 精确过滤，与 l2_cache_clear 同一模式）
+        按 kernel 名字 AR_restore_copy 精确过滤，与 l2_cache_clear 同一模式）
 
     Args:
         df: profiling 数据 DataFrame
@@ -361,7 +361,7 @@ def _filter_l2_cache_clear_ops(df: pd.DataFrame, dsl: DslType,
                 L2_CACHE_CLEAR_KERNEL_NAME, case=False, na=False, regex=False)
             if filter_restore_copy:
                 keep &= ~df[col].str.contains(
-                    AKG_RESTORE_COPY_KERNEL_NAME, case=False, na=False, regex=False)
+                    AR_RESTORE_COPY_KERNEL_NAME, case=False, na=False, regex=False)
             filtered_df = df[keep]
         else:
             filtered_df = df

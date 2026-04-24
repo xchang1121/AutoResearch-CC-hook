@@ -14,8 +14,8 @@ Public surface:
   - local_verify(package_bytes, op_name, timeout, device_id=0) -> dict
   - local_profile(package_bytes, op_name, timeout, device_id=0) -> dict
 
-This file deliberately does NOT depend on akg_agents. It mirrors the
-`collect_json_artifacts` helper from akg-hitl's LocalWorker but stays
+This file deliberately does NOT depend on ar_vendored. It mirrors the
+`collect_json_artifacts` helper from the vendored LocalWorker but stays
 synchronous (subprocess.run, no asyncio) and skips the DevicePool /
 msprof / nsys / roofline machinery that doesn't apply to single-developer
 local iteration.
@@ -188,7 +188,7 @@ def _run_script(workdir: str, script_name: str, env: dict,
 
 def _collect_json_artifacts(directory: str) -> dict[str, str]:
     """Walk `directory` and return {relpath: file_text} for every .json /
-    .jsonl file. Mirrors akg-hitl's same-named helper but stays in stdlib."""
+    .jsonl file. Mirrors the vendored same-named helper but stays in stdlib."""
     artifacts: dict[str, str] = {}
     if not os.path.isdir(directory):
         return artifacts
@@ -261,7 +261,7 @@ def local_profile(package_bytes: bytes, op_name: str, timeout: int,
     """Run profile_<op>_base.py + profile_<op>_generation.py with DSL-aware
     execution. Returns the task_config._worker_profile shape.
 
-    Routing (mirrors akg-hitl LocalWorker.profile):
+    Routing (mirrors the vendored LocalWorker.profile):
       - DSL in {triton_*, tilelang_*, pypto, torch, cpp}, or backend=cpu →
         direct subprocess. The adapter's benchmark_impl in the generated
         script measures timing with torch_npu.profiler / do_bench.

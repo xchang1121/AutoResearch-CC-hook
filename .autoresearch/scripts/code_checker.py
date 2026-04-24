@@ -1,6 +1,6 @@
 """Static code checker for autoresearch kernel edits.
 
-Ported from AKG's `akg_agents.op.utils.code_checker.CodeChecker`, with the
+Standalone port of `code_checker.CodeChecker`, with the
 async wrapper and logger dependencies dropped. Pure stdlib: ast, tokenize,
 py_compile, importlib, re, tempfile.
 

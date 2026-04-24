@@ -34,13 +34,13 @@ class DevicePool:
         self.available_devices = asyncio.Queue()
         self.condition = asyncio.Condition()
 
-        env_devices = os.environ.get("AKG_AGENTS_DEVICES_LIST")
+        env_devices = os.environ.get("AR_WORKER_DEVICES_LIST")
         if env_devices:
             try:
                 self.device_list = [int(x.strip()) for x in env_devices.split(',')]
-                logger.info(f"使用环境变量 AKG_AGENTS_DEVICES_LIST: {self.device_list}")
+                logger.info(f"使用环境变量 AR_WORKER_DEVICES_LIST: {self.device_list}")
             except ValueError as e:
-                logger.warning(f"环境变量 AKG_AGENTS_DEVICES_LIST 格式错误: {env_devices}, 使用默认值: {device_list}")
+                logger.warning(f"环境变量 AR_WORKER_DEVICES_LIST 格式错误: {env_devices}, 使用默认值: {device_list}")
                 self.device_list = device_list
         else:
             self.device_list = device_list

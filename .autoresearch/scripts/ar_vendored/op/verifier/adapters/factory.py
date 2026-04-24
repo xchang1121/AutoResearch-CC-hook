@@ -41,19 +41,20 @@ def get_framework_adapter(framework: str):
 
 def get_dsl_adapter(dsl: str):
     """Get DSL adapter by name.
-    
+
     Args:
-        dsl: DSL name (triton_cuda, triton_ascend, swft, ascendc, etc.)
-        
+        dsl: DSL name (triton_cuda, triton_ascend, ascendc, cuda_c, cpp,
+             tilelang_cuda, tilelang_npuir, swft, torch).
+
     Returns:
         DSLAdapter instance
     """
     dsl_lower = dsl.lower()
-    
+
     if dsl_lower == "triton_cuda":
         from .dsl.triton_cuda import DSLAdapterTritonCuda
         return DSLAdapterTritonCuda()
-    elif dsl_lower in ["triton_ascend", "triton-russia"]:
+    elif dsl_lower == "triton_ascend":
         from .dsl.triton_ascend import DSLAdapterTritonAscend
         return DSLAdapterTritonAscend()
     elif dsl_lower == "swft":

@@ -16,9 +16,9 @@
 
 设计约束：
 1. 不修改 / patch SOLAR 仓库。
-2. AKG 运行时只依赖“已安装的 solar Python 包”，不依赖本地 SOLAR 工作树。
+2. 运行时只依赖“已安装的 solar Python 包”，不依赖本地 SOLAR 工作树。
 3. 之前只存在于本地 SOLAR 改动里的辅助逻辑（如 solbench wrapper、Ascend arch config）
-   迁移到 AKG 自己维护。
+   迁移到 由本项目维护。
 4. roofline 失败只能降级，不能影响原有 profile 主流程。
 """
 
@@ -78,8 +78,8 @@ ARCH_ALIAS_TO_CONFIG_KEY = {
     "ascend950pr_9599": "ascend950_pr",
 }
 
-# 这些配置原先依赖本地 SOLAR 改动；现在由 AKG 自己维护，避免依赖 drop commit。
-AKG_ROOFLINE_ARCH_CONFIGS = {
+# 这些配置原先依赖本地 SOLAR 改动；现在由 由本项目维护，避免依赖 drop commit。
+ROOFLINE_ARCH_CONFIGS = {
     "a100": {
         "name": "A100",
         "freq_GHz": 1.41,
@@ -290,13 +290,13 @@ def resolve_arch_spec(
     verify_dir: Path,
     explicit_arch_config: Optional[str] = None,
 ) -> Optional[str]:
-    """将 AKG arch 解析为 roofline arch-config 参数。"""
+    """将 arch 解析为 roofline arch-config 参数。"""
     if explicit_arch_config:
         explicit_path = Path(os.path.expanduser(explicit_arch_config))
         return str(explicit_path.resolve()) if explicit_path.exists() else explicit_arch_config
 
     config_key = ARCH_ALIAS_TO_CONFIG_KEY.get(arch)
-    arch_config = AKG_ROOFLINE_ARCH_CONFIGS.get(config_key or "")
+    arch_config = ROOFLINE_ARCH_CONFIGS.get(config_key or "")
     if arch_config is None:
         return None
 
@@ -518,7 +518,7 @@ def _aggregate_case_results(case_results: list[Dict[str, Any]], bench_type: str)
 def _create_solbench_wrapper(verify_dir: Path, wrapper_path: Path, workload_idx: int) -> None:
     """为单个 workload 生成 SOLBench reference wrapper。
 
-    这段逻辑来自原本本地 SOLAR 改动中的 `scripts/solbench.py`，现迁到 AKG 内部维护。
+    这段逻辑来自原本本地 SOLAR 改动中的 `scripts/solbench.py`，现已迁至本项目内部维护。
     """
     definition_path = verify_dir / "definition.json"
     reference_path = verify_dir / "reference.py"

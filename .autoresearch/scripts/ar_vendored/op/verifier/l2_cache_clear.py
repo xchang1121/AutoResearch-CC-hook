@@ -36,7 +36,7 @@ except ImportError:
 
 # L2 cache 清除相关常量
 L2_CACHE_SIZE_DEFAULT = 192 * 1024 * 1024  # 192MB 默认值
-L2_CACHE_CLEAR_KERNEL_NAME = "AKG_l2cache_clear"  # 专用 kernel 名称，用于过滤
+L2_CACHE_CLEAR_KERNEL_NAME = "AR_l2cache_clear"  # 专用 kernel 名称，用于过滤
 
 # DSL 类型定义
 DslType = Literal["triton_ascend", "triton_cuda", "torch", "tilelang_npuir", "ascendc", "other"]
@@ -142,7 +142,7 @@ def _get_vec_core_num(device_id: int = 0) -> int:
 # 性能优化：使用大 BLOCK_SIZE 减少循环次数，提升带宽利用率
 if _TRITON_AVAILABLE:
     @triton.jit
-    def AKG_l2cache_clear(
+    def AR_l2cache_clear(
         output_ptr,
         n_elements,
         BLOCK_SIZE: tl.constexpr,
@@ -152,7 +152,7 @@ if _TRITON_AVAILABLE:
         专用 L2 cache 清除 kernel。
         
         通过写入一个大 buffer 来强制刷新 L2 cache。
-        kernel 名称为 AKG_l2cache_clear，便于在 profiler 结果中识别和过滤。
+        kernel 名称为 AR_l2cache_clear，便于在 profiler 结果中识别和过滤。
         
         使用交错循环处理，grid 大小等于核心数，参考 triton-ascend 编写规范。
         大 BLOCK_SIZE 确保高带宽利用率，减少循环开销。
@@ -210,7 +210,7 @@ def clear_l2_cache_triton():
     使用 triton-ascend kernel 清除 L2 cache。
     
     这是推荐的清除方式，因为：
-    1. 使用专用 kernel 名称 (AKG_l2cache_clear)，便于在 profiler 中精确识别和过滤
+    1. 使用专用 kernel 名称 (AR_l2cache_clear)，便于在 profiler 中精确识别和过滤
     2. 避免与用户代码中的 zeros/zero_ 操作混淆
     
     性能优化：
@@ -235,7 +235,7 @@ def clear_l2_cache_triton():
     grid = (core_num,)
     
     # 调用 kernel
-    AKG_l2cache_clear[grid](buffer, n_elements, BLOCK_SIZE=BLOCK_SIZE, CORE_NUM=core_num)
+    AR_l2cache_clear[grid](buffer, n_elements, BLOCK_SIZE=BLOCK_SIZE, CORE_NUM=core_num)
     torch.npu.synchronize()
 
 

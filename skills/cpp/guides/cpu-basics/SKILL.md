@@ -94,7 +94,7 @@ torch::Tensor standard_kernel(torch::Tensor x) {
 
 ### 完整模板示例
 
-参考示例位置: `akg_agents/python/akg_agents/op/resources/docs/cpu_docs/examples/torch_xxx_kernel.py`
+参考示例位置: `docs/cpu_docs/examples/torch_xxx_kernel.py`
 
 ```python
 import torch
@@ -419,9 +419,9 @@ TORCH_CHECK(x.dim() > 0, "Input tensor must have at least one dimension");
 
 更多完整的算子实现示例，请参考：
 
-- **基础文档**: `akg_agents/python/akg_agents/op/resources/docs/cpu_docs/basic_docs.md`
-- **优化建议**: `akg_agents/python/akg_agents/op/resources/docs/cpu_docs/suggestion_docs.md`
-- **API 手册**: `akg_agents/python/akg_agents/op/resources/docs/cpu_docs/api/api.md`
-- **代码模板**: `akg_agents/python/akg_agents/op/resources/docs/cpu_docs/examples/torch_xxx_kernel.py`
+- **基础文档**: `docs/cpu_docs/basic_docs.md`
+- **优化建议**: `docs/cpu_docs/suggestion_docs.md`
+- **API 手册**: `docs/cpu_docs/api/api.md`
+- **代码模板**: `docs/cpu_docs/examples/torch_xxx_kernel.py`
 
 这些文档提供了完整的实现指南和参考模板。

@@ -418,7 +418,7 @@ def _gen_profile_script(config: TaskConfig, device_id: int = 0,
     dsl_setup = adapter.get_special_setup_code() if hasattr(adapter, "get_special_setup_code") else ""
 
     # Adapter's benchmark_impl returns a code string indented 8-space for
-    # akg-hitl's kernel_verifier (which calls it inside a `for case` loop).
+    # upstream's kernel_verifier (which calls it inside a `for case` loop).
     # Dedent to column 0, then re-indent at 4-space for our function body.
     raw = adapter.benchmark_impl(
         impl_func_name="TargetModel", inputs="inputs",
@@ -823,7 +823,7 @@ def run_remote_eval(task_dir: str, config: TaskConfig,
       4. If correct: POST /api/v1/profile → latency metrics
       5. Return EvalResult
 
-    Compatible with the Worker Service API from akg_agents.worker.server.
+    Compatible with the Worker Service API from ar_vendored.worker.server.
     """
     urls = worker_urls or config.worker_urls
     if not urls:

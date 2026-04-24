@@ -125,30 +125,20 @@ adapter.benchmark_impl(warmup=..., runs=..., ...)  # profiler_npu / do_bench / n
 adapter.get_special_setup_code()                 # 一次性初始化
 ```
 
-Adapter 集群整份 vendor 自 akg-hitl
-（[ar_vendored/](.autoresearch/scripts/ar_vendored/)，连同 HTTP worker /
-DevicePool / msprof / nsys 整套 **~5500 行**，零运行期依赖 akg_agents）。
-vendored 目录分四块：
+Adapter 集群和 HTTP worker / DevicePool / msprof / nsys 整套都在
+[ar_vendored/](.autoresearch/scripts/ar_vendored/)（**~5500 行**，纯 Python
+模块，零运行期外部依赖）。目录分四块：
 
-| 子目录 | 上游路径 | 作用 |
-|--------|----------|------|
-| `op/verifier/` | `akg_agents.op.verifier.*` | profiler / roofline / DSL adapter |
-| `op/utils/` | `akg_agents.op.utils.*` | triton autotune patch、tilelang compile patch、api docs |
-| `op/tools/` | `akg_agents.op.tools.*` | `calc_trace_span.py` |
-| `core/worker/`, `core/async_pool/`, `worker/` | `akg_agents.core.*` + `akg_agents.worker.server` | LocalWorker 类、DevicePool、FastAPI HTTP server |
-| `utils/` | `akg_agents.utils.*` | `process_utils.run_command` |
-
-升级跟 upstream 的步骤就是：
-
-```bash
-cp -r akg-hitl/akg_agents/python/akg_agents/{op/verifier,op/utils,op/tools,utils/process_utils.py,core/worker,core/async_pool,worker/server.py} \
-      .autoresearch/scripts/ar_vendored/
-grep -rln akg_agents .autoresearch/scripts/ar_vendored/ | xargs sed -i 's/akg_agents/ar_vendored/g'
-```
+| 子目录 | 作用 |
+|--------|------|
+| `op/verifier/` | profiler / roofline / DSL adapter factory |
+| `op/utils/` | triton autotune patch、tilelang compile patch |
+| `core/worker/`, `core/async_pool/`, `worker/` | `LocalWorker` 类、`DevicePool`、FastAPI HTTP server |
+| `utils/` | `process_utils.run_command` |
 
 生成出的 `verify_<op>.py` / `profile_<op>_<mode>.py` 把 `ar_vendored/` 通
 过 `sys.path.insert(0, script_dir)` 加进 path，本地 / 远端两条路径完全共
-享，不需要装 `akg_agents` pip 包。ar_vendored 也 bundle 到每个 task 的
+享，不需要装任何额外的 pip 包。ar_vendored 也 bundle 到每个 task 的
 tarball（`_build_package`），worker 端解包就可 `import ar_vendored`。
 
 `--dsl` / `task.yaml:dsl` 的合法值和预设见
@@ -176,21 +166,20 @@ verify / profile 脚本按 DSL 生成后，两个 transport 共用，对 `EvalRe
 - **远端 Worker** — 通过 `--worker-url` 显式指定。框架打 tarball POST
   到 [ar_vendored/worker/server.py](.autoresearch/scripts/ar_vendored/worker/server.py)
   的 `/api/v1/{verify,profile}`，worker 端解包跑同一份脚本 + 同一套
-  adapter。适合多卡 / DevicePool / roofline 整套场景。HTTP server 本身
-  也 vendor 自 akg-hitl（见 [远程 Worker](#远程-worker)），**worker 端
-  不需要装 akg_agents**。
+  adapter。适合多卡 / DevicePool / roofline 整套场景。**worker 端不需要
+  装任何额外的 pip 包**，tarball 自带 ar_vendored。
 
 两条腿的路由决策由 `config.dsl` + `config.backend` 独立驱动；本地的
-msprof / nsys 分支和 akg-hitl `LocalWorker.profile` 的 DSL 判断条件
-**完全一致**，所以同一个 task 在本地和远端走出来的 metric 是可比的。
+msprof / nsys 分支和远端 `LocalWorker.profile` 走同一份 DSL 判断逻辑，
+所以同一个 task 在本地和远端走出来的 metric 是可比的。
 
 ### 远程 Worker
 
-远端 NPU / CUDA 硬件通过 SSH tunnel 接入。HTTP server 一并 vendor 自
-akg-hitl（[ar_vendored/worker/server.py](.autoresearch/scripts/ar_vendored/worker/server.py)
+远端 NPU / CUDA 硬件通过 SSH tunnel 接入。HTTP server
+([ar_vendored/worker/server.py](.autoresearch/scripts/ar_vendored/worker/server.py)
 + [core/worker/local_worker.py](.autoresearch/scripts/ar_vendored/core/worker/local_worker.py)
-+ [core/async_pool/device_pool.py](.autoresearch/scripts/ar_vendored/core/async_pool/device_pool.py)），
-worker 端同样 **不需要装 `akg_agents`**。
++ [core/async_pool/device_pool.py](.autoresearch/scripts/ar_vendored/core/async_pool/device_pool.py)）
+是 autoresearch 自带的，worker 端不需要装任何额外 pip 包。
 
 ### 启动远端 worker
 
@@ -566,7 +555,7 @@ knowledge 文档仅通过 Glob + Read 访问，不进入 `.claude/`。
 | `workspace/<op>_ref.py` / `workspace/<op>_kernel.py` | 候选 ref / kernel 源文件，`/autoresearch --ref/--kernel` 的输入 | ✔ |
 | `.autoresearch/config.yaml` | DSL → backend/arch/framework/device_type 预设表；worker_only_modules；hallucinated_scripts | ✔ |
 | `.autoresearch/code_checker.yaml` | CodeChecker 规则表（triton 模板 / autotune 合规） | ✔ |
-| `.autoresearch/scripts/ar_vendored/` | vendor 自 akg-hitl 的 DSL adapter + profiler + msprof/nsys runner + HTTP worker server | ✔ |
+| `.autoresearch/scripts/ar_vendored/` | DSL adapter + profiler + msprof/nsys runner + HTTP worker server | ✔ |
 | `.autoresearch/scripts/ar_cli.py` | 统一 CLI：`ar_cli worker --start/--stop/--status`，支持 `--bg` daemon | ✔ |
 | `task.yaml` | 任务配置（每个 task 目录一份，含 dsl/backend/arch/framework 四字段） | 随 task 分发到 worker |
 | `.ar_state/progress.json` | 运行时状态 | — |

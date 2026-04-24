@@ -49,7 +49,7 @@ async def lifespan(app: FastAPI):
     # Cleanup if needed
     logger.info("Shutting down Worker Service")
 
-app = FastAPI(title="AIKG Worker Service", lifespan=lifespan)
+app = FastAPI(title="AutoResearch Worker Service", lifespan=lifespan)
 
 @app.post("/api/v1/verify")
 async def verify(
@@ -115,120 +115,6 @@ async def profile(
         logger.error(f"[{task_id}] Profiling request failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/v1/generate_reference")
-async def generate_reference(
-    package: UploadFile = File(...),
-    task_id: str = Form(...),
-    op_name: str = Form(...),
-    timeout: int = Form(120)
-):
-    """
-    Execute task_desc and generate reference data.
-    
-    用于 CUDA-to-Ascend 转换场景：执行 Triton-CUDA 代码，
-    保存输出作为参考数据（.pt 文件），并以 base64 编码返回。
-    
-    Returns:
-        - success: 是否成功生成参考数据
-        - log: 执行日志
-        - reference_data: base64 编码的 .pt 文件内容
-    """
-    import base64
-    
-    if worker is None:
-        raise HTTPException(status_code=503, detail="Worker not initialized")
-    
-    try:
-        logger.info(f"[{task_id}] Received generate_reference request for {op_name}")
-        
-        package_data = await package.read()
-        
-        success, log, ref_bytes = await worker.generate_reference(
-            package_data, task_id, op_name, timeout
-        )
-        
-        if success:
-            # 以 base64 编码返回二进制数据
-            ref_data_b64 = base64.b64encode(ref_bytes).decode('utf-8')
-            return {
-                "success": True,
-                "log": log,
-                "reference_data": ref_data_b64
-            }
-        else:
-            return {
-                "success": False,
-                "log": log,
-                "reference_data": ""
-            }
-        
-    except Exception as e:
-        logger.error(f"[{task_id}] Generate reference request failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/v1/profile_single_task")
-async def profile_single_task(
-    package: UploadFile = File(...),
-    task_id: str = Form(...),
-    op_name: str = Form(...),
-    profile_settings: str = Form("{}")
-):
-    """
-    Execute single task profiling (only measure task_desc performance, no base comparison).
-    
-    单独测量某段代码的执行性能，不进行 base vs generation 对比。
-    
-    Returns:
-        - time_us: 执行时间（微秒）
-        - success: 是否成功
-        - log: 执行日志
-    """
-    if worker is None:
-        raise HTTPException(status_code=503, detail="Worker not initialized")
-    
-    import json
-    try:
-        settings = json.loads(profile_settings)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON for profile_settings")
-    
-    try:
-        logger.info(f"[{task_id}] Received profile_single_task request for {op_name}")
-        
-        package_data = await package.read()
-        result = await worker.profile_single_task(package_data, task_id, op_name, settings)
-        return result
-        
-    except Exception as e:
-        logger.error(f"[{task_id}] Profile single task request failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/v1/docs/{doc_name}")
-async def get_doc(
-    doc_name: str,
-):
-    """
-    获取 worker 当前环境中的文档内容。
-
-    典型场景：
-    - server/agent 本地没有 triton_ascend，但远端 worker 有
-    - 需要基于远端真实运行时返回过滤后的 API 文档
-    """
-    if worker is None:
-        raise HTTPException(status_code=503, detail="Worker not initialized")
-
-    try:
-        content = await worker.get_doc(doc_name)
-        return {
-            "doc_name": doc_name,
-            "content": content,
-        }
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        logger.error("Get doc request failed: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
 @app.post("/api/v1/acquire_device")
 async def acquire_device(
     task_id: str = Form(...)
@@ -286,7 +172,7 @@ async def status():
 
 def start_server(host: Optional[str] = None, port: Optional[int] = None):
     """
-    启动 AIKG Worker Service。
+    启动 AutoResearch Worker Service。
     
     Args:
         host: 监听地址。可从环境变量 WORKER_HOST 设置。

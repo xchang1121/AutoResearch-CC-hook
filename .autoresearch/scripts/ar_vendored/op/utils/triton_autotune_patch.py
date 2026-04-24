@@ -18,12 +18,12 @@ import os
 _collected_config_timings = {}
 
 # ============================================================================
-# AKG_restore_copy Triton kernel
-# 参考 l2_cache_clear.py 的设计：使用带 AKG_ 前缀的专用 kernel，
+# AR_restore_copy Triton kernel
+# 参考 l2_cache_clear.py 的设计：使用专用 kernel，
 # 便于在 profiler 的 op_statistic.csv 中按名字精确过滤。
 # ============================================================================
 
-AKG_RESTORE_COPY_KERNEL_NAME = "AKG_restore_copy"
+AR_RESTORE_COPY_KERNEL_NAME = "AR_restore_copy"
 
 _TRITON_AVAILABLE = False
 try:
@@ -35,14 +35,14 @@ except ImportError:
 
 if _TRITON_AVAILABLE:
     @triton.jit
-    def AKG_restore_copy(
+    def AR_restore_copy(
         dst_ptr, src_ptr, n_elements,
         BLOCK_SIZE: tl.constexpr, CORE_NUM: tl.constexpr,
     ):
         """
         restore_value 专用 copy kernel。
 
-        kernel 名称带 AKG_ 前缀，在 profiler 中显示为 AKG_restore_copy，
+        kernel 名称在 profiler 中显示为 AR_restore_copy，
         可精确过滤，不会误删用户代码中的 TensorMove 等同名操作。
         """
         pid = tl.program_id(0)
@@ -63,8 +63,8 @@ def _get_vec_core_num():
         return 40
 
 
-def akg_restore_copy(dst, src):
-    """用 AKG_restore_copy kernel 执行 tensor copy，替代 tensor.copy_()。"""
+def ar_restore_copy(dst, src):
+    """用 AR_restore_copy kernel 执行 tensor copy，替代 tensor.copy_()。"""
     import torch
     n = dst.numel()
     dst_flat = dst.view(-1)
@@ -72,7 +72,7 @@ def akg_restore_copy(dst, src):
     core_num = _get_vec_core_num()
     BLOCK_SIZE = 1024
     grid = (core_num,)
-    AKG_restore_copy[grid](dst_flat, src_flat, n,
+    AR_restore_copy[grid](dst_flat, src_flat, n,
                            BLOCK_SIZE=BLOCK_SIZE, CORE_NUM=core_num)
     torch.npu.synchronize()
 
@@ -80,7 +80,7 @@ def akg_restore_copy(dst, src):
 def _restore_saved_tensors(saved, args):
     """Restore saved output tensors back to the live kernel arguments."""
     for idx, saved_val in saved.items():
-        akg_restore_copy(args[idx], saved_val)
+        ar_restore_copy(args[idx], saved_val)
 
 
 def _wrap_kernel_call_with_restore(kernel_call, restore_info):
@@ -116,7 +116,7 @@ def _patch_autotuner_bench(autotuner_module):
     original_bench = getattr(autotuner_module.Autotuner, '_bench', None)
     if original_bench is None:
         return
-    if getattr(original_bench, '_akg_bench_patched', False):
+    if getattr(original_bench, '_ar_bench_patched', False):
         return
 
     _noop = lambda *a, **kw: None
@@ -151,7 +151,7 @@ def _patch_autotuner_bench(autotuner_module):
 
         return result
 
-    patched_bench._akg_bench_patched = True
+    patched_bench._ar_bench_patched = True
     autotuner_module.Autotuner._bench = patched_bench
 
 
@@ -208,7 +208,7 @@ def patch_triton_autotuner():
     original_autotuner_run = getattr(autotuner_module.Autotuner, 'run', None)
     if original_autotuner_run is None:
         return True
-    if getattr(original_autotuner_run, '_akg_run_patched', False):
+    if getattr(original_autotuner_run, '_ar_run_patched', False):
         return True
 
     original_autotiling_run = None
@@ -289,14 +289,14 @@ def patch_triton_autotuner():
         return result
 
     try:
-        patched_autotuner_run._akg_run_patched = True
+        patched_autotuner_run._ar_run_patched = True
         autotuner_module.Autotuner.run = patched_autotuner_run
     except (AttributeError, TypeError):
         pass
 
     if original_autotiling_run is not None:
         try:
-            patched_autotiling_run._akg_run_patched = True
+            patched_autotiling_run._ar_run_patched = True
             autotiling_module.AutoTilingTuner.run = patched_autotiling_run
         except (AttributeError, TypeError):
             pass
@@ -318,7 +318,7 @@ def patch_driver_benchmarker():
     """补丁 driver.active.get_benchmarker()，让 autotune 使用 profiler_npu。
 
     当 _restore_info 不为空时（即 _bench 禁用了原生 restore_value），
-    benchmarker 自动用 AKG_restore_copy kernel 包装 kernel_call，
+    benchmarker 自动用 AR_restore_copy kernel 包装 kernel_call，
     profiler 按 kernel 名字精确过滤，不会误删用户的 TensorMove 操作。
     """
     try:

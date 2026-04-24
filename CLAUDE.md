@@ -5,8 +5,8 @@ An iterative optimization framework powered by Claude Code.
 ## What this is
 
 Claude Code acts as the LLM agent, executing a plan → edit → eval → keep/discard loop
-to optimize code against a measurable metric. Inspired by AKG's autoresearch agent,
-but fully standalone with zero external dependencies beyond Python + PyYAML.
+to optimize code against a measurable metric. Fully standalone with zero external
+dependencies beyond Python + PyYAML.
 
 ## Quick Start
 
