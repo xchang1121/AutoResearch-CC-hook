@@ -126,10 +126,25 @@ adapter.get_special_setup_code()                 # 一次性初始化
 ```
 
 Adapter 集群整份 vendor 自 akg-hitl
-（[ar_vendored/](.autoresearch/scripts/ar_vendored/)，~3800 行，零运行期依
-赖 akg_agents）。升级跟 upstream 的步骤就是
-`cp -r akg-hitl/akg_agents/python/akg_agents/{op/verifier,op/utils,op/tools,utils/process_utils.py} .autoresearch/scripts/ar_vendored/`
-再一条 `sed s/akg_agents/ar_vendored/` 扫尾。
+（[ar_vendored/](.autoresearch/scripts/ar_vendored/)，连同 HTTP worker /
+DevicePool / msprof / nsys 整套 **~5500 行**，零运行期依赖 akg_agents）。
+vendored 目录分四块：
+
+| 子目录 | 上游路径 | 作用 |
+|--------|----------|------|
+| `op/verifier/` | `akg_agents.op.verifier.*` | profiler / roofline / DSL adapter |
+| `op/utils/` | `akg_agents.op.utils.*` | triton autotune patch、tilelang compile patch、api docs |
+| `op/tools/` | `akg_agents.op.tools.*` | `calc_trace_span.py` |
+| `core/worker/`, `core/async_pool/`, `worker/` | `akg_agents.core.*` + `akg_agents.worker.server` | LocalWorker 类、DevicePool、FastAPI HTTP server |
+| `utils/` | `akg_agents.utils.*` | `process_utils.run_command` |
+
+升级跟 upstream 的步骤就是：
+
+```bash
+cp -r akg-hitl/akg_agents/python/akg_agents/{op/verifier,op/utils,op/tools,utils/process_utils.py,core/worker,core/async_pool,worker/server.py} \
+      .autoresearch/scripts/ar_vendored/
+grep -rln akg_agents .autoresearch/scripts/ar_vendored/ | xargs sed -i 's/akg_agents/ar_vendored/g'
+```
 
 生成出的 `verify_<op>.py` / `profile_<op>_<mode>.py` 把 `ar_vendored/` 通
 过 `sys.path.insert(0, script_dir)` 加进 path，本地 / 远端两条路径完全共
@@ -159,9 +174,11 @@ verify / profile 脚本按 DSL 生成后，两个 transport 共用，对 `EvalRe
   
   开机自检：`torch.cuda` / `torch_npu` / cpu 三选一，缺哪个报哪个。
 - **远端 Worker** — 通过 `--worker-url` 显式指定。框架打 tarball POST
-  到 [akg_agents.worker.server](../akg-hitl/akg_agents/python/akg_agents/worker/server.py)
+  到 [ar_vendored/worker/server.py](.autoresearch/scripts/ar_vendored/worker/server.py)
   的 `/api/v1/{verify,profile}`，worker 端解包跑同一份脚本 + 同一套
-  adapter。适合多卡 / DevicePool / roofline 整套场景。
+  adapter。适合多卡 / DevicePool / roofline 整套场景。HTTP server 本身
+  也 vendor 自 akg-hitl（见 [远程 Worker](#远程-worker)），**worker 端
+  不需要装 akg_agents**。
 
 两条腿的路由决策由 `config.dsl` + `config.backend` 独立驱动；本地的
 msprof / nsys 分支和 akg-hitl `LocalWorker.profile` 的 DSL 判断条件
@@ -169,21 +186,51 @@ msprof / nsys 分支和 akg-hitl `LocalWorker.profile` 的 DSL 判断条件
 
 ### 远程 Worker
 
-远端 NPU / CUDA 硬件通过 SSH tunnel 接入。评测路径复用 akg agent 的 worker
-实现：框架负责打包 + 调用 `/api/v1/verify` 和 `/api/v1/profile`，实际
-verify / profile 执行器来自 akg agent。
+远端 NPU / CUDA 硬件通过 SSH tunnel 接入。HTTP server 一并 vendor 自
+akg-hitl（[ar_vendored/worker/server.py](.autoresearch/scripts/ar_vendored/worker/server.py)
++ [core/worker/local_worker.py](.autoresearch/scripts/ar_vendored/core/worker/local_worker.py)
++ [core/async_pool/device_pool.py](.autoresearch/scripts/ar_vendored/core/async_pool/device_pool.py)），
+worker 端同样 **不需要装 `akg_agents`**。
 
 ### 启动远端 worker
 
+把 autoresearch 整个项目同步到 NPU 机器。然后**在 remote shell 里**
+（SSH 进去或物理登录）激活好 python 环境后：
+
 ```bash
-ssh npu 'bash -lc "source /path/to/conda/etc/profile.d/conda.sh && conda activate <env> && \
-  cd /path/to/akg_agents && \
-  nohup bash scripts/server_related/start_worker_service.sh ascend ascend910b3 4 9002 \
-  > /tmp/worker_9002.log 2>&1 < /dev/null &"'
+# foreground（Ctrl-C 退出）
+python .autoresearch/scripts/server_related/start_worker_service.py \
+    --backend ascend --arch ascend910b3 --devices 5 --port 9056
+
+# daemon（推荐；detach + log → /tmp/ar_worker_9056.log）
+python .autoresearch/scripts/server_related/start_worker_service.py \
+    --backend ascend --arch ascend910b3 --devices 5 --port 9056 --bg
+
+# 关掉
+python .autoresearch/scripts/server_related/stop_worker_service.py --port 9056
 ```
 
-位置参数：`backend arch device_id port`。worker 侧不需要装 autoresearch
-或 ar_vendored — tarball 自带整份 vendored adapter，worker 解包就能跑。
+Daemon 模式会一直轮询端口到就绪（最多 30s），如果 worker 起不来会把 log
+尾部打出来，不会留下僵尸 PID。
+
+`--devices` 支持逗号分隔多卡，如 `--devices 0,1,2,3`。host 默认
+`0.0.0.0`，要换改 `--host`。跨平台（Windows/Linux/macOS）都能跑。
+
+脚本不帮你激活 python 环境 — 用户自己 `conda activate` / `source env.sh`
+/ 用 venv 都行，只要进脚本时 `python -c "import fastapi, uvicorn, torch,
+torch_npu"` 能跑通。
+
+worker 进程的运行期依赖（用哪个 DSL 才需要装哪些）：
+
+- `fastapi` + `uvicorn`（HTTP server 本体）
+- `torch` + `torch_npu`（ascend） / CUDA runtime（cuda）
+- `triton`（triton_* DSL）
+- `pandas`（msprof / nsys CSV 解析）
+- CANN toolkit 的 `msprof` CLI（走 ascendc 时） / Nsight Systems 的
+  `nsys` CLI（走 cuda_c 时）
+
+框架侧（客户端）完全不需要这些 — task_config.py 只用 stdlib + pyyaml 和
+远端通信。tarball 内带 `ar_vendored/`，worker 解包即可 `import ar_vendored`。
 
 ### 建立本地 tunnel
 
@@ -517,7 +564,9 @@ knowledge 文档仅通过 Glob + Read 访问，不进入 `.claude/`。
 | `workspace/<op>_ref.py` / `workspace/<op>_kernel.py` | 候选 ref / kernel 源文件，`/autoresearch --ref/--kernel` 的输入 | ✔ |
 | `.autoresearch/config.yaml` | DSL → backend/arch/framework/device_type 预设表；worker_only_modules；hallucinated_scripts | ✔ |
 | `.autoresearch/code_checker.yaml` | CodeChecker 规则表（triton 模板 / autotune 合规） | ✔ |
-| `.autoresearch/scripts/ar_vendored/` | vendor 自 akg-hitl 的 DSL adapter + profiler + msprof/nsys runner | ✔ |
+| `.autoresearch/scripts/ar_vendored/` | vendor 自 akg-hitl 的 DSL adapter + profiler + msprof/nsys runner + HTTP worker server | ✔ |
+| `.autoresearch/scripts/server_related/start_worker_service.py` | vendored worker 启动脚本（`--bg` daemon 模式，跨平台） | ✔ |
+| `.autoresearch/scripts/server_related/stop_worker_service.py` | 按端口关掉 daemon worker（带 cmdline 白名单校验） | ✔ |
 | `task.yaml` | 任务配置（每个 task 目录一份，含 dsl/backend/arch/framework 四字段） | 随 task 分发到 worker |
 | `.ar_state/progress.json` | 运行时状态 | — |
 | `.ar_state/plan.md` | 规划 + 结算历史（权威态） | — |
