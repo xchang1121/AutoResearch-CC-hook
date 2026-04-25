@@ -28,7 +28,6 @@ import sys
 import time
 from pathlib import Path
 from typing import Optional
-from urllib.request import Request, urlopen
 
 
 SCRIPTS_DIR = Path(__file__).resolve().parent   # .autoresearch/scripts/
@@ -244,20 +243,15 @@ def _worker_stop(args: argparse.Namespace) -> int:
 
 
 def _worker_status(args: argparse.Namespace) -> int:
-    url = f"http://{args.host}:{args.port}/api/v1/status"
-    try:
-        with urlopen(Request(url, method="GET"), timeout=5) as resp:
-            body = resp.read().decode()
-    except Exception as e:
-        print(f"Worker on {args.host}:{args.port} unreachable: {e}",
+    from hw_detect import fetch_worker_status, normalize_worker_url
+
+    url = normalize_worker_url(f"{args.host}:{args.port}")
+    status = fetch_worker_status(url, timeout=5)
+    if status is None:
+        print(f"Worker on {args.host}:{args.port} unreachable or invalid.",
               file=sys.stderr)
         return 1
-
-    try:
-        parsed = json.loads(body)
-        print(json.dumps(parsed, indent=2, ensure_ascii=False))
-    except json.JSONDecodeError:
-        print(body)
+    print(json.dumps(status, indent=2, ensure_ascii=False))
     return 0
 
 
@@ -300,9 +294,9 @@ def _add_worker_subcommand(sub: argparse._SubParsersAction) -> None:
                         "(default: ascend910b4).")
     p.add_argument("--devices", default="0",
                    help="Comma-separated device IDs, e.g. '2,5' (default: 0).")
-    p.add_argument("--host", default="0.0.0.0",
-                   help="Bind / probe address. 0.0.0.0 by default for --start "
-                        "(all interfaces); 127.0.0.1 for --status by default.")
+    p.add_argument("--host", default="127.0.0.1",
+                   help="Bind / probe address (default: 127.0.0.1). Pass "
+                        "0.0.0.0 only when the worker is intentionally exposed.")
     p.add_argument("--port", type=int, default=9001,
                    help="TCP port (default: 9001).")
     p.add_argument("--bg", action="store_true",

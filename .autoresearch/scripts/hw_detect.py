@@ -143,15 +143,25 @@ def _cpu_arch() -> Optional[str]:
 # Worker status fetch (remote path)
 # ---------------------------------------------------------------------------
 
-def fetch_worker_hardware(worker_url: str, timeout: float = 5.0) -> Optional[dict]:
-    """GET /api/v1/status on the worker. Returns a dict like
-    {"status": "ready", "backend": "ascend", "arch": "ascend910b3",
-     "devices": [5]} or None on failure.
+def normalize_worker_url(url: str) -> str:
+    """Add ``http://`` scheme if missing, strip trailing slashes. Used by
+    every caller of ``/api/v1/status`` so the same input string ('host:port'
+    vs 'http://host:port/') resolves to one canonical URL.
     """
-    url = worker_url.strip()
+    url = url.strip()
     if not url.startswith("http"):
         url = f"http://{url}"
-    url = url.rstrip("/") + "/api/v1/status"
+    return url.rstrip("/")
+
+
+def fetch_worker_status(worker_url: str, timeout: float = 5.0) -> Optional[dict]:
+    """GET ``/api/v1/status`` on the worker. Returns parsed JSON dict or
+    ``None`` on any failure (network, non-JSON, non-dict response). Sole
+    HTTP entry point for worker status queries — both eval-side worker
+    selection (``task_config._select_worker``) and scaffold-side hardware
+    derivation (``fetch_worker_hardware``) call through this helper.
+    """
+    url = normalize_worker_url(worker_url) + "/api/v1/status"
     try:
         with urlopen(Request(url, method="GET"), timeout=timeout) as resp:
             data = json.loads(resp.read().decode())
@@ -160,3 +170,11 @@ def fetch_worker_hardware(worker_url: str, timeout: float = 5.0) -> Optional[dic
     if not isinstance(data, dict):
         return None
     return data
+
+
+def fetch_worker_hardware(worker_url: str, timeout: float = 5.0) -> Optional[dict]:
+    """Hardware-shape view of ``/api/v1/status``. Same payload as
+    ``fetch_worker_status``; kept as a named alias for the scaffold path so
+    the call site reads as "ask the worker what hardware it has".
+    """
+    return fetch_worker_status(worker_url, timeout=timeout)

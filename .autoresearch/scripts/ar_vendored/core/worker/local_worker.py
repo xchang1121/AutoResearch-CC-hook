@@ -25,6 +25,7 @@ from ar_vendored.op.verifier.roofline_utils import (
     compute_roofline_profile,
     write_roofline_profile_result,
 )
+from ar_vendored.utils.tarsafe import safe_tar_extract
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,7 @@ def collect_json_artifacts(directory: str) -> Dict[str, str]:
                 except Exception as e:
                     logger.warning(f"Failed to read file {rel_path}: {e}")
     return artifacts
+
 
 class LocalWorker(WorkerInterface):
     """
@@ -92,7 +94,7 @@ class LocalWorker(WorkerInterface):
                     os.makedirs(extract_dir, exist_ok=True)
                     try:
                         with tarfile.open(tar_path, 'r') as tar_ref:
-                            tar_ref.extractall(extract_dir)
+                            safe_tar_extract(tar_ref, extract_dir)
                     except Exception as e:
                         return False, f"Failed to extract package: {e}", {}
                 elif isinstance(package_data, str):
@@ -197,7 +199,7 @@ class LocalWorker(WorkerInterface):
                 
                 try:
                     with tarfile.open(tar_path, 'r') as tar_ref:
-                        tar_ref.extractall(extract_dir)
+                        safe_tar_extract(tar_ref, extract_dir)
                 except Exception as e:
                     return {'gen_time': None, 'base_time': None, 'speedup': 0.0, 'artifacts': {}, 'error': str(e)}
                 
@@ -384,4 +386,3 @@ class LocalWorker(WorkerInterface):
         except Exception as e:
             logger.error(f"[{task_id}] nsys profiling failed: {e}", exc_info=True)
             return float('inf'), float('inf')
-

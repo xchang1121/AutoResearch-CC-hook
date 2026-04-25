@@ -15,11 +15,15 @@ Output (stdout, last line):
 """
 import json
 import os
-import re
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from phase_machine import compute_next_phase, plan_path
+from phase_machine import (
+    compute_next_phase,
+    parse_plan_line,
+    plan_path,
+    render_plan_line,
+)
 
 
 def main():
@@ -59,50 +63,57 @@ def main():
     settled_item_id = None
     settled_item_desc = ""
     active_line_idx = None
-    next_pending_idx = None
 
-    # Find the (ACTIVE) item
+    # Find the (ACTIVE) pending item via the canonical parser, drop any
+    # render-time tag (e.g. [REACTIVATED]) and rewrite as settled.
     for i, line in enumerate(lines):
-        if "(ACTIVE)" in line and re.match(r'\s*-\s*\[ \]\s*\*\*(\w+)\*\*', line):
-            active_line_idx = i
-            m = re.match(r'(\s*-\s*)\[ \]\s*\*\*(\w+)\*\*\s*(.*)', line)
-            if m:
-                prefix = m.group(1)
-                settled_item_id = m.group(2)
-                rest = m.group(3).replace("(ACTIVE)", "").strip()
-                rest = rest.lstrip(": ").strip()
-                # Keep the full description. Display-time truncation (dashboard,
-                # hook status lines) happens at render time against actual
-                # terminal width.
-                settled_item_desc = rest
+        parsed = parse_plan_line(line)
+        if parsed is None or parsed["done"] or not parsed["active"]:
+            continue
+        active_line_idx = i
+        settled_item_id = parsed["id"]
+        # Keep the full description. Display-time truncation (dashboard,
+        # hook status lines) happens at render time against actual
+        # terminal width.
+        settled_item_desc = parsed["description"]
 
-                # Mark as settled
-                if decision == "KEEP" and metric_val is not None:
-                    tag = f"[KEEP, metric={metric_val:.1f}]"
-                elif decision == "DISCARD":
-                    tag = "[DISCARD]"
-                else:
-                    tag = "[FAIL]"
+        if decision == "KEEP" and metric_val is not None:
+            tag = f"KEEP, metric={metric_val:.1f}"
+        elif decision == "DISCARD":
+            tag = "DISCARD"
+        else:
+            tag = "FAIL"
 
-                lines[i] = f"{prefix}[x] **{settled_item_id}** {tag}: {rest}"
-            break
+        lines[i] = render_plan_line(
+            settled_item_id,
+            description=settled_item_desc,
+            done=True,
+            active=False,
+            tag=tag,
+            indent=parsed["indent"],
+        )
+        break
 
     if active_line_idx is None:
         print(json.dumps({"error": "no (ACTIVE) item found in plan.md"}))
         sys.exit(1)
 
-    # Find next pending item and mark it (ACTIVE)
+    # Promote next pending item to ACTIVE.
     for i, line in enumerate(lines):
         if i == active_line_idx:
             continue
-        m = re.match(r'(\s*-\s*)\[ \]\s*\*\*(\w+)\*\*\s*(.*)', line)
-        if m and "(ACTIVE)" not in line:
-            prefix = m.group(1)
-            item_id = m.group(2)
-            rest = m.group(3).lstrip(": ").strip()
-            lines[i] = f"{prefix}[ ] **{item_id}** (ACTIVE): {rest}"
-            next_pending_idx = i
-            break
+        parsed = parse_plan_line(line)
+        if parsed is None or parsed["done"] or parsed["active"]:
+            continue
+        lines[i] = render_plan_line(
+            parsed["id"],
+            description=parsed["description"],
+            done=False,
+            active=True,
+            tag=parsed["tag"],
+            indent=parsed["indent"],
+        )
+        break
 
     # Add to settled history table
     history_line = f"| {settled_item_id} | {decision} | {metric_val if metric_val is not None else 'N/A'} | {settled_item_desc} |"

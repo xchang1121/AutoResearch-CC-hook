@@ -45,10 +45,14 @@ def main():
 
     progress = load_progress(task_dir) or {}
     active = get_active_item(task_dir)
+    if active is None:
+        print("[PIPELINE] ERROR: no active plan item found in plan.md.")
+        print("[PIPELINE] Create or repair the plan before running pipeline.py.")
+        sys.exit(1)
     # Persist the full description — dashboards/logs do their own display-time
     # truncation based on terminal width.
-    desc = active["description"] if active else "optimization round"
-    plan_item = active["id"] if active else None
+    desc = active["description"]
+    plan_item = active["id"]
 
     # Worker flag
     worker_flag = []
@@ -126,11 +130,20 @@ def main():
     decision = kd_json.get("decision", "FAIL")
 
     # === Step 4: Settle (update plan.md) ===
-    subprocess.run(
+    settle = subprocess.run(
         [sys.executable, os.path.join(SCRIPT_DIR, "settle.py"),
          task_dir, json.dumps(kd_json)],
         capture_output=True, text=True, timeout=10,
     )
+    settle_json = parse_last_json_line(settle.stdout)
+    if settle.returncode != 0 or settle_json is None or settle_json.get("error"):
+        print("[PIPELINE] SETTLE ERROR: plan.md was not updated.")
+        if settle.stdout:
+            print(settle.stdout[-1000:])
+        if settle.stderr:
+            print(settle.stderr[-1000:])
+        print("[PIPELINE] Phase and edit marker left unchanged for manual recovery.")
+        sys.exit(1)
 
     # === Step 5: Compute next phase + clear edit marker ===
     next_phase = compute_next_phase(task_dir)

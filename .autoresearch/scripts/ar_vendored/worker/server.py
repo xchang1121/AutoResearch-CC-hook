@@ -178,13 +178,13 @@ def start_server(host: Optional[str] = None, port: Optional[int] = None):
         host: 监听地址。可从环境变量 WORKER_HOST 设置。
               - IPv4: "0.0.0.0" (所有接口), "127.0.0.1" (本地)
               - IPv6: "::" (所有接口，双栈), "::1" (本地)
-              默认: "0.0.0.0"
+              默认: "127.0.0.1"
         port: 监听端口。可从环境变量 WORKER_PORT 设置。
               默认: 9001
     """
     # 从环境变量读取配置，参数优先
     if host is None:
-        host = os.environ.get("WORKER_HOST", "0.0.0.0")
+        host = os.environ.get("WORKER_HOST", "127.0.0.1")
     if port is None:
         port = int(os.environ.get("WORKER_PORT", "9001"))
     

@@ -116,10 +116,17 @@ Follow the phase guidance. Never stop between phases.
   TodoWrite with it verbatim.
 - **EDIT** — Edit `kernel.py` (multiple Edit calls OK). When done:
   `python .autoresearch/scripts/pipeline.py "$AR_TASK_DIR"`.
-- **FINISH** — Write `.ar_state/ranking.md`, summarize, stop.
+- **FINISH** — Run
+  `python .autoresearch/scripts/final_report.py "$AR_TASK_DIR"` to generate
+  `.ar_state/report.md` and `.ar_state/report.json` plus `.ar_state/report.png`
+  when matplotlib is installed. If matplotlib is unavailable, the script still
+  succeeds with the text/JSON report. Read the Markdown report, summarize, stop.
 
 ## Rules
 
 - Keep going between phases.
 - Hooks block wrong actions and tell you what to do next — read their messages.
 - Never hand-edit `plan.md` or `.ar_state/.phase`; always go through the scripts.
+- Do not use Bash redirection, `python -c`, PowerShell, or mutating git/filesystem
+  commands to write task files; use Edit/Write or the phase scripts so hooks
+  can enforce the workflow.

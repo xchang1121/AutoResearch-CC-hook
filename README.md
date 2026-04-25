@@ -196,8 +196,11 @@ curl http://127.0.0.1:9002/api/v1/status
 ```
 
 `ar_cli.py worker` 子命令还有 `--stop` / `--status` / foreground 模式
-（去掉 `--bg`）；端口就绪探测、PID cmdline 校验避免撞车，详见
-`ar_cli.py worker --help`。多 worker URL 逗号分隔，框架按可达性挑选。
+（去掉 `--bg`）；默认只监听 `127.0.0.1`，配合 SSH tunnel 使用。只有在
+明确需要被局域网访问时才传 `--host 0.0.0.0`。端口就绪探测、PID cmdline
+校验避免撞车，详见 `ar_cli.py worker --help`。多 worker URL 逗号分隔，
+框架按可达性挑选。worker 收到的 tarball 会做路径穿越和 symlink 检查后
+再解包执行。
 
 ## Dashboard
 
@@ -259,7 +262,7 @@ INIT
 | BASELINE | `baseline.py` | seed_metric → progress.json |
 | PLAN / DIAGNOSE / REPLAN | `create_plan.py @<xml_path>` | plan.md（含 (ACTIVE) 标记）+ 全局 pN |
 | EDIT | Edit `kernel.py` → `pipeline.py` | history.jsonl 记录 + 可选 git commit + 下一 .phase |
-| FINISH | Write `ranking.md` | ranking.md |
+| FINISH | Generate final report | report.md / report.json / report.png（可选） |
 
 ## CodeChecker 静态分析
 
@@ -290,7 +293,7 @@ Claude Code 的 PreToolUse / PostToolUse 事件中调用这些规则决定允许
 `INIT` / `GENERATE_REF` / `GENERATE_KERNEL` / `BASELINE` / `PLAN` / `EDIT` /
 `DIAGNOSE` / `REPLAN` / `FINISH`。
 
-**规则表**（[:204-227](.autoresearch/scripts/phase_machine.py#L204-L227)）：
+**规则表**（[:242-271](.autoresearch/scripts/phase_machine.py#L242-L271)）：
 
 ```python
 _BASH_RULES = {
@@ -317,7 +320,7 @@ _EDIT_RULES = {
 DIAGNOSE / REPLAN 需要 `git log`、读文件等 ad-hoc 操作，使用 permissive；
 BASELINE / INIT 只允许单一命令，使用 strict。
 
-**查询函数**（[:277-358](.autoresearch/scripts/phase_machine.py#L277-L358)）：
+**查询函数**（[:331-424](.autoresearch/scripts/phase_machine.py#L331-L424)）：
 `check_bash` 和 `check_edit`，输入 phase 名 + 命令 / 文件名，返回
 `(allowed, reason)`。纯函数，不读写任何状态。
 
@@ -325,7 +328,9 @@ BASELINE / INIT 只允许单一命令，使用 strict。
 `keep_or_discard.py` / `settle.py` 在任何 phase 均禁止手动调用（只能由
 `pipeline.py` 子进程执行）；`git commit` 仅允许 `keep_or_discard.py` 在
 KEEP 时调用。读类命令（`ls` / `cat` / `grep` / `git log|diff|status` /
-`dashboard.py` / `echo` / `pwd`）跨 phase 放行。
+`dashboard.py` / `echo` / `pwd`）跨 phase 放行，但 Bash 侧的重定向、
+管道写入、`python -c`、PowerShell 写文件和 mutating git / filesystem
+命令会被拦截；所有写文件必须走 Edit / Write 或指定脚本入口。
 
 ### 2. 状态文件
 
@@ -347,10 +352,14 @@ KEEP 时调用。读类命令（`ls` / `cat` / `grep` / `git log|diff|status` /
 
 Claude 不直接写 `.phase`。`hook_guard_edit.py` 对 `.ar_state/` 的写入
 走精确白名单：只放行 `.ar_state/plan_items.xml`（`/autoresearch` 写给
-`create_plan.py` 的 XML 入参）和 `.ar_state/ranking.md`（仅 FINISH 阶段）；
+`create_plan.py` 的 XML 入参）；`.ar_state/report.md` / `.ar_state/report.json`
+由 `final_report.py` 在 FINISH 阶段生成，不由 Claude 手写；若环境安装了
+matplotlib，还会生成 `.ar_state/report.png` 优化过程图，未安装则退化为
+纯文本/JSON 报告；
 `.phase` / `progress.json` / `history.jsonl` / `plan.md` / 心跳和 marker
 都由 Hook 和脚本机控，Claude 的 Edit/Write 拦在 PreToolUse 就会被驳回。
-约束生效点是下一次 Hook 进程启动时的规则查询。
+Bash hook 也会阻断 `cat >` / `echo >` / `python -c` 等写入旁路；约束
+生效点是下一次 Hook 进程启动时的规则查询。
 
 ### 3. Hook 执行协议
 
@@ -374,7 +383,9 @@ stdout 输出 `{"decision":"block","reason":"..."}` + `sys.exit(2)` 即阻断
 `hook_guard_edit.py` 在 phase 规则之外还有全局约束：
 
 - `.ar_state/` 精确白名单：仅 `plan_items.xml`（`create_plan.py` 的 XML
-  入参）和 `ranking.md`（FINISH 阶段）可写。`plan.md` / `.phase` /
+  入参）可写。`report.md` / `report.json` / `report.png` 是
+  `final_report.py` 的输出；
+  `plan.md` / `.phase` /
   `progress.json` / `history.jsonl` / 心跳和 marker 一律拦住——这些由
   `create_plan.py` / `settle.py` / `pipeline.py` 写入，手工修改会破坏
   审计记录或让状态机脱轨
@@ -410,8 +421,10 @@ AR_TASK_DIR=…`，PostToolUse 触发 `_handle_activation()`：存在 `.phase`
 `seed_metric` / `baseline_correctness` / plan 状态路由 —— **seed 没
 产出 latency 或 correctness 失败都会回落 GENERATE_KERNEL**，与
 `hook_post_bash` 的在线降级语义一致，避免中断后 resume 把一个没过
-verify 的 seed 直接带进 PLAN。reference.py / kernel.py 的存在性决定
-GENERATE_REF / GENERATE_KERNEL / BASELINE 入口。DIAGNOSE 阶段的
+verify 的 seed 直接带进 PLAN。pre-baseline task 可能还没有
+`progress.json`，这时 resume 仍会放行给 activation hook，由 `.phase`
+或 reference.py / kernel.py 的存在性决定 GENERATE_REF / GENERATE_KERNEL /
+BASELINE 入口。DIAGNOSE 阶段的
 guidance 要求 spawn subagent 输出 Root cause / Fix direction / What to
 avoid，使下一轮 plan 换方向，避免只调整超参。
 
@@ -456,6 +469,7 @@ Claude Code 会直接按 frontmatter 匹配到合适场景。所有 skill 文档
 | `.ar_state/plan.md` | 规划 + 结算历史（权威态） |
 | `.ar_state/history.jsonl` | 每轮 decision / metrics / commit |
 | `.ar_state/plan_items.xml` | PLAN / DIAGNOSE / REPLAN 阶段 Claude 写给 `create_plan.py` 的 XML 入参 |
+| `.ar_state/report.json` / `.ar_state/report.md` / `.ar_state/report.png` | FINISH 阶段由 `final_report.py` 从 task/progress/history/plan 生成的机器可读 + 人类可读报告；`report.png` 需要 matplotlib，缺失时自动跳过 |
 | `.ar_state/.phase` | 当前阶段 |
 | `/tmp/ar_cache/<op>_<sha>/reference.pt` | Worker 缓存的 PyTorch ref 输出（首轮 verify 计算后复用；sha 随 `reference.py` 变化自动失效） |
 | `.claude/settings.json` | Hook + 权限配置 |

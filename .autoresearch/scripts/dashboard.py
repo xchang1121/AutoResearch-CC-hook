@@ -12,7 +12,6 @@ Without --watch: print once and exit.
 import argparse
 import json
 import os
-import re
 import sys
 import time
 
@@ -113,20 +112,6 @@ def load_json(path):
     return json.loads(_read_raw(path))
 
 
-def load_jsonl(path):
-    """Load all entries from a JSONL file; silently drops malformed lines."""
-    if not os.path.exists(path):
-        return []
-    out = []
-    for line in _read_raw(path).split("\n"):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            out.append(json.loads(line))
-        except json.JSONDecodeError:
-            pass
-    return out
 
 
 def load_plan(path):
@@ -178,7 +163,7 @@ def render(task_dir, history_offset=0, history_window=None):
     history_window: how many rounds to show (None = auto based on terminal height).
     """
     progress = load_json(_pm.progress_path(task_dir))
-    history_all = load_jsonl(_pm.history_path(task_dir))
+    history_all = _pm.load_history(task_dir, on_corrupt="skip")
     plan_text, plan_mtime = load_plan(_pm.plan_path(task_dir))
 
     # Get terminal width for responsive layout. Tables render as wide as the
@@ -346,33 +331,24 @@ def render(task_dir, history_offset=0, history_window=None):
 
     plan_lines = plan_text.strip().split("\n")
     for pl in plan_lines:
-        pl = pl.strip()
-        if not pl.startswith("- ["):
+        parsed = _pm.parse_plan_line(pl)
+        if parsed is None:
             continue
 
-        # Parse item: - [x] **p1** [KEEP, metric=...]: description
-        #             - [ ] **p2** (ACTIVE): description
-        #             - [ ] **p3**: description
-        m = re.match(r'-\s*\[([ x])\]\s*\*\*(\w+)\*\*\s*(.*)', pl)
-        if not m:
-            continue
-        done = m.group(1) == 'x'
-        item_id = m.group(2)
-        rest = m.group(3).strip()
+        item_id = parsed["id"]
+        is_active = parsed["active"]
+        tag = parsed["tag"]
 
-        is_active = "(ACTIVE)" in rest
-        rest = rest.replace("(ACTIVE)", "").strip()
-
-        # Extract outcome tag like [KEEP, metric=1294.77] or [DISCARD] or [SKIP]
+        # Extract a status keyword from the tag prefix (KEEP / DISCARD /
+        # FAIL / SKIP). Any extra metadata (e.g. ``KEEP, metric=...``) is
+        # ignored at render time — the dashboard only colors by status.
         outcome = ""
-        om = re.match(r'\[(KEEP|DISCARD|FAIL|SKIP)[^\]]*\]:?\s*(.*)', rest)
-        if om:
-            outcome = om.group(1)
-            desc = om.group(2).lstrip(": ").strip()
-        else:
-            desc = rest.lstrip(": ").strip()
+        for kw in ("KEEP", "DISCARD", "FAIL", "SKIP"):
+            if tag.startswith(kw):
+                outcome = kw
+                break
 
-        desc = _fit(desc, plan_desc_avail)
+        desc = _fit(parsed["description"], plan_desc_avail)
 
         if is_active:
             status_str = f"{CYAN}> ACTIVE {RESET}"
@@ -404,48 +380,12 @@ def render(task_dir, history_offset=0, history_window=None):
 
 
 def _auto_detect_task_dir() -> str:
-    """Auto-detect task_dir: latest-modified ar_tasks/ dir wins.
-
-    Uses file modification times (specifically .ar_state/progress.json or .phase)
-    to pick the actively running task, not the one pointed to by stale .active_task.
+    """Auto-detect task_dir for the watch view. Newest mtime wins so a
+    long-stale ``.active_task`` does not pin the dashboard to an abandoned
+    task; the pointer is only consulted as a fallback. The discovery rule
+    itself lives in ``phase_machine.discover_task_dir``.
     """
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))
-
-    # Find all task dirs and pick the one with most recent activity
-    tasks_dir = os.path.join(project_root, "ar_tasks")
-    if os.path.isdir(tasks_dir):
-        subdirs_with_mtime = []
-        for d in os.listdir(tasks_dir):
-            full = os.path.join(tasks_dir, d)
-            if os.path.isdir(full) and os.path.exists(os.path.join(full, "task.yaml")):
-                # Prefer progress.json or .phase mtime (indicates active work),
-                # fallback to dir mtime
-                candidates = [
-                    _pm.progress_path(full),
-                    _pm.state_path(full, ".phase"),
-                    full,
-                ]
-                latest_mtime = 0
-                for c in candidates:
-                    if os.path.exists(c):
-                        latest_mtime = max(latest_mtime, os.path.getmtime(c))
-                subdirs_with_mtime.append((full, latest_mtime))
-
-        if subdirs_with_mtime:
-            # Pick most recently modified
-            subdirs_with_mtime.sort(key=lambda x: x[1], reverse=True)
-            return subdirs_with_mtime[0][0]
-
-    # Fallback: .active_task pointer written by hook_post_bash on activation
-    active_file = os.path.join(project_root, ".autoresearch", ".active_task")
-    if os.path.exists(active_file):
-        with open(active_file, "r") as f:
-            td = f.read().strip()
-        if td and os.path.isdir(td):
-            return td
-
-    return ""
+    return _pm.discover_task_dir(prefer_active=False)
 
 
 def main():

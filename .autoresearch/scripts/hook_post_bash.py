@@ -18,7 +18,6 @@ The inner pipeline steps (quick_check / eval_wrapper / keep_or_discard /
 settle) are subprocess children of pipeline.py and never re-enter this hook,
 so they don't need their own phase constants or branches here.
 """
-import json
 import os
 import re
 import sys
@@ -28,9 +27,9 @@ from hook_utils import read_hook_input, emit_status, emit_todowrite_context
 from phase_machine import (
     read_phase, write_phase, get_guidance, compute_resume_phase,
     get_task_dir, set_task_dir, get_active_item, touch_heartbeat,
-    load_progress, update_progress,
+    load_history, load_progress, update_progress,
     validate_reference, validate_kernel, is_placeholder_file,
-    progress_path, history_path, plan_path, edit_marker_path, state_path,
+    progress_path, plan_path, edit_marker_path, state_path,
     PHASE_FILE,
     BASELINE, PLAN, EDIT, DIAGNOSE, REPLAN, GENERATE_REF, GENERATE_KERNEL,
 )
@@ -231,18 +230,15 @@ def _print_resume_context(task_dir: str):
         f"Failures: {failures} | Plan v{plan_ver}"
     )
 
-    hpath = history_path(task_dir)
-    if os.path.exists(hpath):
-        with open(hpath, "r") as f:
-            lines = [json.loads(l) for l in f if l.strip()]
-        if lines:
-            emit_status(f"[AR] Last {min(3, len(lines))} rounds:")
-            for rec in lines[-3:]:
-                rnd = rec.get("round")
-                rnd = "?" if rnd is None else str(rnd)
-                dec = rec.get("decision", "?")
-                desc = rec.get("description", "")[:40]
-                emit_status(f"[AR]   R{rnd}: {dec} — {desc}")
+    history = load_history(task_dir, on_corrupt="skip")
+    if history:
+        emit_status(f"[AR] Last {min(3, len(history))} rounds:")
+        for rec in history[-3:]:
+            rnd = rec.get("round")
+            rnd = "?" if rnd is None else str(rnd)
+            dec = rec.get("decision", "?")
+            desc = rec.get("description", "")[:40]
+            emit_status(f"[AR]   R{rnd}: {dec} — {desc}")
 
     if os.path.exists(plan_path(task_dir)):
         active = get_active_item(task_dir)

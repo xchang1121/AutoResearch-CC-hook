@@ -44,7 +44,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(__file__))
 from phase_machine import (
     load_progress, save_progress, get_plan_items, append_history,
-    plan_path, progress_path, history_path,
+    plan_path, progress_path, load_history, render_plan_line,
 )
 
 
@@ -190,21 +190,11 @@ def _check_diversity(items):
 
 def _warn_repeated_failures(task_dir: str):
     """Warn on stderr if recent history shows repeated failure keywords."""
-    hpath = history_path(task_dir)
-    if not os.path.exists(hpath):
-        return
-    failed = []
-    with open(hpath, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if rec.get("decision") in ("DISCARD", "FAIL"):
-                failed.append(rec.get("description", "").lower())
+    failed = [
+        (rec.get("description") or "").lower()
+        for rec in load_history(task_dir, on_corrupt="skip")
+        if rec.get("decision") in ("DISCARD", "FAIL")
+    ]
     if len(failed) < 3:
         return
     tokens = Counter()
@@ -220,21 +210,10 @@ def _warn_repeated_failures(task_dir: str):
 
 
 def _load_history(task_dir: str) -> list:
-    """Return list of history records (oldest first)."""
-    hpath = history_path(task_dir)
-    if not os.path.exists(hpath):
-        return []
-    out = []
-    with open(hpath, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                out.append(json.loads(line))
-            except json.JSONDecodeError:
-                pass
-    return out
+    """Thin wrapper around ``phase_machine.load_history`` for the planner —
+    silent drop policy preserved (planner only needs a best-effort summary).
+    """
+    return load_history(task_dir, on_corrupt="skip")
 
 
 def _validate_reactivations(items: list, task_dir: str, old_pending_ids: set):
@@ -414,9 +393,16 @@ def _allocate_ids(items: list, next_pid: int) -> tuple:
 def _render_plan(version: int, item_ids: list, items: list, settled_rows: str) -> str:
     lines = [f"# Plan v{version}", "", "## Active Items"]
     for i, (item, pid) in enumerate(zip(items, item_ids)):
-        marker = " (ACTIVE)" if i == 0 else ""
-        reactivation_tag = " [REACTIVATED]" if item.get("reactivate_pid") else ""
-        lines.append(f"- [ ] **{pid}**{marker}{reactivation_tag}: {item['desc'].strip()}")
+        # The first item is ACTIVE; reactivated items keep [REACTIVATED]
+        # tag so downstream readers can distinguish a fresh attempt at an
+        # old idea from a brand-new one.
+        lines.append(render_plan_line(
+            pid,
+            description=item["desc"].strip(),
+            done=False,
+            active=(i == 0),
+            tag=("REACTIVATED" if item.get("reactivate_pid") else ""),
+        ))
         lines.append(f"  - rationale: {item['rationale'].strip()}")
         lines.append(f"  - keywords: {item['keywords'].strip()}")
     lines.append("")

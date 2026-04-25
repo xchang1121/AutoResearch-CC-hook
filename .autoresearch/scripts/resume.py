@@ -14,44 +14,19 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from phase_machine import (
     ALL_PHASES, load_progress,
-    progress_path, plan_path, state_path, edit_marker_path,
-    has_pending_items,
+    plan_path, state_path, edit_marker_path,
+    has_pending_items, discover_task_dir,
+    GENERATE_REF, GENERATE_KERNEL, BASELINE,
 )
 
 
 def _find_latest_task() -> str:
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.abspath(os.path.join(script_dir, "..", ".."))
-
-    # 1. Try .active_task
-    active_file = os.path.join(project_root, ".autoresearch", ".active_task")
-    if os.path.exists(active_file):
-        with open(active_file, "r") as f:
-            td = f.read().strip()
-        if td and os.path.isdir(td):
-            return td
-        # Stale pointer (task dir was deleted) — clean it so future calls skip straight to scan
-        try:
-            os.remove(active_file)
-        except OSError:
-            pass
-
-    # 2. Latest mtime from ar_tasks/
-    tasks_dir = os.path.join(project_root, "ar_tasks")
-    if not os.path.isdir(tasks_dir):
-        return ""
-
-    candidates = []
-    for d in os.listdir(tasks_dir):
-        full = os.path.join(tasks_dir, d)
-        if os.path.isdir(full) and os.path.exists(os.path.join(full, "task.yaml")):
-            pfile = progress_path(full)
-            mtime = os.path.getmtime(pfile) if os.path.exists(pfile) else os.path.getmtime(full)
-            candidates.append((full, mtime))
-    if not candidates:
-        return ""
-    candidates.sort(key=lambda x: x[1], reverse=True)
-    return candidates[0][0]
+    """Pick the task to resume. Honors ``.active_task`` first since the user
+    explicitly set it by activating that task; falls back to newest-mtime
+    when the pointer is missing or stale. The discovery rule itself lives
+    in ``phase_machine.discover_task_dir``.
+    """
+    return discover_task_dir(prefer_active=True)
 
 
 def _validate(task_dir: str) -> tuple[bool, str]:
@@ -64,22 +39,34 @@ def _validate(task_dir: str) -> tuple[bool, str]:
         if not os.path.exists(os.path.join(task_dir, rel)):
             return False, f"Missing required file: {rel}"
 
-    progress = load_progress(task_dir)
-    if progress is None:
-        return False, "Missing or corrupt .ar_state/progress.json — task was never initialized"
-
-    required_fields = {"task", "eval_rounds", "max_rounds", "status"}
-    missing = required_fields - set(progress.keys())
-    if missing:
-        return False, f"progress.json missing fields: {missing} (incompatible version)"
-
     # Validate .phase if present
     phase_file = state_path(task_dir, ".phase")
+    phase = None
     if os.path.exists(phase_file):
         with open(phase_file, "r") as f:
             phase = f.read().strip()
         if phase not in ALL_PHASES:
             return False, f"Unknown phase '{phase}' in .phase file (incompatible version)"
+
+    progress = load_progress(task_dir)
+    if progress is None:
+        # Pre-baseline tasks do not have progress.json yet: --desc starts in
+        # GENERATE_REF, --ref-only starts in GENERATE_KERNEL, and fresh
+        # activation may pin BASELINE before the first baseline.py run. Let
+        # hook_post_bash._handle_activation decide the exact guidance.
+        if phase in (GENERATE_REF, GENERATE_KERNEL, BASELINE):
+            return True, ""
+        if phase is None:
+            return True, ""
+        return False, (
+            "Missing or corrupt .ar_state/progress.json for post-baseline "
+            f"phase {phase} — task state is incomplete"
+        )
+
+    required_fields = {"task", "eval_rounds", "max_rounds", "status"}
+    missing = required_fields - set(progress.keys())
+    if missing:
+        return False, f"progress.json missing fields: {missing} (incompatible version)"
 
     # Validate plan.md if present. A fully-consumed plan (0 pending) is legal —
     # compute_resume_phase routes it to REPLAN. validate_plan would reject it
@@ -156,9 +143,12 @@ def main():
             pass
 
     progress = load_progress(task_dir) or {}
-    print(f"[resume] Task: {progress.get('task')}")
-    print(f"[resume] Round: {progress.get('eval_rounds')}/{progress.get('max_rounds')}")
-    print(f"[resume] Best: {progress.get('best_metric')} | Baseline: {progress.get('baseline_metric')}")
+    if progress:
+        print(f"[resume] Task: {progress.get('task')}")
+        print(f"[resume] Round: {progress.get('eval_rounds')}/{progress.get('max_rounds')}")
+        print(f"[resume] Best: {progress.get('best_metric')} | Baseline: {progress.get('baseline_metric')}")
+    else:
+        print("[resume] Task: pre-baseline (progress.json not created yet)")
     phase_file = state_path(task_dir, ".phase")
     if os.path.exists(phase_file):
         with open(phase_file) as f:

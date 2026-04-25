@@ -115,9 +115,10 @@ def detect_local_backend(backend: Optional[str]) -> tuple[bool, str]:
 
 def _extract_package(package_bytes: bytes, dst_dir: str) -> None:
     """Extract a tar.gz produced by task_config._build_package into dst_dir."""
+    from ar_vendored.utils.tarsafe import safe_tar_extract
     buf = io.BytesIO(package_bytes)
     with tarfile.open(fileobj=buf, mode="r:gz") as tar:
-        tar.extractall(dst_dir)
+        safe_tar_extract(tar, dst_dir)
 
 
 def _build_env(device_id: int) -> dict:

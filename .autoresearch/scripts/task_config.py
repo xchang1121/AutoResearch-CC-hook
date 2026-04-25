@@ -177,31 +177,15 @@ def load_task_config(task_dir: str) -> Optional[TaskConfig]:
 # Remote Worker Client (stdlib only — uses urllib + tarfile)
 # ---------------------------------------------------------------------------
 
-def _normalize_worker_url(url: str) -> str:
-    """Ensure URL has scheme. '127.0.0.1:9111' → 'http://127.0.0.1:9111'."""
-    url = url.strip()
-    if not url.startswith("http"):
-        url = f"http://{url}"
-    return url.rstrip("/")
-
-
-def _worker_status(worker_url: str, timeout: float = 5.0) -> Optional[dict]:
-    """GET /api/v1/status. Returns parsed JSON or None on failure."""
-    url = f"{_normalize_worker_url(worker_url)}/api/v1/status"
-    try:
-        req = Request(url, method="GET")
-        with urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode())
-    except Exception:
-        return None
-
-
 def _select_worker(worker_urls: list) -> Optional[str]:
-    """Pick the first reachable worker. Simple round-robin fallback."""
+    """Pick the first reachable worker. Simple round-robin fallback. URL
+    normalization and the actual ``/api/v1/status`` GET live in
+    ``hw_detect`` so eval-side and scaffold-side share one client.
+    """
+    from hw_detect import fetch_worker_status, normalize_worker_url
     for url in worker_urls:
-        url = _normalize_worker_url(url)
-        status = _worker_status(url)
-        if status is not None:
+        url = normalize_worker_url(url)
+        if fetch_worker_status(url) is not None:
             return url
     return None
 
@@ -852,7 +836,8 @@ def run_remote_eval(task_dir: str, config: TaskConfig,
     if not urls:
         return EvalResult(correctness=False, error="no worker_urls configured")
 
-    urls = [_normalize_worker_url(u) for u in urls]
+    from hw_detect import normalize_worker_url
+    urls = [normalize_worker_url(u) for u in urls]
 
     # Select reachable worker
     worker_url = _select_worker(urls)
