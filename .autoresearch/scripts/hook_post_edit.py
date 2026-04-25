@@ -67,9 +67,26 @@ def _commit_seed(task_dir: str, paths, message: str) -> str | None:
         return None
 
 
+def _resolved_file_path(tool_name: str, tool_input: dict) -> str:
+    """Pick the single file path the post-edit hook should react to.
+
+    Edit/Write/NotebookEdit have one path per call. MultiEdit's batch
+    targets a single `file_path` in current Claude Code (the `edits` list
+    only carries old/new strings), so the same field works there.
+    Phase advancement is per-tool-call, not per-edit, so collapsing the
+    batch to its file_path is correct.
+    """
+    if tool_name in ("Edit", "Write", "MultiEdit"):
+        return tool_input.get("file_path", "") or ""
+    if tool_name == "NotebookEdit":
+        return tool_input.get("notebook_path", "") or tool_input.get("file_path", "") or ""
+    return ""
+
+
 def main():
     hook_input = read_hook_input()
-    if hook_input.get("tool_name", "") not in ("Edit", "Write"):
+    tool_name = hook_input.get("tool_name", "")
+    if tool_name not in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
         sys.exit(0)
 
     task_dir = get_task_dir()
@@ -77,7 +94,7 @@ def main():
         sys.exit(0)
     touch_heartbeat(task_dir)
 
-    file_path = hook_input.get("tool_input", {}).get("file_path", "")
+    file_path = _resolved_file_path(tool_name, hook_input.get("tool_input", {}))
     if not file_path:
         sys.exit(0)
 

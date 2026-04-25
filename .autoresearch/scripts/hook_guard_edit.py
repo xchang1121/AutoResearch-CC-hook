@@ -78,9 +78,40 @@ def _edit_phase_git_gate(task_dir: str, editable_files):
         f.write("1")
 
 
+def _extract_file_paths(tool_name: str, tool_input: dict) -> list:
+    """Pull every file path the tool would write, across the four shapes
+    Claude Code can dispatch under our matcher. Returning a list (rather
+    than a single path) means MultiEdit's batch — which previously slipped
+    through entirely because the hook only read `tool_input.file_path` —
+    is now policed file-by-file.
+    """
+    if tool_name in ("Edit", "Write"):
+        fp = tool_input.get("file_path", "")
+        return [fp] if fp else []
+    if tool_name == "MultiEdit":
+        # Schema: {"file_path": "<single file>", "edits": [{old_string, new_string}, ...]}
+        # The single file_path applies to every edit in the batch, so one
+        # entry is enough — but fall back to per-edit file_path if a future
+        # variant ever ships one.
+        out = []
+        fp = tool_input.get("file_path", "")
+        if fp:
+            out.append(fp)
+        for e in tool_input.get("edits", []) or []:
+            efp = (e or {}).get("file_path", "")
+            if efp and efp not in out:
+                out.append(efp)
+        return out
+    if tool_name == "NotebookEdit":
+        fp = tool_input.get("notebook_path", "") or tool_input.get("file_path", "")
+        return [fp] if fp else []
+    return []
+
+
 def main():
     hook_input = read_hook_input()
-    if hook_input.get("tool_name", "") not in ("Edit", "Write"):
+    tool_name = hook_input.get("tool_name", "")
+    if tool_name not in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
         sys.exit(0)
 
     task_dir = get_task_dir()
@@ -88,26 +119,32 @@ def main():
         sys.exit(0)
     touch_heartbeat(task_dir)
 
-    file_path = hook_input.get("tool_input", {}).get("file_path", "")
-    if not file_path:
+    file_paths = _extract_file_paths(tool_name, hook_input.get("tool_input", {}))
+    if not file_paths:
         sys.exit(0)
-
-    rel = _rel_to_task(file_path, task_dir)
-    if rel is None:
-        sys.exit(0)  # file outside task_dir — not our concern
 
     from task_config import load_task_config
     config = load_task_config(task_dir)
     editable_files = list(config.editable_files) if config else []
-
     phase = read_phase(task_dir)
-    ok, reason = check_edit(phase, rel, editable_files)
-    if not ok:
-        _block(f"[AR] {reason}. {get_guidance(task_dir)}")
 
-    # Phase says OK. For EDIT writes to editable files, also check the git
-    # state gate (previous-round leftovers).
-    if phase == EDIT and rel in set(editable_files):
+    # Validate every path the tool will touch. First denial wins; reporting
+    # the exact rejected path makes MultiEdit batches debuggable.
+    saw_editable_in_task = False
+    for fp in file_paths:
+        rel = _rel_to_task(fp, task_dir)
+        if rel is None:
+            continue  # file outside task_dir — not our concern
+        ok, reason = check_edit(phase, rel, editable_files)
+        if not ok:
+            _block(f"[AR] {reason} (target: {rel}). {get_guidance(task_dir)}")
+        if rel in set(editable_files):
+            saw_editable_in_task = True
+
+    # Phase says OK for everything. For EDIT writes to editable files, also
+    # check the git state gate (previous-round leftovers). One gate fires
+    # per tool call regardless of how many editable files the batch touches.
+    if phase == EDIT and saw_editable_in_task:
         _edit_phase_git_gate(task_dir, editable_files)
 
     sys.exit(0)

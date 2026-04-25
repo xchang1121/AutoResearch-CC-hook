@@ -183,12 +183,50 @@ _READONLY_PATTERNS = [
 # Bash commands are a convenience surface for reading context and invoking the
 # phase scripts. They must not become a second write API that bypasses
 # hook_guard_edit's precise file allowlist.
-_BASH_WRITE_META_RE = re.compile(r"(^|[^<])>(?!&)|>>|<\(|\|\s*(tee|cat|python|perl|ruby|node|powershell|pwsh)\b")
+# Shell write meta-syntax. Matched against the command AFTER quoted spans are
+# blanked by `_strip_shell_quotes` so XML/text payloads do not false-positive.
+#   `(^|[^<])>(?!&)` — bare `>file` (also catches `2>file`); excludes `>&fd`
+#                      file-descriptor dup and the second `<` of `<<-` heredoc
+#   `>>`             — `>>file` append
+#   `<\(`            — process substitution `<(…)` plumbs another command's
+#                      output as a fake file
+#   `\|\s*(...)\b`   — pipe into a writer/interpreter
+#
+# Heredoc / herestring (`<<` / `<<<`) is INTENTIONALLY not in this set:
+# `python create_plan.py "$DIR" - << 'EOF' ... EOF` is the documented
+# stdin-driven plan submission path (see `.claude/commands/autoresearch.md`).
+# Stdin-as-program — the actual bypass — is caught by
+# `_INTERPRETER_STDIN_PROG_RE` below, which only fires when the heredoc /
+# herestring lands on an interpreter with no intervening script argument.
+_BASH_WRITE_META_RE = re.compile(
+    r"(^|[^<])>(?!&)|>>|<\(|\|\s*(tee|cat|python|perl|ruby|node|powershell|pwsh)\b"
+)
+# Interpreter-stdin-as-program: `python << EOF`, `bash <<<"…"`, `node <<` —
+# these feed the heredoc / herestring body to the interpreter as the program
+# to execute (no `-c`, no script file). The middle `(?:\s+-\S+)*` allows
+# leading flags like `python -u <<` but disallows a script-file token, so
+# `python create_plan.py - << 'EOF'` is permitted. `bash -c "…"` is caught
+# separately in `_BASH_MUTATING_PATTERNS`.
+_INTERPRETER_STDIN_PROG_RE = re.compile(
+    r"\b(python|bash|sh|zsh|dash|fish|ash|ksh|perl|ruby|node|powershell|pwsh)"
+    r"(?:\d+(?:\.\d+)?)?(?:\s+-\S+)*\s*<<<?"
+)
 _BASH_MUTATING_PATTERNS = [
-    r"\bpython(?:\d+(?:\.\d+)?)?\s+(-c|-m\s+(?:pathlib|shutil|os|subprocess))\b",
+    # `python` invoked as a code-execution surface rather than a script runner:
+    # `-c CMD`, `-` (read stdin), `-m pathlib|shutil|os|subprocess` (these
+    # modules expose file mutation when run as scripts). Bare `python <<…`
+    # is caught by `_INTERPRETER_STDIN_PROG_RE`.
+    r"\bpython(?:\d+(?:\.\d+)?)?\s+(-c|-(?=\s|$)|-m\s+(?:pathlib|shutil|os|subprocess))\b",
+    # Nested shell-as-interpreter: `bash -c "..."`, `sh -c …`, etc. The inner
+    # command is quoted, so `_strip_shell_quotes` blanks it before the meta-RE
+    # runs and `>file` inside the quotes would otherwise slip through.
+    r"\b(bash|sh|zsh|dash|fish|ash|ksh)\s+-c\b",
     r"\b(powershell|pwsh)\b",
     r"\b(Set-Content|Add-Content|Out-File|New-Item|Remove-Item|Move-Item|Copy-Item)\b",
-    r"\b(rm|mv|cp|touch|truncate|chmod|chown|mkdir|rmdir)\b",
+    # Bare-form write/move utilities. `tee` and `dd` were the two common
+    # ways to write a file without a redirection token (`tee FILE`,
+    # `dd of=FILE`). Word boundaries keep `committee` / `add` / etc. safe.
+    r"\b(rm|mv|cp|touch|truncate|chmod|chown|mkdir|rmdir|tee|dd)\b",
     r"\bgit\s+(add|checkout|restore|reset|clean|merge|rebase|switch|stash|tag|push|pull|fetch|commit)\b",
 ]
 
@@ -214,6 +252,59 @@ def _strip_shell_quotes(command: str) -> str:
         else:
             out.append(ch)
     return "".join(out)
+
+
+_HEREDOC_OPEN_RE = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?")
+_HERESTRING_RE = re.compile(r"<<<\s*(\S+)")
+
+
+def _strip_heredoc_bodies(command: str) -> str:
+    """Blank heredoc bodies and herestring payloads.
+
+    Same intent as `_strip_shell_quotes`: textual data fed to a command
+    should not look like shell metasyntax to the downstream regexes. The
+    documented `python create_plan.py "$DIR" - << 'EOF' <items>... EOF`
+    flow shipped XML bodies that contain `>` / `>>` characters; without
+    this pass `_BASH_WRITE_META_RE` treats `</desc>` as a redirection.
+
+    Handles `<<DELIM`, `<<-DELIM`, `<<'DELIM'`, `<<"DELIM"` (terminator
+    must be a line equal to DELIM, leading tabs allowed for `<<-`) and
+    `<<<token` herestrings.
+
+    Idempotent. Apply BEFORE `_strip_shell_quotes` so the opener's quoted
+    delimiter (`<< 'EOF'`) still has its quotes when the regex runs.
+    """
+    # Herestrings first: blank the single token that follows `<<<`.
+    def _blank_herestring(m):
+        return "<<<" + " " * (m.end() - m.start() - 3)
+    command = _HERESTRING_RE.sub(_blank_herestring, command)
+
+    # Heredocs: scan line-by-line, blank lines from after the opener until
+    # the matching delimiter line.
+    lines = command.split("\n")
+    out = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        m = _HEREDOC_OPEN_RE.search(line)
+        if not m:
+            i += 1
+            continue
+        delim = m.group(1)
+        # Optional `<<-` strips leading tabs from both body and delimiter.
+        dash = line[m.start():m.start() + 3] == "<<-"
+        i += 1
+        while i < len(lines):
+            body = lines[i]
+            terminator = body.lstrip("\t") if dash else body
+            if terminator == delim:
+                out.append(lines[i])
+                i += 1
+                break
+            out.append(" " * len(body))
+            i += 1
+    return "\n".join(out)
 
 
 class _BashPolicy:
@@ -318,12 +409,20 @@ def _looks_mutating_bash(command: str) -> bool:
     """Conservative guard for Bash-side writes.
 
     Edit/Write hooks own file mutation policy. If a Bash command has shell
-    write syntax or calls a commonly mutating command, it must go through the
-    phase policy instead of the cross-phase readonly shortcut.
+    write syntax, an interpreter reading its program from stdin (heredoc /
+    herestring), or calls a commonly mutating command, it must go through
+    the phase policy instead of the cross-phase readonly shortcut.
     """
     cmd = command.strip()
-    unquoted = _strip_shell_quotes(cmd)
+    # Heredoc bodies first — the opener (`<< 'EOF'`) needs its quoted
+    # delimiter intact to find the closing line. After bodies are blanked,
+    # strip remaining quoted spans (including the now-redundant 'EOF'
+    # delimiter quotes themselves).
+    unquoted = _strip_heredoc_bodies(cmd)
+    unquoted = _strip_shell_quotes(unquoted)
     if _BASH_WRITE_META_RE.search(unquoted):
+        return True
+    if _INTERPRETER_STDIN_PROG_RE.search(unquoted):
         return True
     return any(re.search(pat, unquoted) for pat in _BASH_MUTATING_PATTERNS)
 
