@@ -149,11 +149,6 @@ def touch_heartbeat(task_dir: str):
               f"misreport this task as inactive.", file=sys.stderr)
 
 
-def clear_task_dir():
-    """Remove .active_task file (session ended)."""
-    if os.path.exists(_ACTIVE_TASK_FILE):
-        os.remove(_ACTIVE_TASK_FILE)
-
 # ---------------------------------------------------------------------------
 # Phase rules — the declarative authority on what's allowed per phase.
 #
@@ -232,6 +227,11 @@ _BASH_MUTATING_PATTERNS = [
     # `dd of=FILE`). Word boundaries keep `committee` / `add` / etc. safe.
     r"\b(rm|mv|cp|touch|truncate|chmod|chown|mkdir|rmdir|tee|dd)\b",
     r"\bgit\s+(add|checkout|restore|reset|clean|merge|rebase|switch|stash|tag|push|pull|fetch|commit)\b",
+    # `find ... -delete` mutates regardless of how innocent the rest of the
+    # command looks (no rm/mv to flag it). Targets `-delete` on the same
+    # command (no `;`/`|`/`&` separator before it). `find ... -exec rm`
+    # is already caught by the rm pattern above.
+    r"\bfind\s[^;|&]*\s-delete\b",
 ]
 
 
@@ -342,13 +342,6 @@ _EDIT_RULES = {
     EDIT:            {"editable"},
     # All other phases: no writable user files.
 }
-
-# Phases where Claude can edit editable_files (typically kernel.py).
-# Kept as a set for hook_post_edit's `phase in CODE_EDIT_PHASES` check; it
-# mirrors _EDIT_RULES.
-CODE_EDIT_PHASES = {p for p, classes in _EDIT_RULES.items() if "editable" in classes}
-REF_WRITE_PHASES = {p for p, classes in _EDIT_RULES.items() if "ref" in classes}
-
 
 # Shared plan-item scaffolding shown in PLAN / DIAGNOSE / REPLAN guidance.
 # The example is deliberately a short SENTENCE (not a snake_case identifier) —
@@ -1438,3 +1431,152 @@ def auto_rollback(task_dir: str):
                            cwd=repo_root, capture_output=True)
     except Exception as e:
         print(f"[AR] Rollback failed: {e}", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+# Transition emission — the single place that turns a phase change into
+# the message Claude reads.
+#
+# Why this lives here: `emit_transition` blends pure I/O (writing to
+# stdout/stderr) with policy (which guidance / resume context / TodoWrite
+# addendum to attach). The policy half wants this module's helpers
+# (`get_guidance`, `write_phase`, `get_plan_items`, `load_progress`,
+# `load_history`, `get_active_item`, `plan_path`). hook_utils.py stays
+# pure I/O; everything that's a content choice lives here.
+#
+# The contract: hooks call `emit_transition` at most ONCE per run.
+# All conditional pieces are flags on a single call, not separate emits.
+# That's enforced structurally by the helpers below — there is no
+# `emit_partial` or `append_more` API. Multiple emits would re-introduce
+# the proxy-drops-non-final-JSON bug we already paid for twice.
+# ---------------------------------------------------------------------------
+
+
+def _resume_context_lines(task_dir: str) -> list:
+    """Lines describing where a resumed task left off: round counter,
+    best vs baseline metric, recent decisions, active plan item.
+
+    Returns a list (not printed). Caller folds these into the same
+    additionalContext payload as the [AR Phase: ...] guidance so they
+    arrive in one PostToolUse JSON line."""
+    progress = load_progress(task_dir)
+    if not progress:
+        return []
+
+    lines = []
+    rounds = progress.get("eval_rounds", 0)
+    max_rounds = progress.get("max_rounds", "?")
+    best = progress.get("best_metric")
+    baseline = progress.get("baseline_metric")
+    failures = progress.get("consecutive_failures", 0)
+    plan_ver = progress.get("plan_version", 0)
+    lines.append(
+        f"[AR] Resume context: Round {rounds}/{max_rounds} | "
+        f"Best: {best} | Baseline: {baseline} | "
+        f"Failures: {failures} | Plan v{plan_ver}"
+    )
+
+    history = load_history(task_dir, on_corrupt="skip")
+    if history:
+        lines.append(f"[AR] Last {min(3, len(history))} rounds:")
+        for rec in history[-3:]:
+            rnd = rec.get("round")
+            rnd = "?" if rnd is None else str(rnd)
+            dec = rec.get("decision", "?")
+            desc = rec.get("description", "")[:40]
+            lines.append(f"[AR]   R{rnd}: {dec} — {desc}")
+
+    if os.path.exists(plan_path(task_dir)):
+        active = get_active_item(task_dir)
+        if active:
+            lines.append(
+                f"[AR] Active item: {active['id']}: {active['description'][:50]}"
+            )
+        lines.append(
+            "[AR] Read .ar_state/plan.md and .ar_state/history.jsonl for full context."
+        )
+
+    return lines
+
+
+def _todowrite_addendum(task_dir: str) -> str:
+    """Render the TodoWrite-mirror payload for the current plan, or "" when
+    there are no live items (all settled, REPLAN pending — caller's
+    headline carries the next-step itself in that case).
+
+    Mirrors only pending + in_progress items — settled rows live in
+    plan.md's history table and history.jsonl, so duplicating them in the
+    UI's TodoWrite list would lie about what's actively in flight."""
+    live = [it for it in get_plan_items(task_dir) if not it["done"]]
+    if not live:
+        return ""
+
+    todos = []
+    for it in live:
+        status = "in_progress" if it["active"] else "pending"
+        todos.append({
+            "content": f"[{it['id']}] {it['description'][:80]}",
+            "activeForm": f"Working on {it['id']}: {it['description'][:60]}",
+            "status": status,
+        })
+    return (
+        "Required action: call TodoWrite NOW with the exact list below. "
+        "This REPLACES any existing todos — do NOT merge, append, or "
+        "preserve older entries. plan.md is the source of truth; TodoWrite "
+        "is a UI mirror of current live work only (completed items live in "
+        "plan.md's Settled History). Pass this payload verbatim.\n"
+        f"TodoWrite payload:\n{json.dumps({'todos': todos}, ensure_ascii=False)}"
+    )
+
+
+def emit_transition(
+    task_dir: str,
+    headline: str,
+    *,
+    write_to_phase: Optional[str] = None,
+    include_guidance: bool = True,
+    include_resume_context: bool = False,
+    include_todowrite: bool = True,
+    extra: Optional[str] = None,
+) -> None:
+    """Emit a phase-transition message for Claude. Funnels every transition
+    through ONE additionalContext JSON, by construction.
+
+    Parameters
+    ----------
+    headline:
+        The "[AR] X. Phase -> Y." line. The single mandatory part.
+    write_to_phase:
+        If set, persists this as the new phase BEFORE building the
+        message — so `get_guidance(task_dir)` reflects the new phase.
+    include_guidance:
+        Append `get_guidance(task_dir)`. True for normal transitions;
+        False for pure error reports where the next-step is in the
+        headline itself (e.g. "baseline failed 3x, fix manually").
+    include_resume_context:
+        Append the resume summary (rounds / best / recent history /
+        active item). True only for activation paths.
+    include_todowrite:
+        Append the TodoWrite-mirror payload if there are live plan
+        items. The function returns "" when there's no plan, so this is
+        safe to leave True for transitions before PLAN.
+    extra:
+        Free-form trailer (e.g. a validation error message). Tacked on
+        last so it stays visible after long guidance text.
+    """
+    from hook_utils import emit_to_claude  # lazy: hook_utils imports nothing here
+
+    if write_to_phase:
+        write_phase(task_dir, write_to_phase)
+
+    parts = [headline]
+    if include_resume_context:
+        parts.extend(_resume_context_lines(task_dir))
+    if include_guidance:
+        parts.append(get_guidance(task_dir))
+    if include_todowrite:
+        parts.append(_todowrite_addendum(task_dir))
+    if extra:
+        parts.append(extra)
+
+    emit_to_claude(*parts)

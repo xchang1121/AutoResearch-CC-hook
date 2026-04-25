@@ -8,13 +8,12 @@ This hook only handles two hook-specific concerns:
   2. Turning check_bash's (False, reason) into the `{decision: block}` wire
      format Claude Code expects.
 """
-import json
 import os
 import re
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from hook_utils import read_hook_input
+from hook_utils import read_hook_input, block
 from phase_machine import (
     read_phase, get_task_dir, check_bash, INIT,
 )
@@ -56,11 +55,6 @@ _LIBRARY_HINTS = {
 # `hallucinated_scripts`; loaded lazily so the config can be hot-edited.
 
 
-def _block(reason):
-    print(json.dumps({"decision": "block", "reason": reason}))
-    sys.exit(2)
-
-
 _SCRIPT_INVOKE_RE = re.compile(
     r'\b(?:python(?:\d+(?:\.\d+)?)?|py|bash|sh)\b'
     r'(?:\s+-[A-Za-z][^\s"\']*)*'
@@ -80,7 +74,7 @@ def _script_name_check(command: str):
     aliases = hallucinated_scripts()
     if script_name in aliases:
         real = aliases[script_name]
-        _block(f"[AR] '{script_name}' does not exist. "
+        block(f"[AR] '{script_name}' does not exist. "
                f"Use: python .autoresearch/scripts/{real}")
 
     if ".autoresearch/scripts/" not in script_path:
@@ -88,16 +82,16 @@ def _script_name_check(command: str):
     if script_name in _USER_CLI_SCRIPTS:
         return
     if script_name in _INTERNAL_CLI_SCRIPTS:
-        _block(f"[AR] '{script_name}' is an internal script — "
+        block(f"[AR] '{script_name}' is an internal script — "
                f"{_INTERNAL_CLI_SCRIPTS[script_name]}.")
 
     # Directed hints for the handful of library modules Claude most often
     # mis-invokes. Everything else falls through to the generic message
     # below — deliberately no script-name list, to avoid teaching landmarks.
     if script_name in _LIBRARY_HINTS:
-        _block(f"[AR] '{script_name}' is a library module (no __main__) — "
+        block(f"[AR] '{script_name}' is a library module (no __main__) — "
                f"{_LIBRARY_HINTS[script_name]}.")
-    _block(f"[AR] '{script_name}' is not a user-facing CLI in this project. "
+    block(f"[AR] '{script_name}' is not a user-facing CLI in this project. "
            f"Run only the script the latest [AR Phase: ...] guidance names; "
            f"see CLAUDE.md for the user-facing CLI list.")
 
@@ -123,7 +117,7 @@ def main():
         # Don't paste full guidance into every block — the model already
         # received it from the most recent [AR Phase: ...] message. Just
         # name the phase and direct back to that.
-        _block(f"[AR] {reason}. (Phase: {phase}; see the latest "
+        block(f"[AR] {reason}. (Phase: {phase}; see the latest "
                f"[AR Phase: {phase}] guidance for the next legal step.)")
     sys.exit(0)
 

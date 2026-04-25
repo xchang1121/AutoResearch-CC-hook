@@ -1,5 +1,17 @@
 """
-Shared utilities for Claude Code hook scripts.
+Shared I/O primitives for Claude Code hook scripts.
+
+Three channels:
+  emit_status(msg)      stderr only. Incidental status (transcript).
+  emit_to_claude(*parts) stderr + ONE PostToolUse `additionalContext` JSON,
+                         combining all parts. Use for any message the model
+                         must act on.
+  block(reason)         PreToolUse refusal. Exits 2.
+
+Phase-transition emission is built on `emit_to_claude` and lives in
+`phase_machine.emit_transition` because it bakes in policy (which
+guidance / resume context / TodoWrite addendum to attach). hook_utils.py
+stays as pure I/O.
 """
 import json
 import re
@@ -9,14 +21,13 @@ import sys
 def read_hook_input() -> dict:
     """Read and parse hook input from stdin.
 
-    Handles Windows paths with unescaped backslashes in JSON
-    (e.g., C:\\Users becomes C:\\\\Users before JSON parsing).
-    """
+    Tolerates the Windows-path JSON quirk: paths like `C:\\Users` come in
+    with a single backslash that's not a valid JSON escape, so a fallback
+    pass doubles every unescaped `\\` before retrying."""
     raw = sys.stdin.read()
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        # Fix unescaped backslashes in Windows paths
         fixed = re.sub(r'(?<!\\)\\(?![\\"/bfnrtu])', r'\\\\', raw)
         try:
             return json.loads(fixed)
@@ -24,79 +35,45 @@ def read_hook_input() -> dict:
             return {}
 
 
-def emit_status(msg: str):
-    """Print a human-readable hook status line to stderr."""
+def emit_status(msg: str) -> None:
+    """stderr-only print. For incidental status that doesn't need to reach
+    the model (e.g. "cleaned stale edit marker"). Anything Claude must act
+    on goes through `emit_to_claude` instead."""
     print(msg, file=sys.stderr)
 
 
-def emit_additional_context(text: str):
-    """Print a PostToolUse `hookSpecificOutput.additionalContext` payload so
-    `text` is injected into Claude's next prompt.
+def emit_to_claude(*parts: str) -> None:
+    """Emit a load-bearing message to Claude in ONE PostToolUse
+    additionalContext JSON, plus stderr for transcript visibility.
 
-    `emit_status` (stderr) is the convenient transcript channel, but stderr
-    surfacing back to the model depends on the Claude Code surface and any
-    upstream proxy. Custom API gateways (e.g. third-party model routers)
-    can drop hook stderr silently — the agent then sees `1 PostToolUse hook
-    ran` with no payload and has nothing to act on. additionalContext rides
-    inside the tool-result envelope Claude Code constructs, so it survives
-    proxies. Use this for any hook output the model MUST see — first and
-    foremost the `[AR Phase: ...]` guidance line.
-    """
+    Why a single JSON: PostToolUse stdout is parsed for `hookSpecificOutput`
+    JSON; some surfaces — third-party API proxies in particular — keep
+    only the final JSON line of a hook run. Splitting a transition into
+    two emits previously dropped half of it (we hit this twice: activation
+    guidance over stderr only, then phase guidance clobbered by a later
+    TodoWrite blob). This helper takes any number of parts, joins them
+    with newlines, and writes one JSON. Empty / falsy parts are skipped
+    so callers can pass conditionally-built strings without guarding.
+
+    Caller convention: at most ONE call per hook run. Multiple calls
+    silently produce multiple JSON lines and re-introduce the bug. The
+    sanctioned way to add structured pieces (guidance + resume context +
+    TodoWrite addendum + ...) is `phase_machine.emit_transition`."""
+    msg = "\n".join(p for p in parts if p)
+    if not msg:
+        return
+    print(msg, file=sys.stderr)
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "PostToolUse",
-            "additionalContext": text,
+            "additionalContext": msg,
         }
     }))
 
 
-def emit_phase_guidance(msg: str):
-    """Surface a phase-guidance message on both channels: stderr (for the
-    transcript) and additionalContext (load-bearing — what Claude actually
-    reads). Use for every `[AR Phase: ...]` line and any message that
-    instructs Claude what to run next."""
-    emit_status(msg)
-    emit_additional_context(msg)
-
-
-def emit_todowrite_context(task_dir: str, header: str):
-    """Print PostToolUse `hookSpecificOutput.additionalContext` JSON that
-    instructs Claude to mirror plan.md into TodoWrite on the next turn.
-
-    Only pending + in_progress items from the CURRENT plan are projected.
-    Settled items (KEEP / DISCARD / FAIL) live in plan.md's Settled History
-    table and history.jsonl — they are the durable audit trail, not part of
-    the live TodoWrite queue. This caps the TodoWrite list at
-    `items_per_plan` entries (typically 3-5) regardless of how many REPLAN
-    cycles have happened.
-
-    plan.md is the source of truth; TodoWrite is a UI mirror of current work.
-    """
-    from phase_machine import get_plan_items
-    live = [it for it in get_plan_items(task_dir) if not it["done"]]
-    if not live:
-        return  # All items settled, replan pending — let next emit handle it.
-
-    todos = []
-    for it in live:
-        status = "in_progress" if it["active"] else "pending"
-        todos.append({
-            "content": f"[{it['id']}] {it['description'][:80]}",
-            "activeForm": f"Working on {it['id']}: {it['description'][:60]}",
-            "status": status,
-        })
-    context = (
-        f"{header}\n"
-        f"Required action: call TodoWrite NOW with the exact list below. "
-        f"This REPLACES any existing todos — do NOT merge, append, or "
-        f"preserve older entries. plan.md is the source of truth; TodoWrite "
-        f"is a UI mirror of current live work only (completed items live in "
-        f"plan.md's Settled History). Pass this payload verbatim.\n"
-        f"TodoWrite payload:\n{json.dumps({'todos': todos}, ensure_ascii=False)}"
-    )
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "PostToolUse",
-            "additionalContext": context,
-        }
-    }))
+def block(reason: str) -> None:
+    """PreToolUse refusal. Writes the reason as `{decision: block}` JSON,
+    exits with code 2 so Claude Code surfaces it to the model. Never
+    returns."""
+    print(json.dumps({"decision": "block", "reason": reason}))
+    sys.exit(2)

@@ -1,24 +1,37 @@
 {
   "permissions": {
     "allow": [
+      "Bash(export AR_TASK_DIR=*)",
+
       "Bash(python .autoresearch/scripts/*)",
       "Bash(bash .autoresearch/scripts/*)",
-      "Bash(export AR_TASK_DIR=*)",
-      "Bash(curl *127.0.0.1*)",
+
+      "Bash(ls)",
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(wc *)",
+      "Bash(find *)",
+      "Bash(grep *)",
+      "Bash(echo *)",
+      "Bash(pwd)",
+
+      "Bash(git log)",
       "Bash(git log *)",
+      "Bash(git diff)",
       "Bash(git diff *)",
       "Bash(git status)",
       "Bash(git status *)",
-      "Bash(git blame *)",
+      "Bash(git show)",
       "Bash(git show *)",
+      "Bash(git blame *)",
       "Bash(git rev-parse *)",
-      "Bash(git *)",
-      "Bash(mkdir *)",
-      "Bash(ls *)",
-      "Bash(cat *)",
+      "Bash(git branch)",
+
       "Read($CLAUDE_PROJECT_DIR/**)"
     ],
-    "defaultMode": "bypassPermissions"
+    "defaultMode": "acceptEdits"
   },
   "hooks": {
     "PreToolUse": [

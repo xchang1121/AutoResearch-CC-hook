@@ -15,10 +15,10 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from hook_utils import read_hook_input, emit_status
+from hook_utils import read_hook_input, emit_to_claude
 from phase_machine import (
-    read_phase, write_phase, get_guidance, _load_config_safe,
-    get_task_dir, touch_heartbeat,
+    read_phase, _load_config_safe,
+    get_task_dir, touch_heartbeat, emit_transition,
     validate_reference, validate_kernel, is_placeholder_file,
     EDIT, BASELINE, GENERATE_REF, GENERATE_KERNEL,
 )
@@ -113,11 +113,11 @@ def main():
     if is_ref and phase == GENERATE_REF:
         ok, err = validate_reference(task_dir)
         if not ok:
-            emit_status(
-                f"[AR] reference.py invalid — phase stays at GENERATE_REF.\n"
-                f"     {err}\n"
-                f"     Re-Edit reference.py to fix; baseline will not run "
-                f"until it passes."
+            emit_to_claude(
+                "[AR] reference.py invalid — phase stays at GENERATE_REF.",
+                f"     {err}",
+                "     Re-Edit reference.py to fix; baseline will not run "
+                "until it passes.",
             )
             sys.exit(0)
         # Reference is good. Route to GENERATE_KERNEL if kernel.py is still
@@ -130,17 +130,17 @@ def main():
         # not the scaffold placeholder.
         _commit_seed(task_dir, ["reference.py"],
                      "autoresearch: seed reference.py (GENERATE_REF)")
-        write_phase(task_dir, next_phase)
-        emit_status(f"[AR] reference.py validated. Phase -> {next_phase}. {get_guidance(task_dir)}")
+        emit_transition(task_dir, "[AR] reference.py validated.",
+                        write_to_phase=next_phase)
 
     elif is_editable and phase == GENERATE_KERNEL:
         ok, err = validate_kernel(task_dir)
         if not ok:
-            emit_status(
-                f"[AR] kernel.py invalid — phase stays at GENERATE_KERNEL.\n"
-                f"     {err}\n"
-                f"     Re-Edit kernel.py to fix; baseline will not run "
-                f"until it passes."
+            emit_to_claude(
+                "[AR] kernel.py invalid — phase stays at GENERATE_KERNEL.",
+                f"     {err}",
+                "     Re-Edit kernel.py to fix; baseline will not run "
+                "until it passes.",
             )
             sys.exit(0)
         # Freeze the seed kernel as git baseline. Without this, the first
@@ -150,12 +150,12 @@ def main():
         editable_files = list(config.editable_files) if config else ["kernel.py"]
         _commit_seed(task_dir, editable_files,
                      "autoresearch: seed kernel (GENERATE_KERNEL)")
-        write_phase(task_dir, BASELINE)
-        emit_status(f"[AR] kernel.py validated. Phase -> BASELINE. {get_guidance(task_dir)}")
+        emit_transition(task_dir, "[AR] kernel.py validated.",
+                        write_to_phase=BASELINE)
 
     elif is_editable and phase == EDIT:
-        emit_status(
-            f"[AR] Code edited. Continue editing OR run: "
+        emit_to_claude(
+            "[AR] Code edited. Continue editing OR run: "
             f"python .autoresearch/scripts/pipeline.py \"{task_dir}\""
         )
 

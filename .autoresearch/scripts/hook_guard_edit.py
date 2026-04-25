@@ -9,22 +9,16 @@ This hook handles two concerns check_edit can't express as a pure function:
   2. EDIT phase's "uncommitted-diff from previous round" gate — needs git
      state, not just phase; stays in the hook.
 """
-import json
 import os
 import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from hook_utils import read_hook_input
+from hook_utils import read_hook_input, block
 from phase_machine import (
     read_phase, get_task_dir,
     edit_marker_path, check_edit, EDIT,
 )
-
-
-def _block(reason):
-    print(json.dumps({"decision": "block", "reason": reason}))
-    sys.exit(2)
 
 
 def _rel_to_task(file_path: str, task_dir: str):
@@ -66,7 +60,7 @@ def _edit_phase_git_gate(task_dir: str, editable_files):
         except Exception:
             continue
         if diff.stdout.strip():
-            _block(
+            block(
                 f"[AR] Uncommitted changes from previous round detected. "
                 f"Run pipeline.py to finalize before editing: "
                 f"python .autoresearch/scripts/pipeline.py \"{task_dir}\""
@@ -140,7 +134,7 @@ def main():
         if not ok:
             # Don't re-paste full guidance — the most recent [AR Phase:
             # ...] message already has it. Just identify the phase.
-            _block(f"[AR] {reason} (target: {rel}, phase: {phase}; see "
+            block(f"[AR] {reason} (target: {rel}, phase: {phase}; see "
                    f"the latest [AR Phase: {phase}] guidance).")
         if rel in set(editable_files):
             saw_editable_in_task = True

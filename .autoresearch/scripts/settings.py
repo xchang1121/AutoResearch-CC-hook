@@ -8,7 +8,7 @@ hand-build these tables inside Python modules.
 from functools import lru_cache
 import os
 import re
-from typing import Dict, Optional
+from typing import Dict
 
 import yaml
 
@@ -42,18 +42,6 @@ def _code_checker_raw() -> dict:
 
 def default_dsl() -> str:
     return str(_raw().get("default_dsl", "triton_ascend"))
-
-
-def device_type_for_dsl(dsl: Optional[str], fallback: str = "cpu") -> str:
-    """Shim over hw_detect — kept here so task_config can call settings
-    without importing hw_detect directly."""
-    if not dsl:
-        return fallback
-    try:
-        from hw_detect import device_type_for_dsl as _impl
-        return _impl(dsl)
-    except Exception:
-        return fallback
 
 
 def worker_only_modules() -> frozenset:
