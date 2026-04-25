@@ -220,13 +220,18 @@ def _validate_reactivations(items: list, task_dir: str, old_pending_ids: set):
     """Check each item with reactivate_pid is sound.
 
     Returns list of (item_index, pid, last_decision, last_round) for reactivations.
+    `last_decision` is the literal "PENDING" sentinel for carry-forward of
+    items that were never settled in the old plan; downstream uses this to
+    skip both the supersede-DISCARD and the REACTIVATE history row (there's
+    nothing to "reactivate" — the item just stays in the plan).
 
     Rules:
-      - pid must appear in history.jsonl with last decision in {DISCARD, FAIL}
-        (KEEP items are already applied; reactivating them is nonsense)
-      - pid must NOT currently be pending in the old plan (use the one that's
-        already there, don't duplicate)
-      - pid must not appear twice in this batch of reactivations
+      - pid not duplicated in this batch
+      - if pid is currently pending: any new desc/rationale OVERWRITES the
+        old item; this is the supported way to refine an untried idea during
+        DIAGNOSE/REPLAN without losing its pid lineage
+      - if pid was settled: last decision must be DISCARD or FAIL (KEEP
+        items are already applied — reactivating them is nonsense)
     """
     history = _load_history(task_dir)
     # Index: pid → list of records chronological
@@ -246,8 +251,9 @@ def _validate_reactivations(items: list, task_dir: str, old_pending_ids: set):
             _fail(f"Item {i}: reactivate_pid={rp} duplicated in this plan")
         seen.add(rp)
         if rp in old_pending_ids:
-            _fail(f"Item {i}: reactivate_pid={rp} is still pending in current "
-                  f"plan — reactivation only applies to settled pids")
+            # Carry-forward: pid was never settled, just keep its slot.
+            results.append((i, rp, "PENDING", None))
+            continue
         if rp not in by_pid:
             _fail(f"Item {i}: reactivate_pid={rp} has no history record — "
                   f"cannot reactivate a pid that was never settled")
@@ -333,12 +339,20 @@ def _record_reactivations(task_dir: str, reactivations: list, new_version: int,
     subsequent round (when the reactivated pid is settled again) writes a
     normal KEEP/DISCARD/FAIL row — so one pid can have multiple outcomes
     across its lifetime.
+
+    Pending carry-forwards (last_decision == "PENDING") are filtered out:
+    the pid was never settled, so there's nothing to "reactivate" — the
+    item simply continues into the new plan with the same id. No history
+    row is needed (and writing one would imply a state change that didn't
+    happen). The Settled History table is unchanged for those pids.
     """
     if not reactivations:
         return ""
     ts = datetime.now(timezone.utc).isoformat()
     extra_rows = ""
     for idx, pid, last_decision, last_round in reactivations:
+        if last_decision == "PENDING":
+            continue
         item = items[idx]
         reason = (f"reactivated in plan v{new_version} "
                   f"(last outcome: {last_decision} in round {last_round})")

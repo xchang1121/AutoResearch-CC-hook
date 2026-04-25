@@ -71,9 +71,19 @@ Then Read the SKILL.md files that match your optimization direction. Each SKILL.
 
 ## Invariants (hook-driven flow)
 
-Step-by-step actions are injected by hooks as `[AR Phase: ...]` messages (see
-`phase_machine.get_guidance()`). Do not try to memorize the flow — follow the
-latest hook message. The following invariants are non-negotiable:
+**Always follow the latest `[AR Phase: ...]` message** injected by the hook
+(see `phase_machine.get_guidance()`). It tells you exactly which script to run
+for the current phase. Do not memorize a phase-to-script mapping; let the hook
+drive.
+
+The eight runnable scripts under `.autoresearch/scripts/` are:
+`scaffold.py`, `resume.py`, `baseline.py`, `create_plan.py`, `pipeline.py`,
+`final_report.py`, `dashboard.py`, `ar_cli.py`. Every other `.py` in that
+directory is a library imported by those scripts and by the hooks — it has no
+`__main__` and the Bash hook will block direct invocation with a hint pointing
+at the right alternative.
+
+The following invariants are non-negotiable:
 
 1. **`.ar_state/plan.md` is the source of truth.** Only `create_plan.py` and
    `settle.py` / `pipeline.py` may write to it. Never hand-edit `plan.md`.
@@ -87,6 +97,18 @@ latest hook message. The following invariants are non-negotiable:
    item may vanish without an outcome row.
 4. **Phase transitions are hook-controlled.** Never write `.ar_state/.phase`
    manually and never "guess the next step" — wait for the hook's guidance.
+   In particular: **errors during a phase do not authorize replanning.** A
+   single FAIL settles the active item via `pipeline.py`; the next pending
+   item is promoted automatically. Only the phase machine triggers
+   replanning — DIAGNOSE at 3 consecutive FAILs, REPLAN when all items are
+   settled. If you call `create_plan.py` from EDIT to "fix" a failed
+   approach, the hook blocks you; that is by design.
+   When the phase machine does invoke DIAGNOSE / REPLAN, **preserve untried
+   pending items** by including them in the new `<items>` document with
+   `<reactivate_pid>pN</reactivate_pid>`. Items not listed are auto-DISCARDed
+   as superseded — that is unspent budget thrown away. Refining the desc /
+   rationale of a carried-forward pid is supported and does not consume a
+   fresh pid.
 5. **Editable files are scoped by `task.yaml.editable_files`.** Editing
    anything else is rejected by `hook_guard_edit.py`.
 6. **After a session break, resume with `/autoresearch --resume`.** Do not

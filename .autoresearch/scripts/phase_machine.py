@@ -1177,10 +1177,40 @@ def get_guidance(task_dir: str) -> str:
         desc = active["description"] if active else "(no active item)"
         item_id = active["id"] if active else "?"
         files_hint = f" (files: {', '.join(editable)})" if editable else ""
+
+        # Surface the failure budget so a single FAIL doesn't read as "the
+        # plan is broken, replan time". DIAGNOSE only fires at 3 consecutive
+        # FAILs; until then the plan stays in force.
+        status_line = ""
+        last_line = ""
+        if progress:
+            failures = progress.get("consecutive_failures", 0)
+            rounds = progress.get("eval_rounds", 0)
+            max_r = progress.get("max_rounds", "?")
+            best = progress.get("best_metric")
+            best_str = f"{best}" if best is not None else "—"
+            status_line = (
+                f"Round {rounds}/{max_r} | Failures: {failures}/3 toward DIAGNOSE | "
+                f"Best {primary_metric}: {best_str}\n"
+            )
+            history = load_history(task_dir, on_corrupt="skip")
+            if history:
+                rec = history[-1]
+                rid = rec.get("plan_item") or "?"
+                rdec = rec.get("decision", "?")
+                rdesc = (rec.get("description") or "")[:50]
+                if rdec in ("FAIL", "DISCARD", "KEEP", "SEED"):
+                    last_line = f"Last round: {rid} → {rdec} ({rdesc})\n"
+
         return (f"[AR Phase: EDIT] ACTIVE item: **{item_id}** — {desc}\n"
                 f"{files_hint}\n"
+                f"{status_line}{last_line}"
                 f"CRITICAL: Implement ONLY {item_id}'s idea. Do NOT implement other plan items.\n"
-                f"The pipeline will settle {item_id} with this round's metric.\n"
+                f"NEVER call create_plan.py from EDIT. A single FAIL is not a "
+                f"signal to replan — pipeline.py settles the active item, the "
+                f"next pending item is promoted automatically, and only the "
+                f"hook (at 3 consecutive FAILs or all-items-settled) decides "
+                f"when to revise the plan.\n"
                 f"Make your edit(s), then: python .autoresearch/scripts/pipeline.py \"{task_dir}\"\n"
                 f"TodoWrite: mark {item_id} in_progress, other pending items stay pending.")
 
@@ -1192,21 +1222,42 @@ def get_guidance(task_dir: str) -> str:
             _r = "?" if _r is None else _r
             fail_summary += f"  R{_r}: {rec.get('decision','?')} — {rec.get('description','')[:60]}\n"
 
+        # Untried pending items represent unspent budget. Surface them so
+        # Claude knows what would be lost if it just writes a fresh plan
+        # without any <reactivate_pid> tags.
+        untried = [it for it in get_plan_items(task_dir) if not it["done"]]
+        untried_summary = ""
+        if untried:
+            lines = "\n".join(
+                f"  - {it['id']}: {it['description'][:70]}"
+                for it in untried
+            )
+            untried_summary = (
+                f"\nPENDING ITEMS that will be DISCARDed unless you reactivate:\n"
+                f"{lines}\n"
+            )
+
         return (f"[AR Phase: DIAGNOSE] consecutive_failures >= 3.\n"
                 f"Spawn a SUBAGENT (Agent tool) for fresh-context diagnosis:\n"
                 f"  - Have it Read {', '.join(editable)} and .ar_state/history.jsonl\n"
                 f"  - Ask it to produce: Root cause / Fix direction / What to avoid\n"
                 f"  - It must propose STRUCTURALLY different approaches (algorithmic, fusion, memory layout)\n"
                 f"  - NOT more parameter tuning\n"
-                f"Recent failures:\n{fail_summary}\n"
-                f"After diagnosis, create NEW plan with >= 3 items:\n"
+                f"Recent failures:\n{fail_summary}"
+                f"{untried_summary}"
+                f"After diagnosis, create the next plan revision with >= 3 items:\n"
                 f'python .autoresearch/scripts/create_plan.py "{task_dir}" \'{_PLAN_XML_EXAMPLE}\'\n'
                 f"{_PLAN_FIELD_RULES}\n"
+                f"PRESERVE PENDING WORK. Items not in your new <items> document "
+                f"are auto-DISCARDed as superseded — that loses unspent budget. "
+                f"For every still-untried item that the diagnosis did not "
+                f"invalidate, include it in the new plan with "
+                f"`<reactivate_pid>pN</reactivate_pid>` (you may also refine its "
+                f"desc/rationale). Use a fresh pid only for genuinely new ideas.\n"
                 f"Items must be diverse: max 1 parameter-tuning item, rest must be structural changes.\n"
-                f"If a past DISCARD/FAIL pid now looks salvageable (e.g. root "
-                f"cause was unrelated, structural state has changed), add "
-                f"`<reactivate_pid>pN</reactivate_pid>` to an item to reuse that id "
-                f"instead of consuming a fresh counter slot.\n"
+                f"For settled DISCARD/FAIL pids that now look salvageable "
+                f"(root cause unrelated, structural state has shifted), the "
+                f"same `<reactivate_pid>` mechanism reuses the old pid.\n"
                 f"Then sync TodoWrite.")
 
     if phase == REPLAN:

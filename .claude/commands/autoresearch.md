@@ -87,85 +87,16 @@ export AR_TASK_DIR="<task_dir from step 1>"
 
 The activation hook prints `[AR Phase: ...]` guidance. Follow it.
 
-## Step 3: Loop
+## Step 3: Run the loop
 
-Follow the phase guidance. Never stop between phases.
+After activation the hook prints `[AR Phase: ...]` with the exact next
+command. Follow it. Keep following each new `[AR Phase: ...]` message until
+the hook itself emits FINISH guidance. Do not stop between phases and do not
+choose your own command sequence — the phase machine owns it.
 
-- **GENERATE_REF / GENERATE_KERNEL** — Write `reference.py` / `kernel.py` with
-  the Edit tool (only needed for `--desc` mode or when you skipped `--kernel`).
-- **BASELINE** — `python .autoresearch/scripts/baseline.py "$AR_TASK_DIR"`
-  (append `--worker-url` if configured). If scaffold already ran baseline,
-  this phase is skipped automatically.
-- **PLAN / DIAGNOSE / REPLAN** — run
-  `python .autoresearch/scripts/create_plan.py "$AR_TASK_DIR" @<path>` after
-  writing the XML `<items>` document to `<path>` with the Write tool (see the
-  hook guidance for the exact schema — XML is used instead of JSON to reduce
-  structural hallucinations). The canonical path is
-  `"$AR_TASK_DIR/.ar_state/plan_items.xml"`.
-
-  **Do not** quote multi-line XML inline on the command line — on Windows,
-  bash / CreateProcess silently truncates it and the script then emits what
-  looks like a schema error (`"missing <desc>"` etc.) even though your XML is
-  correct. If you see that error after an inline invocation, stop retrying
-  the schema and switch to the `@<path>` form.
-
-  Alternative when writing a file is not convenient: pass `-` as the second
-  argument and pipe the XML in on stdin via a single-quoted heredoc.
-
-  When the hook's `additionalContext` gives you a TodoWrite payload, call
-  TodoWrite with it verbatim.
-- **EDIT** — Edit `kernel.py` (multiple Edit calls OK). When done:
-  `python .autoresearch/scripts/pipeline.py "$AR_TASK_DIR"`.
-- **FINISH** — Run
-  `python .autoresearch/scripts/final_report.py "$AR_TASK_DIR"` to generate
-  `.ar_state/report.md` and `.ar_state/report.json` plus `.ar_state/report.png`
-  when matplotlib is installed. If matplotlib is unavailable, the script still
-  succeeds with the text/JSON report. Read the Markdown report, summarize, stop.
-
-## Rules
-
-- Keep going between phases.
-- Hooks block wrong actions and tell you what to do next — read their messages.
-- Never hand-edit `plan.md` or `.ar_state/.phase`; always go through the scripts.
-- Do not use Bash redirection, `python -c`, PowerShell, or mutating git/filesystem
-  commands to write task files; use Edit/Write or the phase scripts so hooks
-  can enforce the workflow.
-
-## Scripts under `.autoresearch/scripts/`
-
-Only the following are runnable CLIs. Everything else in that directory is a
-**library imported by these scripts and by the hooks** — it has no
-`__main__` block and `python .autoresearch/scripts/<name>.py` will be
-blocked by the Bash hook with `[AR] Unknown script ...`.
-
-| Use case | Script |
-|---|---|
-| New task | `scaffold.py` |
-| Resume | `resume.py` |
-| Baseline eval | `baseline.py` |
-| Plan / replan / diagnose | `create_plan.py` |
-| One optimization round | `pipeline.py` |
-| Final report | `final_report.py` |
-| Live status (read-only) | `dashboard.py` |
-| Worker service control | `ar_cli.py` |
-
-**Library files — do NOT invoke directly.** If you want to inspect
-phase/progress, read the state files or run `dashboard.py`; do not
-`python phase_machine.py` etc.
-
-- `phase_machine.py` — phase constants, validators, guidance strings
-- `task_config.py`   — yaml loader, eval orchestrator
-- `local_worker.py`  — local subprocess executor for verify/profile
-- `code_checker.py`  — static checker (called by `quick_check.py`)
-- `hook_utils.py`, `hw_detect.py`, `settings.py` — shared helpers
-- `hook_guard_*.py`, `hook_post_*.py`, `hook_stop_save.py` — hooks invoked
-  by Claude Code itself, never by you
-
-To inspect state instead of running a library:
-
-| Want | Do |
-|---|---|
-| Current phase | `cat "$AR_TASK_DIR/.ar_state/.phase"` |
-| Full progress | `cat "$AR_TASK_DIR/.ar_state/progress.json"` |
-| Live dashboard | `python .autoresearch/scripts/dashboard.py` |
-| History tail | `cat "$AR_TASK_DIR/.ar_state/history.jsonl"` |
+One gotcha the per-phase guidance can't fix: when PLAN / DIAGNOSE / REPLAN
+asks you to run `create_plan.py`, write the XML `<items>` document to a file
+first (canonical path: `"$AR_TASK_DIR/.ar_state/plan_items.xml"`) and pass
+`@<path>` as the second argument. Quoting multi-line XML inline gets
+truncated by bash/CreateProcess on Windows and surfaces as a misleading
+`"missing <desc>"` schema error.
