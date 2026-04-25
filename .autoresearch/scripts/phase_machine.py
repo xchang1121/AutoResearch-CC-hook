@@ -1373,14 +1373,24 @@ def load_progress(task_dir: str) -> Optional[dict]:
 
 def save_progress(task_dir: str, progress: dict, *, stamp: bool = True):
     """Write progress dict to .ar_state/progress.json, optionally stamping
-    last_updated. Single canonical writer."""
+    last_updated. Single canonical writer.
+
+    Atomic: writes to a sibling .tmp then os.replace, so a concurrent
+    reader (e.g. compute_next_phase between rounds) always sees the old
+    or the new file — never an empty/half-written one. Non-atomic writes
+    were causing rare spurious FINISH transitions because load_progress
+    swallows JSON parse errors as None, which compute_next_phase treats
+    as "budget exhausted".
+    """
     from datetime import datetime, timezone
     path = progress_path(task_dir)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     if stamp:
         progress["last_updated"] = datetime.now(timezone.utc).isoformat()
-    with open(path, "w", encoding="utf-8") as f:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(progress, f, indent=2)
+    os.replace(tmp, path)
 
 
 def append_history(task_dir: str, record: dict):
