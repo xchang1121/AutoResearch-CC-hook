@@ -29,6 +29,7 @@ from phase_machine import (
     get_task_dir, set_task_dir, get_active_item, touch_heartbeat,
     load_history, load_progress, update_progress,
     validate_reference, validate_kernel, is_placeholder_file,
+    parse_invoked_ar_script, parse_last_json_line,
     progress_path, plan_path, edit_marker_path, state_path,
     PHASE_FILE,
     BASELINE, PLAN, EDIT, DIAGNOSE, REPLAN, GENERATE_REF, GENERATE_KERNEL,
@@ -159,7 +160,13 @@ def main():
 
     phase = read_phase(task_dir)
 
-    if "baseline.py" in command and phase == BASELINE:
+    # Identify which AR script the user actually invoked. Substring matching
+    # ('baseline.py' in command) used to fire on `echo baseline.py` and
+    # advance phase based on a coincidence; the parser only matches a real
+    # python invocation of `.autoresearch/scripts/<name>.py`.
+    invoked_script = parse_invoked_ar_script(command)
+
+    if invoked_script == "baseline.py" and phase == BASELINE:
         progress = load_progress(task_dir)
         if not progress:
             emit_status("[AR] Baseline failed (no progress.json). Retry.")
@@ -193,22 +200,33 @@ def main():
             write_phase(task_dir, PLAN)
             emit_status(f"[AR] Baseline complete. Phase -> PLAN. {get_guidance(task_dir)}")
 
-    elif "pipeline.py" in command:
+    elif invoked_script == "pipeline.py":
         # pipeline.py writes .phase itself; just project state + notify.
         new_phase = read_phase(task_dir)
         emit_status(f"[AR] Pipeline complete. Phase -> {new_phase}. {get_guidance(task_dir)}")
         emit_todowrite_context(task_dir, f"[AR] Round settled. Phase -> {new_phase}.")
 
-    elif "create_plan.py" in command and phase in (PLAN, DIAGNOSE, REPLAN):
-        from phase_machine import validate_plan
-        ok, err = validate_plan(task_dir)
-        if ok:
-            _progress_update_for_plan(task_dir, phase)
-            write_phase(task_dir, EDIT)
-            emit_status(f"[AR] Plan validated. Phase -> EDIT. {get_guidance(task_dir)}")
-            emit_todowrite_context(task_dir, "[AR] Plan validated. Phase -> EDIT.")
+    elif invoked_script == "create_plan.py" and phase in (PLAN, DIAGNOSE, REPLAN):
+        # Two-stage success check: (1) THIS run's stdout must contain
+        # `{"ok": true, ...}` — guards against stale plan.md from a prior
+        # run satisfying validate_plan even when the current invocation
+        # exited with `{"ok": false}`. (2) Then re-validate plan.md as the
+        # final gate, since stdout JSON could in principle disagree with
+        # what was actually written.
+        run_blob = parse_last_json_line(stdout) or {}
+        if not run_blob.get("ok"):
+            err = run_blob.get("error", "(no error message in stdout)")
+            emit_status(f"[AR] Plan not advanced — create_plan.py reported failure: {err}")
         else:
-            emit_status(f"[AR] Plan not valid yet: {err}")
+            from phase_machine import validate_plan
+            ok, err = validate_plan(task_dir)
+            if ok:
+                _progress_update_for_plan(task_dir, phase)
+                write_phase(task_dir, EDIT)
+                emit_status(f"[AR] Plan validated. Phase -> EDIT. {get_guidance(task_dir)}")
+                emit_todowrite_context(task_dir, "[AR] Plan validated. Phase -> EDIT.")
+            else:
+                emit_status(f"[AR] Plan not valid yet: {err}")
 
     sys.exit(0)
 

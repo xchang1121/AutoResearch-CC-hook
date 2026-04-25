@@ -17,7 +17,7 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from hook_utils import read_hook_input
 from phase_machine import (
-    read_phase, get_guidance, get_task_dir, touch_heartbeat,
+    read_phase, get_task_dir,
     edit_marker_path, check_edit, EDIT,
 )
 
@@ -117,7 +117,8 @@ def main():
     task_dir = get_task_dir()
     if not task_dir:
         sys.exit(0)
-    touch_heartbeat(task_dir)
+    # Heartbeat is the responsibility of activation + PostToolUse hooks; see
+    # the matching note in hook_guard_bash.
 
     file_paths = _extract_file_paths(tool_name, hook_input.get("tool_input", {}))
     if not file_paths:
@@ -137,7 +138,10 @@ def main():
             continue  # file outside task_dir — not our concern
         ok, reason = check_edit(phase, rel, editable_files)
         if not ok:
-            _block(f"[AR] {reason} (target: {rel}). {get_guidance(task_dir)}")
+            # Don't re-paste full guidance — the most recent [AR Phase:
+            # ...] message already has it. Just identify the phase.
+            _block(f"[AR] {reason} (target: {rel}, phase: {phase}; see "
+                   f"the latest [AR Phase: {phase}] guidance).")
         if rel in set(editable_files):
             saw_editable_in_task = True
 

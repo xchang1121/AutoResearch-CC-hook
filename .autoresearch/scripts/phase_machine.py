@@ -163,15 +163,6 @@ def clear_task_dir():
 # requires editing hook files.
 # ---------------------------------------------------------------------------
 
-# Scripts that are never callable via the user-facing Bash tool — they're
-# subprocess children of pipeline.py and should never be user-invoked.
-_GLOBAL_BASH_BANS = {
-    "eval_wrapper.py":   "subprocess-only (invoked by pipeline.py)",
-    "keep_or_discard.py": "subprocess-only (invoked by pipeline.py)",
-    "quick_check.py":    "subprocess-only (invoked by pipeline.py)",
-    "settle.py":         "subprocess-only (invoked by pipeline.py)",
-}
-
 # Read-only command prefixes allowed in every phase.
 _READONLY_PATTERNS = [
     r"^(ls|cat|head|tail|wc|find|grep|git\s+(log|diff|status|show|branch))",
@@ -307,41 +298,31 @@ def _strip_heredoc_bodies(command: str) -> str:
     return "\n".join(out)
 
 
-class _BashPolicy:
-    """Per-phase Bash rule. Two modes:
+# Per-phase script allowlist. Strict by default: at any given phase, only
+# the script that advances THAT phase is allowed (plus the orthogonal
+# always-allowed tools below, plus read-only commands and activation).
+_PHASE_ALLOWED_SCRIPTS = {
+    INIT:            set(),   # bootstrappers covered by _ALWAYS_ALLOWED
+    GENERATE_REF:    set(),   # only Edit reference.py; no scripts
+    GENERATE_KERNEL: set(),   # only Edit kernel.py; no scripts
+    BASELINE:        {"baseline.py"},
+    PLAN:            {"create_plan.py"},
+    EDIT:            {"pipeline.py"},
+    DIAGNOSE:        {"create_plan.py"},
+    REPLAN:          {"create_plan.py"},
+    FINISH:          {"final_report.py"},
+}
 
-    strict:     command must match one of `required` substrings (or be
-                readonly / activation). Everything else → block.
-    permissive: command is allowed UNLESS it matches one of `banned`
-                substrings (or the global ban list).
-
-    "strict" fits narrow phases (INIT/BASELINE/GENERATE_*) where Claude
-    should only be running the one script that advances the phase.
-    "permissive" fits work phases (PLAN/EDIT/DIAGNOSE/REPLAN) where Claude
-    legitimately needs ad-hoc shell access (git log, Python one-liners,
-    reading files) and we only block a few known-wrong actions.
-    """
-    __slots__ = ("mode", "required", "banned")
-
-    def __init__(self, mode, required=None, banned=None):
-        assert mode in ("strict", "permissive")
-        self.mode = mode
-        self.required = set(required or ())
-        self.banned = set(banned or ())
-
-
-_BASH_RULES = {
-    INIT:            _BashPolicy("strict", required={"export AR_TASK_DIR="}),
-    BASELINE:        _BashPolicy("strict", required={"baseline.py"}),
-    GENERATE_REF:    _BashPolicy("strict", required=set()),
-    GENERATE_KERNEL: _BashPolicy("strict", required=set()),
-    PLAN:            _BashPolicy("permissive", banned=set()),
-    DIAGNOSE:        _BashPolicy("permissive", banned=set()),
-    REPLAN:          _BashPolicy("permissive", banned=set()),
-    # EDIT is permissive for ad-hoc shell, but blocks create_plan.py —
-    # Claude must finish the current plan item via pipeline before replanning.
-    EDIT:            _BashPolicy("permissive", banned={"create_plan.py"}),
-    FINISH:          _BashPolicy("permissive", banned=set()),
+# Tools allowed at every phase (including pre-activation INIT).
+# - `dashboard.py` / `worker_ctl.py`: read-only / orthogonal to phase
+# - `resume.py`: session recovery from any phase (after a break, the
+#   pre-hook sees the OLD .active_task pointing at whatever phase the
+#   previous session was in; resume must not be blocked by that phase)
+# - `scaffold.py`: starting a new task while an old .active_task pointer
+#   is still around (slash command dispatches scaffold without first
+#   clearing the old pointer)
+_ALWAYS_ALLOWED_SCRIPTS = {
+    "dashboard.py", "worker_ctl.py", "resume.py", "scaffold.py",
 }
 
 # Edit/Write rules: which file classes may be written per phase.
@@ -388,12 +369,11 @@ _PLAN_FIELD_RULES = (
     "have spaces — not a snake_case label; the dashboard shows this verbatim)\n"
     "  - <rationale>: 30-400 char explanation of WHY it should help\n"
     "  - <keywords>:  comma-separated tags, e.g. fusion, epilogue\n"
-    "Optional: <reactivate_pid>pN</reactivate_pid> to reuse a previously "
-    "DISCARD/FAIL pid. Escape '&', '<', '>' in text as '&amp;', '&lt;', '&gt;' "
-    "(or wrap the field in <![CDATA[...]]>). "
-    "Write this XML to .ar_state/plan_items.xml with the Write tool, then "
-    "pass it to create_plan.py as @<path>. Do not inline multi-line XML on "
-    "the command line; Windows shell quoting can truncate it."
+    "Escape '&', '<', '>' in text as '&amp;', '&lt;', '&gt;' (or wrap the "
+    "field in <![CDATA[...]]>). Write this XML to .ar_state/plan_items.xml "
+    "with the Write tool, then pass it to create_plan.py as @<path>. Do not "
+    "inline multi-line XML on the command line; Windows shell quoting can "
+    "truncate it."
 )
 
 
@@ -401,16 +381,69 @@ def plan_items_xml_path(task_dir: str) -> str:
     return state_path(task_dir, "plan_items.xml")
 
 
-def _plan_creation_guidance(task_dir: str, *, intro: str) -> str:
+def _script_cmd(name: str, task_dir: str, *extra: str) -> str:
+    """Single source of truth for script-invocation strings used in
+    `[AR Phase: ...]` guidance. Renaming `.autoresearch/scripts/` or
+    changing the task_dir convention should mean editing this one place."""
+    parts = [f'python .autoresearch/scripts/{name}', f'"{task_dir}"']
+    parts.extend(extra)
+    return " ".join(parts)
+
+
+# Canonical Bash command parser used by both PreToolUse and PostToolUse hooks.
+# We deliberately match the FIRST python/py/bash/sh invocation in the command
+# (after quote/heredoc stripping). This means `echo create_plan.py` does NOT
+# match — the post-hook then ignores it and never advances phase based on a
+# substring coincidence (P0 fix). `cmd1 && python script.py` matches script.py
+# because its `python` is the first interpreter seen.
+_INVOKED_SCRIPT_RE = re.compile(
+    r'\b(?:python(?:\d+(?:\.\d+)?)?|py|bash|sh)\b'
+    r'(?:\s+-[A-Za-z][^\s"\']*)*'
+    r'\s+["\']?([^\s"\']+\.py)'
+)
+
+
+def parse_invoked_ar_script(command: str) -> Optional[str]:
+    """If `command` invokes one of `.autoresearch/scripts/*.py`, return that
+    script's basename (e.g. ``"create_plan.py"``). Else return None.
+
+    Substring matches ARE NOT enough — `echo create_plan.py` returns None.
+    Quote-stripping + heredoc-blanking applied first so XML/text payloads
+    don't hide a real invocation or fake one up.
+    """
+    cleaned = _strip_heredoc_bodies(command)
+    cleaned = _strip_shell_quotes(cleaned)
+    m = _INVOKED_SCRIPT_RE.search(cleaned)
+    if not m:
+        return None
+    script_path = m.group(1).replace("\\", "/")
+    if ".autoresearch/scripts/" not in script_path:
+        return None
+    return os.path.basename(script_path)
+
+
+def _plan_creation_guidance(task_dir: str, *, intro: str,
+                            include_example: bool = False) -> str:
+    """Render the canonical "write XML, then run create_plan.py" instructions.
+
+    `include_example=True` injects the full `_PLAN_XML_EXAMPLE` template —
+    use only on the FIRST plan-creation phase a session sees (PLAN). Later
+    phases (DIAGNOSE / REPLAN) get the field rules but skip the verbatim
+    example, since the schema doesn't change between phases and re-pasting
+    the template adds 1 long line every guidance message.
+    """
     xml_path = plan_items_xml_path(task_dir)
-    return (
-        f"{intro}\n"
-        f"1. Write the XML <items> document to: {xml_path}\n"
-        f"Example shape:\n{_PLAN_XML_EXAMPLE}\n"
-        f"{_PLAN_FIELD_RULES}\n"
-        f"2. Then run:\n"
-        f'python .autoresearch/scripts/create_plan.py "{task_dir}" @"{xml_path}"'
-    )
+    cmd = _script_cmd("create_plan.py", task_dir, f'@"{xml_path}"')
+    parts = [
+        f"{intro}",
+        f"1. Write the XML <items> document to: {xml_path}",
+    ]
+    if include_example:
+        parts.append(f"Example shape:\n{_PLAN_XML_EXAMPLE}")
+    parts.append(_PLAN_FIELD_RULES)
+    parts.append("2. Then run:")
+    parts.append(cmd)
+    return "\n".join(parts)
 
 
 def _is_readonly_bash(command: str) -> bool:
@@ -448,45 +481,57 @@ def check_bash(phase: str, command: str) -> tuple:
     """Return (allowed: bool, reason: str) for a Bash command at `phase`.
 
     Decision order:
-      1. Global bans (subprocess-only scripts, `git commit`) — always block.
-      2. Read-only commands — always allow.
-      3. Activation (`export AR_TASK_DIR=…`) — always allow; hook_post_bash
-         uses it to switch tasks regardless of current phase.
-      4. Phase policy (strict whitelist or permissive blocklist).
+      1. Global bans (`git commit`) — always block.
+      2. Mutating syntax (`>file`, `tee`, `dd`, heredoc-program …) — block.
+         Edit/Write tools own file mutation; Bash should not bypass them.
+      3. Activation (`export AR_TASK_DIR=…`) — always allow; switches tasks
+         regardless of phase.
+      4. AR-script invocation (`python .autoresearch/scripts/<name>.py`)
+         — allowed iff the script is in this phase's allowlist or in the
+         always-allowed set (dashboard, worker_ctl). Else block with a
+         phase-specific message.
+      5. Non-script command — allowed iff it matches a read-only pattern
+         (cat / ls / grep / git log / etc.). Else block.
+
+    Pre-activation (no active task) is modeled as phase=INIT, whose
+    allowlist is {scaffold.py, resume.py}.
     """
-    for ban, why in _GLOBAL_BASH_BANS.items():
-        if ban in command:
-            return False, f"'{ban}' — {why}"
     if "git commit" in command:
         return False, ("manual 'git commit' forbidden — commits are produced "
                        "by pipeline.py via keep_or_discard")
-    if "final_report.py" in command and phase != FINISH:
-        return False, "final_report.py only runs in the FINISH phase"
 
     if _looks_mutating_bash(command):
         return False, ("Bash-side file mutation is blocked — use Edit/Write "
                        "so phase file permissions are enforced")
 
-    if _is_readonly_bash(command):
-        return True, ""
     if "export AR_TASK_DIR=" in command:
         return True, ""
 
-    policy = _BASH_RULES.get(phase)
-    if policy is None:
-        return False, f"unknown phase {phase!r}"
+    invoked = parse_invoked_ar_script(command)
+    if invoked is not None:
+        if invoked in _ALWAYS_ALLOWED_SCRIPTS:
+            return True, ""
+        allowed = _PHASE_ALLOWED_SCRIPTS.get(phase, set())
+        if invoked in allowed:
+            return True, ""
+        # Build a directional hint: name the one script the current phase
+        # expects, if any. Pre-activation (INIT) lists both bootstrappers.
+        if not allowed:
+            hint = (f"phase {phase} runs no script — only Edit on the "
+                    f"phase's editable file is allowed")
+        elif len(allowed) == 1:
+            hint = f"phase {phase} expects {next(iter(allowed))}"
+        else:
+            hint = f"phase {phase} allows: {sorted(allowed)}"
+        return False, f"'{invoked}' is not allowed in phase {phase}: {hint}"
 
-    if policy.mode == "strict":
-        for req in policy.required:
-            if req in command:
-                return True, ""
-        required_txt = sorted(policy.required) or "(no user bash legal here; only file edits)"
-        return False, f"phase {phase}: allowed commands = {required_txt}"
+    if _is_readonly_bash(command):
+        return True, ""
 
-    for b in policy.banned:
-        if b in command:
-            return False, f"phase {phase}: '{b}' is blocked here"
-    return True, ""
+    return False, (f"phase {phase}: command is neither read-only nor an "
+                   f"allowed phase script (use cat/ls/grep/git log for "
+                   f"inspection; the phase guidance names the one script "
+                   f"that advances this phase)")
 
 
 def check_edit(phase: str, rel_path: str, editable_files) -> tuple:
@@ -1149,7 +1194,9 @@ def get_guidance(task_dir: str) -> str:
     dsl = config.dsl if config else None
     editable = config.editable_files if config else []
     worker_urls = config.worker_urls if config else []
-    worker_flag = f" --worker-url {worker_urls[0]}" if worker_urls else ""
+    # Tokens passed to _script_cmd as-is (no leading space); empty list when
+    # no worker is configured.
+    worker_args = ["--worker-url", worker_urls[0]] if worker_urls else []
     primary_metric = config.primary_metric if config else "score"
 
     if phase == INIT:
@@ -1170,7 +1217,7 @@ def get_guidance(task_dir: str) -> str:
 
     if phase == BASELINE:
         return (f"[AR Phase: BASELINE] Run: "
-                f"python .autoresearch/scripts/baseline.py \"{task_dir}\"{worker_flag}")
+                f"{_script_cmd('baseline.py', task_dir, *worker_args)}")
 
     if phase == PLAN:
         skills_hint = ""
@@ -1184,7 +1231,7 @@ def get_guidance(task_dir: str) -> str:
 
         return (f"[AR Phase: PLAN] "
                 f"Read task.yaml, editable files ({editable}), and reference.py.{skills_hint}{metric_hint}\n"
-                f"{_plan_creation_guidance(task_dir, intro='Then create the plan:')}\n"
+                f"{_plan_creation_guidance(task_dir, intro='Then create the plan:', include_example=True)}\n"
                 f"The script writes plan.md in the correct format. Hook validates and advances to EDIT.\n"
                 f"After plan creation, sync items to TodoWrite.")
 
@@ -1226,31 +1273,15 @@ def get_guidance(task_dir: str) -> str:
                 f"next pending item is promoted automatically, and only the "
                 f"hook (at 3 consecutive FAILs or all-items-settled) decides "
                 f"when to revise the plan.\n"
-                f"Make your edit(s), then: python .autoresearch/scripts/pipeline.py \"{task_dir}\"\n"
+                f"Make your edit(s), then: {_script_cmd('pipeline.py', task_dir)}\n"
                 f"TodoWrite: mark {item_id} in_progress, other pending items stay pending.")
 
     if phase == DIAGNOSE:
-        # Build failure summary for the diagnosis prompt
         fail_summary = ""
         for rec in load_history(task_dir, on_corrupt="skip")[-5:]:
             _r = rec.get("round")
             _r = "?" if _r is None else _r
             fail_summary += f"  R{_r}: {rec.get('decision','?')} — {rec.get('description','')[:60]}\n"
-
-        # Untried pending items represent unspent budget. Surface them so
-        # Claude knows what would be lost if it just writes a fresh plan
-        # without any <reactivate_pid> tags.
-        untried = [it for it in get_plan_items(task_dir) if not it["done"]]
-        untried_summary = ""
-        if untried:
-            lines = "\n".join(
-                f"  - {it['id']}: {it['description'][:70]}"
-                for it in untried
-            )
-            untried_summary = (
-                f"\nPENDING ITEMS that will be DISCARDed unless you reactivate:\n"
-                f"{lines}\n"
-            )
 
         return (f"[AR Phase: DIAGNOSE] consecutive_failures >= 3.\n"
                 f"Spawn a SUBAGENT (Agent tool) for fresh-context diagnosis:\n"
@@ -1259,50 +1290,29 @@ def get_guidance(task_dir: str) -> str:
                 f"  - It must propose STRUCTURALLY different approaches (algorithmic, fusion, memory layout)\n"
                 f"  - NOT more parameter tuning\n"
                 f"Recent failures:\n{fail_summary}"
-                f"{untried_summary}"
-                f"{_plan_creation_guidance(task_dir, intro='After diagnosis, create the next plan revision with >= 3 items:')}\n"
-                f"PRESERVE PENDING WORK. Items not in your new <items> document "
-                f"are auto-DISCARDed as superseded — that loses unspent budget. "
-                f"For every still-untried item that the diagnosis did not "
-                f"invalidate, include it in the new plan with "
-                f"`<reactivate_pid>pN</reactivate_pid>` (you may also refine its "
-                f"desc/rationale). Use a fresh pid only for genuinely new ideas.\n"
-                f"Items must be diverse: max 1 parameter-tuning item, rest must be structural changes.\n"
-                f"For settled DISCARD/FAIL pids that now look salvageable "
-                f"(root cause unrelated, structural state has shifted), the "
-                f"same `<reactivate_pid>` mechanism reuses the old pid.\n"
+                f"{_plan_creation_guidance(task_dir, intro='After diagnosis, append >= 3 new diagnosis-informed items:')}\n"
+                f"create_plan.py APPENDS to the existing plan; pending items survive "
+                f"untouched (the loop processes them in pid order). Settled items stay "
+                f"as historical record. Items must be diverse: max 1 parameter-tuning "
+                f"item, rest must be structural changes.\n"
                 f"Then sync TodoWrite.")
 
     if phase == REPLAN:
         remaining = "?"
-        plan_ver = 0
         if progress:
             remaining = str(progress.get("max_rounds", 0) - progress.get("eval_rounds", 0))
-            plan_ver = progress.get("plan_version", 0)
-        reactivation_hint = ""
-        if plan_ver >= 2:
-            reactivation_hint = (
-                "\nREACTIVATION: plan_version is already {v}. Before inventing "
-                "entirely new ideas, scan history.jsonl for DISCARD items whose "
-                "metric was close to best (within ~20%) — those ideas may "
-                "compose differently now that the kernel's structural baseline "
-                "has shifted. To reactivate one, add "
-                "`<reactivate_pid>pN</reactivate_pid>` to an item; the old pid is reused "
-                "(not a new pN allocated), and history.jsonl gets a REACTIVATE "
-                "marker. Only DISCARD/FAIL pids may be reactivated."
-                .format(v=plan_ver)
-            )
         return (f"[AR Phase: REPLAN] All items settled. Budget: {remaining} rounds left. "
                 f"Read .ar_state/history.jsonl. Analyze what worked/failed.\n"
-                f"{_plan_creation_guidance(task_dir, intro='To continue, create new plan:')}\n"
-                f"Or if no promising directions, do nothing (hooks will advance to FINISH)."
-                f"{reactivation_hint}")
+                f"{_plan_creation_guidance(task_dir, intro='Append >= 3 new items to continue:')}\n"
+                f"create_plan.py APPENDS to the existing plan; settled items stay as "
+                f"historical record. If no promising directions, do nothing — hooks "
+                f"will advance to FINISH.")
 
     if phase == FINISH:
         best = progress.get("best_metric") if progress else "?"
         baseline = progress.get("baseline_metric") if progress else "?"
         return (f"[AR Phase: FINISH] Done. Best {primary_metric}: {best} (baseline: {baseline}). "
-                f"Run: python .autoresearch/scripts/final_report.py \"{task_dir}\". "
+                f"Run: {_script_cmd('final_report.py', task_dir)}. "
                 f"Then read .ar_state/report.md and report the result to user.")
 
     return f"[AR Phase: {phase}] Unknown phase."

@@ -16,7 +16,7 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from hook_utils import read_hook_input
 from phase_machine import (
-    read_phase, get_guidance, get_task_dir, touch_heartbeat, check_bash,
+    read_phase, get_task_dir, check_bash, INIT,
 )
 from settings import hallucinated_scripts
 
@@ -34,30 +34,23 @@ _INTERNAL_CLI_SCRIPTS = {
     "keep_or_discard.py": "pipeline-internal decision step; run pipeline.py instead",
     "settle.py": "pipeline-internal plan settlement; run pipeline.py instead",
     "_baseline_init.py": "baseline.py internal state initializer; run baseline.py instead",
-    "code_checker.py": "library/static-check engine; run pipeline.py (or baseline.py during setup) instead",
+    "code_checker.py": "static-check engine imported by quick_check.py; run pipeline.py (or baseline.py during setup) instead",
 }
 
-# Library modules that look invokable but have no `__main__` and exist only
-# to be imported. The block message points the model at the right place
-# instead of just saying "unknown script". Keep this in sync with the
-# "Library files — do NOT invoke directly" list in autoresearch.md.
-_LIBRARY_SCRIPTS = {
-    "phase_machine.py": "imported by hooks and pipeline; "
-                        "to inspect phase, run `cat \"$AR_TASK_DIR/.ar_state/.phase\"` "
-                        "or `python .autoresearch/scripts/dashboard.py`",
+# Library modules that Claude most commonly mis-invokes as CLIs. These get a
+# directed hint pointing at the right alternative. Anything else under
+# .autoresearch/scripts/ that isn't a CLI falls through to the generic
+# fallback in `_script_name_check`. Keep this list SHORT — every entry here
+# is a filename Claude will see in the block message and may try later.
+_LIBRARY_HINTS = {
+    "phase_machine.py": "to inspect phase, run "
+                        "`cat \"$AR_TASK_DIR/.ar_state/.phase\"` or "
+                        "`python .autoresearch/scripts/dashboard.py`",
     "task_config.py":   "yaml loader and eval orchestrator; "
                         "use baseline.py / pipeline.py to drive eval",
     "local_worker.py":  "in-process verify/profile executor; "
-                        "use baseline.py / pipeline.py — they pick local vs remote automatically",
-    "hook_utils.py":    "hook helpers — invoked only by Claude Code's hook system, never directly",
-    "hw_detect.py":     "hardware probe — used internally by local_worker / scaffold",
-    "settings.py":      "config-yaml accessor — imported, not run",
-    "hook_guard_bash.py":  "PreToolUse hook — invoked by Claude Code, never directly",
-    "hook_guard_edit.py":  "PreToolUse hook — invoked by Claude Code, never directly",
-    "hook_post_bash.py":   "PostToolUse hook — invoked by Claude Code, never directly",
-    "hook_post_edit.py":   "PostToolUse hook — invoked by Claude Code, never directly",
-    "hook_stop_save.py":   "Stop hook — invoked by Claude Code, never directly",
-    "failure_extractor.py": "log parser — imported by eval_wrapper / pipeline",
+                        "use baseline.py / pipeline.py (they pick local "
+                        "vs remote automatically)",
 }
 
 # Alias → real script mapping lives in .autoresearch/config.yaml under
@@ -99,16 +92,15 @@ def _script_name_check(command: str):
         _block(f"[AR] '{script_name}' is an internal script — "
                f"{_INTERNAL_CLI_SCRIPTS[script_name]}.")
 
-    # Distinguish "library, no CLI" from "totally unknown" — the former is
-    # the most common Claude mistake and benefits from a directed hint.
-    if script_name in _LIBRARY_SCRIPTS:
-        hint = _LIBRARY_SCRIPTS[script_name]
+    # Directed hints for the handful of library modules Claude most often
+    # mis-invokes. Everything else falls through to the generic message
+    # below — deliberately no script-name list, to avoid teaching landmarks.
+    if script_name in _LIBRARY_HINTS:
         _block(f"[AR] '{script_name}' is a library module (no __main__) — "
-               f"do not invoke it directly. {hint}.")
-    _block(f"[AR] Unknown script '{script_name}'. "
-           f"Valid CLIs: {sorted(_USER_CLI_SCRIPTS)}. "
-           f"Library files (phase_machine.py, task_config.py, hook_*.py, …) "
-           f"are imported, not run — see .claude/commands/autoresearch.md.")
+               f"{_LIBRARY_HINTS[script_name]}.")
+    _block(f"[AR] '{script_name}' is not a user-facing CLI in this project. "
+           f"Run only the script the latest [AR Phase: ...] guidance names; "
+           f"see CLAUDE.md for the user-facing CLI list.")
 
 
 def main():
@@ -119,15 +111,21 @@ def main():
     command = hook_input.get("tool_input", {}).get("command", "")
     _script_name_check(command)
 
+    # Heartbeat is touched by activation (set_task_dir) and PostToolUse;
+    # PreToolUse must not, or resume.py self-blocks on its own fresh stamp.
     task_dir = get_task_dir()
-    if not task_dir:
-        sys.exit(0)
-    touch_heartbeat(task_dir)
-
-    phase = read_phase(task_dir)
+    # No active task → pre-activation. Model that as phase=INIT so the same
+    # check_bash path enforces the small allowlist (scaffold / resume / always-
+    # allowed). Previously the hook just exit-0'd here, which let baseline.py
+    # / create_plan.py / pipeline.py / final_report.py all run pre-activation.
+    phase = read_phase(task_dir) if task_dir else INIT
     ok, reason = check_bash(phase, command)
     if not ok:
-        _block(f"[AR] {reason}. {get_guidance(task_dir)}")
+        # Don't paste full guidance into every block — the model already
+        # received it from the most recent [AR Phase: ...] message. Just
+        # name the phase and direct back to that.
+        _block(f"[AR] {reason}. (Phase: {phase}; see the latest "
+               f"[AR Phase: {phase}] guidance for the next legal step.)")
     sys.exit(0)
 
 

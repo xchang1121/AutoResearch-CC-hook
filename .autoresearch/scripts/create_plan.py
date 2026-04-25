@@ -1,35 +1,28 @@
 #!/usr/bin/env python3
 """
-Create or replace plan.md from structured XML input.
+Append plan items to plan.md from structured XML input.
 
-Claude provides content, this script handles format. XML is preferred over JSON
-because LLMs hallucinate fewer structural/escape errors in tag-delimited text.
+Behavior:
+- PLAN: writes the initial plan (no existing items).
+- DIAGNOSE / REPLAN: appends new items to the end of the existing plan.
+  Existing items keep their state (KEEP / DISCARD / FAIL / pending). pid is
+  a monotonic counter — every new item gets a fresh pN; settled items stay
+  as historical record. ACTIVE is the first pending item by pid order.
+
+XML schema:
+  Single source of truth lives in `phase_machine._PLAN_FIELD_RULES` and the
+  example in `phase_machine._PLAN_XML_EXAMPLE`. The [AR Phase: PLAN /
+  DIAGNOSE / REPLAN] hook guidance you receive at runtime contains both,
+  plus phase-specific framing — read that, do not duplicate the schema in
+  this docstring.
 
 Usage:
-    python .autoresearch/scripts/create_plan.py <task_dir> '<items_xml>'
+    python .autoresearch/scripts/create_plan.py <task_dir> <xml_source>
 
-items_xml format:
-    <items>
-      <item>
-        <desc>short sentence describing the change</desc>
-        <rationale>30-400 char explanation of why it should help</rationale>
-        <keywords>comma-separated tags</keywords>
-      </item>
-      ...
-    </items>
-
-Optional per-item element: <reactivate_pid>pN</reactivate_pid>
-    Reuse a previously-settled pid (must be DISCARD or FAIL in history). The
-    pid keeps its original id — the monotonic counter is NOT consumed for it.
-    Used when a previously-explored idea may combine differently with current
-    state (e.g. an autotune sweep that was DISCARD before a fusion landed).
-
-If <items_xml> begins with '@', the remainder is treated as a path and the
-XML is read from that file. If <items_xml> is exactly '-', XML is read from
-stdin. Prefer these over inline argv — on Windows, multi-line XML passed
-through bash argv can be silently truncated by the shell / CreateProcess,
-producing misleading "missing <desc>" style errors that look like schema
-bugs but are actually IPC truncation.
+`<xml_source>` is `@<path>` (read XML from file — recommended), `-` (read
+from stdin), or inline XML (avoid on Windows: bash / CreateProcess can
+silently truncate multi-line argv, producing misleading "missing <desc>"
+errors that look like schema bugs but are IPC truncation).
 
 Output: writes plan.md, prints JSON status.
 """
@@ -39,11 +32,10 @@ import re
 import sys
 import xml.etree.ElementTree as ET
 from collections import Counter
-from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(__file__))
 from phase_machine import (
-    load_progress, save_progress, get_plan_items, append_history,
+    load_progress, save_progress, get_plan_items,
     plan_path, progress_path, load_history, render_plan_line,
 )
 
@@ -84,15 +76,15 @@ def _fail(msg: str):
     sys.exit(1)
 
 
-_ALLOWED_ITEM_TAGS = {"desc", "rationale", "keywords", "reactivate_pid"}
+_ALLOWED_ITEM_TAGS = {"desc", "rationale", "keywords"}
 
 
 def _parse_items_xml(xml_str: str) -> list:
     """Parse <items><item>...</item>...</items> into a list of dicts.
 
-    Recognized child elements under <item>: desc, rationale, keywords,
-    reactivate_pid. Unknown tags are rejected so typos surface loudly
-    rather than silently dropping fields.
+    Recognized child elements under <item>: desc, rationale, keywords.
+    Unknown tags are rejected so typos surface loudly rather than silently
+    dropping fields.
     """
     try:
         root = ET.fromstring(xml_str)
@@ -151,10 +143,6 @@ def _validate_items(items):
             _fail(f"Item {i}: rationale too short ({len(rat)} chars, need >= 30)")
         if len(rat) > 400:
             item["rationale"] = rat[:397] + "..."
-        rp = item.get("reactivate_pid")
-        if rp is not None:
-            if not isinstance(rp, str) or not _PID_RE.match(rp):
-                _fail(f"Item {i}: reactivate_pid must be of form 'pN' (got {rp!r})")
 
 
 def _check_diversity(items):
@@ -216,160 +204,32 @@ def _load_history(task_dir: str) -> list:
     return load_history(task_dir, on_corrupt="skip")
 
 
-def _validate_reactivations(items: list, task_dir: str, old_pending_ids: set):
-    """Check each item with reactivate_pid is sound.
+def _read_settled_history_rows(task_dir: str) -> str:
+    """Read the existing `## Settled History` table rows verbatim from plan.md.
 
-    Returns list of (item_index, pid, last_decision, last_round) for reactivations.
-    `last_decision` is the literal "PENDING" sentinel for carry-forward of
-    items that were never settled in the old plan; downstream uses this to
-    skip both the supersede-DISCARD and the REACTIVATE history row (there's
-    nothing to "reactivate" — the item just stays in the plan).
-
-    Rules:
-      - pid not duplicated in this batch
-      - if pid is currently pending: any new desc/rationale OVERWRITES the
-        old item; this is the supported way to refine an untried idea during
-        DIAGNOSE/REPLAN without losing its pid lineage
-      - if pid was settled: last decision must be DISCARD or FAIL (KEEP
-        items are already applied — reactivating them is nonsense)
+    settle.py appends rows to this table when items KEEP/DISCARD/FAIL; we
+    carry them through unchanged so a re-render preserves layout. Returns
+    "" if no plan.md or no table yet.
     """
-    history = _load_history(task_dir)
-    # Index: pid → list of records chronological
-    by_pid = {}
-    for rec in history:
-        pid = rec.get("plan_item")
-        if pid:
-            by_pid.setdefault(pid, []).append(rec)
-
-    seen = set()
-    results = []
-    for i, item in enumerate(items):
-        rp = item.get("reactivate_pid")
-        if rp is None:
-            continue
-        if rp in seen:
-            _fail(f"Item {i}: reactivate_pid={rp} duplicated in this plan")
-        seen.add(rp)
-        if rp in old_pending_ids:
-            # Carry-forward: pid was never settled, just keep its slot.
-            results.append((i, rp, "PENDING", None))
-            continue
-        if rp not in by_pid:
-            _fail(f"Item {i}: reactivate_pid={rp} has no history record — "
-                  f"cannot reactivate a pid that was never settled")
-        last = by_pid[rp][-1]
-        last_decision = last.get("decision")
-        if last_decision not in ("DISCARD", "FAIL"):
-            _fail(f"Item {i}: reactivate_pid={rp} last decision was "
-                  f"{last_decision!r} — only DISCARD / FAIL may be reactivated")
-        results.append((i, rp, last_decision, last.get("round")))
-    return results
-
-
-def _parse_old_plan(task_dir: str):
-    """Return (settled_rows_str, pending_items) from the existing plan.md.
-
-    Pending items are produced by the canonical parser; settled-history rows
-    are carried forward verbatim so history layout stays stable.
-    """
-    pending = [
-        {"id": it["id"], "description": it["description"]}
-        for it in get_plan_items(task_dir)
-        if not it["done"]
-    ]
-
-    settled_rows = ""
     ppath = plan_path(task_dir)
-    if os.path.exists(ppath):
-        with open(ppath, "r", encoding="utf-8") as f:
-            content = f.read()
-        in_table = False
-        for line in content.split("\n"):
-            stripped = line.strip()
-            if stripped.startswith("|") and "Item" in stripped and "Outcome" in stripped:
-                in_table = True
-                continue
-            if in_table and stripped.startswith("|---"):
-                continue
-            if in_table and stripped.startswith("|"):
-                settled_rows += line + "\n"
-            elif in_table:
-                in_table = False
-    return settled_rows, pending
-
-
-def _supersede_pending(task_dir: str, pending: list, new_version: int,
-                       reactivated_pids: set) -> str:
-    """Force-settle abandoned pending items as DISCARD (reason=superseded).
-
-    Pids being explicitly reactivated are skipped — they'll reappear as new
-    pending items in the new plan, not as abandoned superseded entries.
-
-    Appends to history.jsonl and returns extra Settled History rows.
-    """
-    victims = [it for it in pending if it["id"] not in reactivated_pids]
-    if not victims:
+    if not os.path.exists(ppath):
         return ""
-    reason = f"superseded by replan v{new_version}"
-    ts = datetime.now(timezone.utc).isoformat()
-    extra_rows = ""
-    for it in victims:
-        append_history(task_dir, {
-            "round": "-",
-            "description": it["description"],
-            "plan_item": it["id"],
-            "decision": "DISCARD",
-            "metrics": {},
-            "correctness": None,
-            "error": None,
-            "commit": None,
-            "reason": reason,
-            "timestamp": ts,
-        })
-        extra_rows += f"| {it['id']} | DISCARD | N/A | {it['description']} ({reason}) |\n"
-    return extra_rows
-
-
-def _record_reactivations(task_dir: str, reactivations: list, new_version: int,
-                          items: list) -> str:
-    """Write REACTIVATE markers to history.jsonl + Settled History rows.
-
-    Each reactivation becomes one history record with decision='REACTIVATE'
-    so the audit trail shows exactly when a pid was revived and why. The
-    subsequent round (when the reactivated pid is settled again) writes a
-    normal KEEP/DISCARD/FAIL row — so one pid can have multiple outcomes
-    across its lifetime.
-
-    Pending carry-forwards (last_decision == "PENDING") are filtered out:
-    the pid was never settled, so there's nothing to "reactivate" — the
-    item simply continues into the new plan with the same id. No history
-    row is needed (and writing one would imply a state change that didn't
-    happen). The Settled History table is unchanged for those pids.
-    """
-    if not reactivations:
-        return ""
-    ts = datetime.now(timezone.utc).isoformat()
-    extra_rows = ""
-    for idx, pid, last_decision, last_round in reactivations:
-        if last_decision == "PENDING":
+    with open(ppath, "r", encoding="utf-8") as f:
+        content = f.read()
+    rows = ""
+    in_table = False
+    for line in content.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("|") and "Item" in stripped and "Outcome" in stripped:
+            in_table = True
             continue
-        item = items[idx]
-        reason = (f"reactivated in plan v{new_version} "
-                  f"(last outcome: {last_decision} in round {last_round})")
-        append_history(task_dir, {
-            "round": "-",
-            "description": item["desc"],
-            "plan_item": pid,
-            "decision": "REACTIVATE",
-            "metrics": {},
-            "correctness": None,
-            "error": None,
-            "commit": None,
-            "reason": reason,
-            "timestamp": ts,
-        })
-        extra_rows += f"| {pid} | REACTIVATE | — | {item['desc']} (v{new_version}) |\n"
-    return extra_rows
+        if in_table and stripped.startswith("|---"):
+            continue
+        if in_table and stripped.startswith("|"):
+            rows += line + "\n"
+        elif in_table:
+            in_table = False
+    return rows
 
 
 def _compute_next_pid(progress: dict, ppath: str) -> int:
@@ -386,39 +246,80 @@ def _compute_next_pid(progress: dict, ppath: str) -> int:
     return n
 
 
-def _allocate_ids(items: list, next_pid: int) -> tuple:
-    """Assign pids in order. Reactivated items keep their existing pid;
-    others consume from the monotonic counter.
+def _allocate_ids(n_new: int, next_pid: int) -> tuple:
+    """Allocate `n_new` fresh pids starting at `next_pid`. Returns
+    (item_ids, new_next_pid). Pids are monotonic and never reused."""
+    ids = [f"p{next_pid + i}" for i in range(n_new)]
+    return ids, next_pid + n_new
 
-    Returns (item_ids, new_next_pid).
+
+def _pid_num(pid: str) -> int:
+    """Numeric suffix for sorting (`p9` < `p10`)."""
+    try:
+        return int(pid[1:])
+    except ValueError:
+        return 0
+
+
+def _render_plan(old_items: list, new_pids: list, new_items: list,
+                 settled_rows: str) -> str:
+    """Render the merged plan with INSERT semantics for new items.
+
+    File layout (matters because settle.py promotes the next pending in
+    file order, not pid order):
+      [old settled items, in original order]
+      [new items, in pid order — INSERTED ahead of old pending]
+      [old pending items, in pid order — pushed behind new]
+
+    ACTIVE goes on the first new item, so the diagnosis insight runs
+    IMMEDIATELY. After it settles, settle.py's file-order promotion picks
+    the next new item, then the next, then finally rotates back to the old
+    pending items that were queued behind. pid stays monotonic (new items
+    get higher pids); only the queue position is reordered.
+
+    Edge cases: PLAN (no old items at all) and REPLAN (all old items
+    settled) both degenerate to "settled then new" with no displaced
+    pending — same code path, no special branch.
     """
-    out = []
-    cursor = next_pid
-    for item in items:
-        rp = item.get("reactivate_pid")
-        if rp:
-            out.append(rp)
-        else:
-            out.append(f"p{cursor}")
-            cursor += 1
-    return out, cursor
+    settled_old = [it for it in old_items if it["done"]]
+    pending_old = [it for it in old_items if not it["done"]]
+    pending_old.sort(key=lambda it: _pid_num(it["id"]))
 
+    if new_pids:
+        active_pid = new_pids[0]
+    elif pending_old:
+        active_pid = pending_old[0]["id"]
+    else:
+        active_pid = None
 
-def _render_plan(version: int, item_ids: list, items: list, settled_rows: str) -> str:
-    lines = [f"# Plan v{version}", "", "## Active Items"]
-    for i, (item, pid) in enumerate(zip(items, item_ids)):
-        # The first item is ACTIVE; reactivated items keep [REACTIVATED]
-        # tag so downstream readers can distinguish a fresh attempt at an
-        # old idea from a brand-new one.
+    def _emit_old(it):
+        lines.append(render_plan_line(
+            it["id"],
+            description=it["description"],
+            done=it["done"],
+            active=(it["id"] == active_pid),
+            tag=it["tag"],
+        ))
+        if it.get("rationale"):
+            lines.append(f"  - rationale: {it['rationale']}")
+        if it.get("keywords"):
+            lines.append(f"  - keywords: {it['keywords']}")
+
+    lines = ["# Plan", "", "## Items"]
+    for it in settled_old:
+        _emit_old(it)
+    for pid, item in zip(new_pids, new_items):
         lines.append(render_plan_line(
             pid,
             description=item["desc"].strip(),
             done=False,
-            active=(i == 0),
-            tag=("REACTIVATED" if item.get("reactivate_pid") else ""),
+            active=(pid == active_pid),
+            tag="",
         ))
         lines.append(f"  - rationale: {item['rationale'].strip()}")
         lines.append(f"  - keywords: {item['keywords'].strip()}")
+    for it in pending_old:
+        _emit_old(it)
     lines.append("")
     lines.append("## Settled History")
     lines.append("| Item | Outcome | Metric | Reason |")
@@ -429,21 +330,21 @@ def _render_plan(version: int, item_ids: list, items: list, settled_rows: str) -
 
 
 _USAGE = """\
-usage: create_plan.py <task_dir> <xml_source>
+usage: create_plan.py <task_dir> @<path>
 
-<xml_source> is one of:
-  @<path>     read XML from file (canonical: "$AR_TASK_DIR/.ar_state/plan_items.xml")
-  -           read XML from stdin (use a single-quoted heredoc)
-  '<items>…</items>'   inline XML (avoid on Windows — bash truncates)
+The single supported flow:
+  1. Write the <items> XML to "$AR_TASK_DIR/.ar_state/plan_items.xml"
+     with the Write tool.
+  2. Run: python .autoresearch/scripts/create_plan.py "$AR_TASK_DIR" \\
+            @"$AR_TASK_DIR/.ar_state/plan_items.xml"
 
-Recommended flow:
-  1. Write the <items> XML to .ar_state/plan_items.xml with the Write tool
-  2. Run: python .autoresearch/scripts/create_plan.py "$AR_TASK_DIR" @"$AR_TASK_DIR/.ar_state/plan_items.xml"
+The XML schema is in the [AR Phase: PLAN/DIAGNOSE/REPLAN] hook guidance
+message — read that for the exact <item>/<desc>/<rationale>/<keywords>
+shape; this script does not duplicate it.
 
-The XML schema is documented in the [AR Phase: PLAN/DIAGNOSE/REPLAN] hook
-guidance message — read that for the exact <item>/<desc>/<rationale>/<keywords>
-shape. Do NOT call this script with no XML argument hoping for help; the
-schema lives in the phase guidance, not in --help.
+Legacy input modes still parsed but discouraged:
+  '<items>…</items>'   inline argv — silently truncated by Windows shells
+  -                     read XML from stdin
 """
 
 
@@ -476,45 +377,41 @@ def main():
     _warn_repeated_failures(task_dir)
 
     progress = load_progress(task_dir) or {}
-    version = progress.get("plan_version", 0) + 1
     ppath = plan_path(task_dir)
     next_pid = _compute_next_pid(progress, ppath)
 
-    settled_rows, old_pending = _parse_old_plan(task_dir)
-    old_pending_ids = {it["id"] for it in old_pending}
+    # Append-only: old items (settled + still-pending) survive untouched.
+    # New items get fresh pids appended at the end. ACTIVE is recomputed in
+    # render: first pending pid across the merged set (natural FIFO).
+    old_items = get_plan_items(task_dir, include_meta=True)
+    settled_rows = _read_settled_history_rows(task_dir)
 
-    # Validate reactivations against history + current plan state
-    reactivations = _validate_reactivations(items, task_dir, old_pending_ids)
-    reactivated_pids = {r[1] for r in reactivations}
-
-    # Abandon unclaimed old pendings; reactivated pids skip this path.
-    extra_rows = _supersede_pending(task_dir, old_pending, version, reactivated_pids)
-    if extra_rows:
-        settled_rows = (settled_rows.rstrip() + "\n" + extra_rows) if settled_rows else extra_rows
-
-    # Record REACTIVATE markers so the audit trail captures the revival
-    reactivate_rows = _record_reactivations(task_dir, reactivations, version, items)
-    if reactivate_rows:
-        settled_rows = (settled_rows.rstrip() + "\n" + reactivate_rows) if settled_rows else reactivate_rows
-
-    item_ids, new_next_pid = _allocate_ids(items, next_pid)
+    new_pids, new_next_pid = _allocate_ids(len(items), next_pid)
 
     os.makedirs(os.path.dirname(ppath), exist_ok=True)
     with open(ppath, "w", encoding="utf-8") as f:
-        f.write(_render_plan(version, item_ids, items, settled_rows))
+        f.write(_render_plan(old_items, new_pids, items, settled_rows))
 
     progress["next_pid"] = new_next_pid
-    progress["plan_version"] = version
+    progress["plan_version"] = progress.get("plan_version", 0) + 1
     if os.path.exists(progress_path(task_dir)):
         save_progress(task_dir, progress, stamp=False)
 
+    # Active pid mirrors _render_plan's selection: prefer first new pid so
+    # diagnosis-informed items run immediately, not behind stale pending.
+    if new_pids:
+        active = new_pids[0]
+    else:
+        old_pending = sorted(
+            (it["id"] for it in old_items if not it["done"]),
+            key=_pid_num,
+        )
+        active = old_pending[0] if old_pending else None
+
     print(json.dumps({
         "ok": True,
-        "version": version,
-        "items": item_ids,
-        "active": item_ids[0],
-        "superseded": [it["id"] for it in old_pending if it["id"] not in reactivated_pids],
-        "reactivated": sorted(reactivated_pids),
+        "items": new_pids,
+        "active": active,
         "path": ppath,
     }))
 
