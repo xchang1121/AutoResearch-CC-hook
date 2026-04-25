@@ -130,3 +130,42 @@ Follow the phase guidance. Never stop between phases.
 - Do not use Bash redirection, `python -c`, PowerShell, or mutating git/filesystem
   commands to write task files; use Edit/Write or the phase scripts so hooks
   can enforce the workflow.
+
+## Scripts under `.autoresearch/scripts/`
+
+Only the following are runnable CLIs. Everything else in that directory is a
+**library imported by these scripts and by the hooks** — it has no
+`__main__` block and `python .autoresearch/scripts/<name>.py` will be
+blocked by the Bash hook with `[AR] Unknown script ...`.
+
+| Use case | Script |
+|---|---|
+| New task | `scaffold.py` |
+| Resume | `resume.py` |
+| Baseline eval | `baseline.py` |
+| Plan / replan / diagnose | `create_plan.py` |
+| One optimization round | `pipeline.py` |
+| Final report | `final_report.py` |
+| Live status (read-only) | `dashboard.py` |
+| Worker service control | `ar_cli.py` |
+
+**Library files — do NOT invoke directly.** If you want to inspect
+phase/progress, read the state files or run `dashboard.py`; do not
+`python phase_machine.py` etc.
+
+- `phase_machine.py` — phase constants, validators, guidance strings
+- `task_config.py`   — yaml loader, eval orchestrator
+- `local_worker.py`  — local subprocess executor for verify/profile
+- `code_checker.py`  — static checker (called by `quick_check.py`)
+- `hook_utils.py`, `hw_detect.py`, `settings.py` — shared helpers
+- `hook_guard_*.py`, `hook_post_*.py`, `hook_stop_save.py` — hooks invoked
+  by Claude Code itself, never by you
+
+To inspect state instead of running a library:
+
+| Want | Do |
+|---|---|
+| Current phase | `cat "$AR_TASK_DIR/.ar_state/.phase"` |
+| Full progress | `cat "$AR_TASK_DIR/.ar_state/progress.json"` |
+| Live dashboard | `python .autoresearch/scripts/dashboard.py` |
+| History tail | `cat "$AR_TASK_DIR/.ar_state/history.jsonl"` |

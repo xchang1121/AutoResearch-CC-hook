@@ -20,12 +20,37 @@ from phase_machine import (
 )
 from settings import hallucinated_scripts
 
-# Real scripts that live under .autoresearch/scripts/.
+# Real scripts under .autoresearch/scripts/ that have a __main__ entry and
+# are intended to be invoked as CLIs. Sourced as the canonical list; mirrors
+# the table in .claude/commands/autoresearch.md ("Scripts under ...").
 _BLESSED_SCRIPTS = {
     "quick_check.py", "eval_wrapper.py", "keep_or_discard.py",
     "scaffold.py", "baseline.py", "_baseline_init.py", "dashboard.py",
     "create_plan.py", "settle.py", "pipeline.py", "resume.py",
-    "code_checker.py", "final_report.py",
+    "code_checker.py", "final_report.py", "ar_cli.py",
+}
+
+# Library modules that look invokable but have no `__main__` and exist only
+# to be imported. The block message points the model at the right place
+# instead of just saying "unknown script". Keep this in sync with the
+# "Library files — do NOT invoke directly" list in autoresearch.md.
+_LIBRARY_SCRIPTS = {
+    "phase_machine.py": "imported by hooks and pipeline; "
+                        "to inspect phase, run `cat \"$AR_TASK_DIR/.ar_state/.phase\"` "
+                        "or `python .autoresearch/scripts/dashboard.py`",
+    "task_config.py":   "yaml loader and eval orchestrator; "
+                        "use baseline.py / pipeline.py to drive eval",
+    "local_worker.py":  "in-process verify/profile executor; "
+                        "use baseline.py / pipeline.py — they pick local vs remote automatically",
+    "hook_utils.py":    "hook helpers — invoked only by Claude Code's hook system, never directly",
+    "hw_detect.py":     "hardware probe — used internally by local_worker / scaffold",
+    "settings.py":      "config-yaml accessor — imported, not run",
+    "hook_guard_bash.py":  "PreToolUse hook — invoked by Claude Code, never directly",
+    "hook_guard_edit.py":  "PreToolUse hook — invoked by Claude Code, never directly",
+    "hook_post_bash.py":   "PostToolUse hook — invoked by Claude Code, never directly",
+    "hook_post_edit.py":   "PostToolUse hook — invoked by Claude Code, never directly",
+    "hook_stop_save.py":   "Stop hook — invoked by Claude Code, never directly",
+    "failure_extractor.py": "log parser — imported by eval_wrapper / pipeline",
 }
 
 # Alias → real script mapping lives in .autoresearch/config.yaml under
@@ -51,9 +76,22 @@ def _script_name_check(command: str):
         real = aliases[script_name]
         _block(f"[AR] '{script_name}' does not exist. "
                f"Use: python .autoresearch/scripts/{real}")
-    if ".autoresearch/scripts/" in script_path and script_name not in _BLESSED_SCRIPTS:
-        _block(f"[AR] Unknown script '{script_name}'. "
-               f"Valid scripts: {sorted(_BLESSED_SCRIPTS)}")
+
+    if ".autoresearch/scripts/" not in script_path:
+        return
+    if script_name in _BLESSED_SCRIPTS:
+        return
+
+    # Distinguish "library, no CLI" from "totally unknown" — the former is
+    # the most common Claude mistake and benefits from a directed hint.
+    if script_name in _LIBRARY_SCRIPTS:
+        hint = _LIBRARY_SCRIPTS[script_name]
+        _block(f"[AR] '{script_name}' is a library module (no __main__) — "
+               f"do not invoke it directly. {hint}.")
+    _block(f"[AR] Unknown script '{script_name}'. "
+           f"Valid CLIs: {sorted(_BLESSED_SCRIPTS)}. "
+           f"Library files (phase_machine.py, task_config.py, hook_*.py, …) "
+           f"are imported, not run — see .claude/commands/autoresearch.md.")
 
 
 def main():
