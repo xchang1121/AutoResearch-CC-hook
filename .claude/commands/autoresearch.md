@@ -3,6 +3,35 @@
 Single entry point for the whole loop: initialize a new task, resume an existing
 one, or kick off the optimization. The hook machine takes it from there.
 
+## How this command works
+
+This loop is owned by a phase machine, not by you. Each turn is exactly one
+Bash call:
+
+1. Read the most recent `[AR Phase: <name>]` message.
+2. Run the single command it names — verbatim.
+3. Wait for the next `[AR Phase: ...]` message and repeat.
+
+The phase advances itself; the next command is always named for you.
+
+### The full set of user-facing scripts
+
+Every command `[AR Phase: ...]` will ever ask you to run is one of these:
+
+| script            | when it appears                          |
+|-------------------|------------------------------------------|
+| `scaffold.py`     | Step 1 — new task                        |
+| `resume.py`       | Step 1 — resume                          |
+| `baseline.py`     | BASELINE phase                           |
+| `create_plan.py`  | PLAN / DIAGNOSE / REPLAN                 |
+| `pipeline.py`     | EDIT phase (one round of the loop)       |
+| `final_report.py` | FINISH phase                             |
+| `dashboard.py`    | any phase, read-only                     |
+| `worker_ctl.py`   | only when guidance explicitly asks       |
+
+When uncertain about what to type, the answer is already in the most recent
+`[AR Phase: ...]` line — re-read it and copy the command it names.
+
 ## Arguments
 
 `$ARGUMENTS` — one of:
@@ -72,8 +101,11 @@ quick_check enforces.
    `.ar_state/.phase = PLAN` on success, so when **both `--ref` and `--kernel`
    are provided** there are no user-visible init/baseline steps: the next
    activation drops you straight into PLAN. (`--desc` mode and `--ref` without
-   `--kernel` will instead start in GENERATE_REF / GENERATE_KERNEL.) Read the
-   `task_dir` from the JSON output.
+   `--kernel` will instead start in GENERATE_REF / GENERATE_KERNEL.)
+
+   On success scaffold prints a JSON line like
+   `{"task_dir": "ar_tasks/<op>_<ts>_<id>", ...}`. The `task_dir` value from
+   that JSON is the only thing Step 2 needs — copy it into the export.
 
 4. No arguments → ask the user: reference path, op name, **DSL**, worker URL,
    max rounds. Then use path 3. (Ask for DSL by name — e.g. `triton_ascend`,
@@ -81,22 +113,42 @@ quick_check enforces.
 
 ## Step 2: Activate
 
+Issue **one** Bash call — a plain export of `AR_TASK_DIR`:
+
 ```bash
 export AR_TASK_DIR="<task_dir from step 1>"
 ```
 
-The activation hook prints `[AR Phase: ...]` guidance. Follow it.
+That single line is the entire activation. Claude Code's `PostToolUse` hook
+reads `AR_TASK_DIR` from this command, validates the task, computes the
+starting phase, and emits the first `[AR Phase: ...]` guidance back to you
+on stderr.
 
-## Step 3: Run the loop
+**What success looks like:**
+- The Bash tool returns with empty stdout.
+- A hook message follows containing a line like
+  `[AR Phase: PLAN] Read task.yaml, ... Then create the plan: ...`.
+- That line is your Step 3 input — copy the command it names verbatim.
 
-After activation the hook prints `[AR Phase: ...]` with the exact next
-command. Follow it. Keep following each new `[AR Phase: ...]` message until
-the hook itself emits FINISH guidance. Do not stop between phases and do not
-choose your own command sequence — the phase machine owns it.
+If no `[AR Phase: ...]` line appears, re-issue the same one-line export with
+the exact quoted path from Step 1's JSON.
 
-One gotcha the per-phase guidance can't fix: when PLAN / DIAGNOSE / REPLAN
-asks you to run `create_plan.py`, write the XML `<items>` document to a file
-first (canonical path: `"$AR_TASK_DIR/.ar_state/plan_items.xml"`) and pass
-`@<path>` as the second argument. Quoting multi-line XML inline gets
-truncated by bash/CreateProcess on Windows and surfaces as a misleading
-`"missing <desc>"` schema error.
+## Step 3: Follow the phase machine
+
+Each `[AR Phase: ...]` message names the next command on a single line.
+Each turn:
+
+1. Read the `[AR Phase: ...]` message.
+2. Run the command it names — verbatim, as one Bash call.
+3. Wait for the next `[AR Phase: ...]` message and repeat.
+
+Continue until you receive `[AR Phase: FINISH]`. At FINISH the loop is
+complete and the hook will name the wrap-up command (typically
+`final_report.py`).
+
+**PLAN / DIAGNOSE / REPLAN convention:** when guidance asks for
+`create_plan.py`, write the XML `<items>` document to
+`"$AR_TASK_DIR/.ar_state/plan_items.xml"` first, then pass `@<path>` as the
+second argument. Passing the XML through a file keeps newlines intact across
+bash and Windows `CreateProcess`, where inline multi-line strings get
+truncated and surface as a misleading `"missing <desc>"` schema error.
