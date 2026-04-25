@@ -145,7 +145,18 @@ def main():
         sys.exit(0)
 
     command = hook_input.get("tool_input", {}).get("command", "")
-    stdout = str(hook_input.get("tool_output", ""))
+    # Claude Code's PostToolUse payload shape varies by version: older runs
+    # used a flat `tool_output` string; current runs put both stdout/stderr
+    # under `tool_response`. We accept any, falling back from most-specific
+    # to least. If none populate, `stdout` ends up "" and downstream
+    # last-JSON-line parsing returns None — see _command_succeeded() below.
+    tool_resp = hook_input.get("tool_response", {})
+    if isinstance(tool_resp, dict):
+        stdout = str(tool_resp.get("stdout", "") or tool_resp.get("output", ""))
+    else:
+        stdout = str(tool_resp)
+    if not stdout:
+        stdout = str(hook_input.get("tool_output", ""))
 
     # --- Activation (export AR_TASK_DIR=...) ---
     target = _activation_target(command)
@@ -207,14 +218,22 @@ def main():
         emit_todowrite_context(task_dir, f"[AR] Round settled. Phase -> {new_phase}.")
 
     elif invoked_script == "create_plan.py" and phase in (PLAN, DIAGNOSE, REPLAN):
-        # Two-stage success check: (1) THIS run's stdout must contain
-        # `{"ok": true, ...}` — guards against stale plan.md from a prior
-        # run satisfying validate_plan even when the current invocation
-        # exited with `{"ok": false}`. (2) Then re-validate plan.md as the
-        # final gate, since stdout JSON could in principle disagree with
-        # what was actually written.
-        run_blob = parse_last_json_line(stdout) or {}
-        if not run_blob.get("ok"):
+        # Success-check policy:
+        #   - `{"ok": false, ...}` in stdout → block advance, surface error.
+        #     (Reliable failure signal: create_plan.py prints this when it
+        #     rejects the input.)
+        #   - `{"ok": true, ...}` OR no parseable JSON (e.g. tool_output
+        #     payload shape we don't recognize) → fall through to
+        #     validate_plan(plan.md). Validate is the final gate; if plan.md
+        #     is well-formed it advances, if not it stays. Falling through
+        #     when stdout is missing avoids punishing a successful run just
+        #     because the hook payload shape changed under us.
+        #
+        # The substring-match bug (echo create_plan.py wrongly advancing) is
+        # already prevented by `invoked_script == "create_plan.py"` above —
+        # parse_invoked_ar_script requires a real python invocation.
+        run_blob = parse_last_json_line(stdout)
+        if run_blob is not None and run_blob.get("ok") is False:
             err = run_blob.get("error", "(no error message in stdout)")
             emit_status(f"[AR] Plan not advanced — create_plan.py reported failure: {err}")
         else:

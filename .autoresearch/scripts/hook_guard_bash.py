@@ -44,8 +44,7 @@ _INTERNAL_CLI_SCRIPTS = {
 # is a filename Claude will see in the block message and may try later.
 _LIBRARY_HINTS = {
     "phase_machine.py": "to inspect phase, run "
-                        "`cat \"$AR_TASK_DIR/.ar_state/.phase\"` or "
-                        "`python .autoresearch/scripts/dashboard.py`",
+                        "`cat \"$AR_TASK_DIR/.ar_state/.phase\"`",
     "task_config.py":   "yaml loader and eval orchestrator; "
                         "use baseline.py / pipeline.py to drive eval",
     "local_worker.py":  "in-process verify/profile executor; "

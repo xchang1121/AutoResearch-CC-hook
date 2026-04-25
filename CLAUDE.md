@@ -14,11 +14,11 @@ runtime affordances live here.
 script to run for the current phase. Do not memorize a phase-to-script
 mapping; let the hook drive.
 
-The user-facing CLIs under `.autoresearch/scripts/` are: `scaffold.py`,
-`resume.py`, `baseline.py`, `create_plan.py`, `pipeline.py`,
-`final_report.py`, `dashboard.py`, `worker_ctl.py`. Run only the script the
-phase guidance names. Other `.py` files in that directory are internal —
-the Bash hook blocks direct invocation with a directive hint if you try.
+The phase machine drives six scripts under `.autoresearch/scripts/`:
+`scaffold.py`, `resume.py`, `baseline.py`, `create_plan.py`, `pipeline.py`,
+`final_report.py`. Run only the one named by the current
+`[AR Phase: ...]` guidance. The Bash hook blocks anything else in that
+directory with a directive hint.
 
 ## Inspecting task state
 
@@ -31,8 +31,6 @@ if it doesn't:
   failure counter, baseline / seed / best metrics, plan version)
 - `cat "$AR_TASK_DIR/.ar_state/plan.md"` — full plan + settled-history table
 - `cat "$AR_TASK_DIR/.ar_state/history.jsonl"` — round-by-round outcomes
-- `python .autoresearch/scripts/dashboard.py` — interactive TUI summarizing
-  all of the above (separate terminal recommended)
 
 ## Invariants
 

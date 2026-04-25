@@ -166,7 +166,6 @@ def clear_task_dir():
 # Read-only command prefixes allowed in every phase.
 _READONLY_PATTERNS = [
     r"^(ls|cat|head|tail|wc|find|grep|git\s+(log|diff|status|show|branch))",
-    r"dashboard\.py",
     r"^echo\s",
     r"^pwd$",
 ]
@@ -313,17 +312,11 @@ _PHASE_ALLOWED_SCRIPTS = {
     FINISH:          {"final_report.py"},
 }
 
-# Tools allowed at every phase (including pre-activation INIT).
-# - `dashboard.py` / `worker_ctl.py`: read-only / orthogonal to phase
-# - `resume.py`: session recovery from any phase (after a break, the
-#   pre-hook sees the OLD .active_task pointing at whatever phase the
-#   previous session was in; resume must not be blocked by that phase)
-# - `scaffold.py`: starting a new task while an old .active_task pointer
-#   is still around (slash command dispatches scaffold without first
-#   clearing the old pointer)
-_ALWAYS_ALLOWED_SCRIPTS = {
-    "dashboard.py", "worker_ctl.py", "resume.py", "scaffold.py",
-}
+# Session-establishment scripts that the `/autoresearch` slash command
+# dispatches to bootstrap or recover an active task. They must work even
+# when the pre-hook reads a stale `.active_task` pointing at some prior
+# phase (otherwise resume self-blocks; scaffold can't create a sibling).
+_ALWAYS_ALLOWED_SCRIPTS = {"scaffold.py", "resume.py"}
 
 # Edit/Write rules: which file classes may be written per phase.
 #   "ref"      — reference.py
@@ -488,7 +481,7 @@ def check_bash(phase: str, command: str) -> tuple:
          regardless of phase.
       4. AR-script invocation (`python .autoresearch/scripts/<name>.py`)
          — allowed iff the script is in this phase's allowlist or in the
-         always-allowed set (dashboard, worker_ctl). Else block with a
+         always-allowed set (`_ALWAYS_ALLOWED_SCRIPTS`). Else block with a
          phase-specific message.
       5. Non-script command — allowed iff it matches a read-only pattern
          (cat / ls / grep / git log / etc.). Else block.
