@@ -162,7 +162,7 @@ verify / profile 脚本按 DSL 生成后，两个 transport 共用，对 `EvalRe
   到 [ar_vendored/worker/server.py](.autoresearch/scripts/ar_vendored/worker/server.py)
   的 `/api/v1/{verify,profile}`，worker 端解包跑同一份脚本 + 同一套
   adapter。适合多卡 / DevicePool / roofline 整套场景。worker 端需要
-  rsync 项目过去来启动 `ar_cli.py worker --start`。
+  rsync 项目过去来启动 `worker_ctl.py worker --start`。
 
 两条腿的路由决策由 `config.dsl` + `config.backend` 独立驱动；本地的
 msprof / nsys 分支和远端 `LocalWorker.profile` 走同一份 DSL 判断逻辑，
@@ -184,7 +184,7 @@ SSH tunnel → 启动任务加 `--worker-url`：
 
 ```bash
 # worker 机器上（自行 conda activate / source env.sh）
-python .autoresearch/scripts/ar_cli.py worker --start \
+python .autoresearch/scripts/worker_ctl.py worker --start \
     --backend ascend --arch ascend910b3 --devices 2,5 \
     --host 127.0.0.1 --port 9111 --bg
 
@@ -195,10 +195,10 @@ curl http://127.0.0.1:9002/api/v1/status
 # {"status":"ready","backend":"ascend","arch":"ascend910b3","devices":[4]}
 ```
 
-`ar_cli.py worker` 子命令还有 `--stop` / `--status` / foreground 模式
+`worker_ctl.py worker` 子命令还有 `--stop` / `--status` / foreground 模式
 （去掉 `--bg`）；默认只监听 `127.0.0.1`，配合 SSH tunnel 使用。只有在
 明确需要被局域网访问时才传 `--host 0.0.0.0`。端口就绪探测、PID cmdline
-校验避免撞车，详见 `ar_cli.py worker --help`。多 worker URL 逗号分隔，
+校验避免撞车，详见 `worker_ctl.py worker --help`。多 worker URL 逗号分隔，
 框架按可达性挑选。worker 收到的 tarball 会做路径穿越和 symlink 检查后
 再解包执行。
 
@@ -463,7 +463,7 @@ Claude Code 会直接按 frontmatter 匹配到合适场景。所有 skill 文档
 | `.autoresearch/scripts/hw_detect.py` | DSL → backend 硬编码表；npu-smi / nvidia-smi / worker-status 派生 arch |
 | `.autoresearch/code_checker.yaml` | CodeChecker 规则表（triton 模板 / autotune 合规） |
 | `.autoresearch/scripts/ar_vendored/` | DSL adapter + profiler + msprof/nsys runner + HTTP worker server |
-| `.autoresearch/scripts/ar_cli.py` | 统一 CLI：`ar_cli worker --start/--stop/--status`，支持 `--bg` daemon |
+| `.autoresearch/scripts/worker_ctl.py` | Worker 服务控制器：`worker_ctl worker --start/--stop/--status`，支持 `--bg` daemon |
 | `task.yaml` | 任务配置（每个 task 目录一份，含 dsl/backend/arch/framework 四字段；打包进 tarball 发 worker） |
 | `.ar_state/progress.json` | 运行时状态 |
 | `.ar_state/plan.md` | 规划 + 结算历史（权威态） |
@@ -490,4 +490,4 @@ Claude Code 会直接按 frontmatter 匹配到合适场景。所有 skill 文档
   - 所有 DSL 走 local `_profile_via_msprof` / `_profile_via_nsys` 时需要
     `pandas`（读 op_summary / nsys rep）
 - 远端 NPU / CUDA 机器（可选），通过 SSH tunnel 暴露 worker HTTP 端口。
-  worker 端 rsync 项目过去，`ar_cli.py worker --start` 即可。
+  worker 端 rsync 项目过去，`worker_ctl.py worker --start` 即可。

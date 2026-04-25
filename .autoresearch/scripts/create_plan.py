@@ -428,8 +428,30 @@ def _render_plan(version: int, item_ids: list, items: list, settled_rows: str) -
     return "\n".join(lines) + "\n"
 
 
+_USAGE = """\
+usage: create_plan.py <task_dir> <xml_source>
+
+<xml_source> is one of:
+  @<path>     read XML from file (canonical: "$AR_TASK_DIR/.ar_state/plan_items.xml")
+  -           read XML from stdin (use a single-quoted heredoc)
+  '<items>…</items>'   inline XML (avoid on Windows — bash truncates)
+
+Recommended flow:
+  1. Write the <items> XML to .ar_state/plan_items.xml with the Write tool
+  2. Run: python .autoresearch/scripts/create_plan.py "$AR_TASK_DIR" @"$AR_TASK_DIR/.ar_state/plan_items.xml"
+
+The XML schema is documented in the [AR Phase: PLAN/DIAGNOSE/REPLAN] hook
+guidance message — read that for the exact <item>/<desc>/<rationale>/<keywords>
+shape. Do NOT call this script with no XML argument hoping for help; the
+schema lives in the phase guidance, not in --help.
+"""
+
+
 def main():
     global _SOURCE_MODE
+    if len(sys.argv) < 3:
+        sys.stderr.write(_USAGE)
+        sys.exit(2)
     task_dir = sys.argv[1]
     arg = sys.argv[2]
 

@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
-"""AutoResearch CLI — single entry for worker / future subcommands.
+"""Worker Service controller — start / stop / status for the AutoResearch
+HTTP eval worker. Scoped to worker management only; everything else under
+.autoresearch/scripts/ owns its own concerns.
 
 Canonical invocation (from project root):
 
-    python .autoresearch/scripts/ar_cli.py worker --start \
+    python .autoresearch/scripts/worker_ctl.py worker --start \
         --backend ascend --arch ascend910b3 --devices 2,5 \
         --host 127.0.0.1 --port 9111 --bg
 
-    python .autoresearch/scripts/ar_cli.py worker --status --port 9111
-    python .autoresearch/scripts/ar_cli.py worker --stop   --port 9111
+    python .autoresearch/scripts/worker_ctl.py worker --status --port 9111
+    python .autoresearch/scripts/worker_ctl.py worker --stop   --port 9111
 
-The CLI is cross-platform (daemon mode uses start_new_session on POSIX /
-DETACHED_PROCESS on Windows). Prerequisites are the user's: activate a
-Python env where `fastapi + uvicorn + pyyaml + torch` (plus torch_npu /
-triton / pandas / msprof / nsys per DSL) are importable — ar_cli itself
-does not activate anything.
+The controller is cross-platform (daemon mode uses start_new_session on
+POSIX / DETACHED_PROCESS on Windows). Prerequisites are the user's:
+activate a Python env where `fastapi + uvicorn + pyyaml + torch` (plus
+torch_npu / triton / pandas / msprof / nsys per DSL) are importable —
+worker_ctl itself does not activate anything.
 """
 from __future__ import annotations
 
@@ -96,7 +98,7 @@ def _worker_start(args: argparse.Namespace) -> int:
 def _worker_start_daemon(args: argparse.Namespace) -> int:
     if _port_in_use(args.port):
         print(f"ERROR: port {args.port} is already in use. Stop the existing "
-              f"daemon (python .autoresearch/scripts/ar_cli.py worker --stop "
+              f"daemon (python .autoresearch/scripts/worker_ctl.py worker --stop "
               f"--port {args.port}) or pick another port.", file=sys.stderr)
         return 1
 
@@ -141,7 +143,7 @@ def _worker_start_daemon(args: argparse.Namespace) -> int:
     print("-" * 48)
     print(_banner(args, {"PID": proc.pid, "Log": log_path}))
     print("-" * 48)
-    print(f"  Stop: python .autoresearch/scripts/ar_cli.py worker "
+    print(f"  Stop: python .autoresearch/scripts/worker_ctl.py worker "
           f"--stop --port {args.port}")
     print("=" * 48)
     return 0
@@ -265,7 +267,7 @@ def _cmd_worker(args: argparse.Namespace) -> int:
         return _worker_status(args)
     # No action flag given → show help for `worker`.
     print("worker: specify --start, --stop, or --status.\n"
-          "Run `python .autoresearch/scripts/ar_cli.py worker --help` for "
+          "Run `python .autoresearch/scripts/worker_ctl.py worker --help` for "
           "details.", file=sys.stderr)
     return 2
 
@@ -314,8 +316,8 @@ def _add_worker_subcommand(sub: argparse._SubParsersAction) -> None:
 
 def main() -> int:
     p = argparse.ArgumentParser(
-        prog="ar_cli",
-        description="AutoResearch CLI. Subcommands: worker.",
+        prog="worker_ctl",
+        description="AutoResearch worker controller. Subcommands: worker.",
     )
     sub = p.add_subparsers(dest="command", metavar="{worker}")
     _add_worker_subcommand(sub)

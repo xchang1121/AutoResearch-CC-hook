@@ -391,9 +391,26 @@ _PLAN_FIELD_RULES = (
     "Optional: <reactivate_pid>pN</reactivate_pid> to reuse a previously "
     "DISCARD/FAIL pid. Escape '&', '<', '>' in text as '&amp;', '&lt;', '&gt;' "
     "(or wrap the field in <![CDATA[...]]>). "
-    "If shell-quoting is awkward, write the XML to a file and pass '@path.xml' "
-    "as the second argument instead."
+    "Write this XML to .ar_state/plan_items.xml with the Write tool, then "
+    "pass it to create_plan.py as @<path>. Do not inline multi-line XML on "
+    "the command line; Windows shell quoting can truncate it."
 )
+
+
+def plan_items_xml_path(task_dir: str) -> str:
+    return state_path(task_dir, "plan_items.xml")
+
+
+def _plan_creation_guidance(task_dir: str, *, intro: str) -> str:
+    xml_path = plan_items_xml_path(task_dir)
+    return (
+        f"{intro}\n"
+        f"1. Write the XML <items> document to: {xml_path}\n"
+        f"Example shape:\n{_PLAN_XML_EXAMPLE}\n"
+        f"{_PLAN_FIELD_RULES}\n"
+        f"2. Then run:\n"
+        f'python .autoresearch/scripts/create_plan.py "{task_dir}" @"{xml_path}"'
+    )
 
 
 def _is_readonly_bash(command: str) -> bool:
@@ -1167,9 +1184,7 @@ def get_guidance(task_dir: str) -> str:
 
         return (f"[AR Phase: PLAN] "
                 f"Read task.yaml, editable files ({editable}), and reference.py.{skills_hint}{metric_hint}\n"
-                f"Then create the plan by running:\n"
-                f'python .autoresearch/scripts/create_plan.py "{task_dir}" \'{_PLAN_XML_EXAMPLE}\'\n'
-                f"{_PLAN_FIELD_RULES}\n"
+                f"{_plan_creation_guidance(task_dir, intro='Then create the plan:')}\n"
                 f"The script writes plan.md in the correct format. Hook validates and advances to EDIT.\n"
                 f"After plan creation, sync items to TodoWrite.")
 
@@ -1245,9 +1260,7 @@ def get_guidance(task_dir: str) -> str:
                 f"  - NOT more parameter tuning\n"
                 f"Recent failures:\n{fail_summary}"
                 f"{untried_summary}"
-                f"After diagnosis, create the next plan revision with >= 3 items:\n"
-                f'python .autoresearch/scripts/create_plan.py "{task_dir}" \'{_PLAN_XML_EXAMPLE}\'\n'
-                f"{_PLAN_FIELD_RULES}\n"
+                f"{_plan_creation_guidance(task_dir, intro='After diagnosis, create the next plan revision with >= 3 items:')}\n"
                 f"PRESERVE PENDING WORK. Items not in your new <items> document "
                 f"are auto-DISCARDed as superseded — that loses unspent budget. "
                 f"For every still-untried item that the diagnosis did not "
@@ -1281,9 +1294,7 @@ def get_guidance(task_dir: str) -> str:
             )
         return (f"[AR Phase: REPLAN] All items settled. Budget: {remaining} rounds left. "
                 f"Read .ar_state/history.jsonl. Analyze what worked/failed.\n"
-                f"To continue, create new plan:\n"
-                f'python .autoresearch/scripts/create_plan.py "{task_dir}" \'{_PLAN_XML_EXAMPLE}\'\n'
-                f"{_PLAN_FIELD_RULES}\n"
+                f"{_plan_creation_guidance(task_dir, intro='To continue, create new plan:')}\n"
                 f"Or if no promising directions, do nothing (hooks will advance to FINISH)."
                 f"{reactivation_hint}")
 

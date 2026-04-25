@@ -76,12 +76,29 @@ Then Read the SKILL.md files that match your optimization direction. Each SKILL.
 for the current phase. Do not memorize a phase-to-script mapping; let the hook
 drive.
 
-The eight runnable scripts under `.autoresearch/scripts/` are:
-`scaffold.py`, `resume.py`, `baseline.py`, `create_plan.py`, `pipeline.py`,
-`final_report.py`, `dashboard.py`, `ar_cli.py`. Every other `.py` in that
-directory is a library imported by those scripts and by the hooks — it has no
-`__main__` and the Bash hook will block direct invocation with a hint pointing
-at the right alternative.
+Do not treat `.autoresearch/scripts/` as a command menu. Startup goes through
+`/autoresearch`, which may call `scaffold.py` or `resume.py` and then
+`export AR_TASK_DIR=...`. After activation, run only the exact script named
+by the latest `[AR Phase: ...]` guidance. `dashboard.py` is read-only
+inspection; `worker_ctl.py` only manages the worker service. Pipeline
+substeps such as `quick_check.py`, `eval_wrapper.py`, `keep_or_discard.py`,
+`settle.py`, `_baseline_init.py`, and `code_checker.py` are internal and the
+Bash hook blocks direct invocation.
+
+To inspect task state without rerunning anything, read the state files
+directly (the hook's `[AR Phase: ...]` message already includes most of
+this — only fish around if it doesn't):
+
+- `cat "$AR_TASK_DIR/.ar_state/.phase"` — current phase
+- `cat "$AR_TASK_DIR/.ar_state/progress.json"` — full progress (rounds,
+  failure counter, baseline / seed / best metrics, plan version)
+- `cat "$AR_TASK_DIR/.ar_state/plan.md"` — full plan + settled-history table
+- `cat "$AR_TASK_DIR/.ar_state/history.jsonl"` — round-by-round outcomes
+- `python .autoresearch/scripts/dashboard.py` — interactive TUI summarizing
+  all of the above (separate terminal recommended)
+
+`worker_ctl.py` only manages the worker service; do not look there for state
+queries.
 
 The following invariants are non-negotiable:
 
