@@ -29,6 +29,36 @@ def emit_status(msg: str):
     print(msg, file=sys.stderr)
 
 
+def emit_additional_context(text: str):
+    """Print a PostToolUse `hookSpecificOutput.additionalContext` payload so
+    `text` is injected into Claude's next prompt.
+
+    `emit_status` (stderr) is the convenient transcript channel, but stderr
+    surfacing back to the model depends on the Claude Code surface and any
+    upstream proxy. Custom API gateways (e.g. third-party model routers)
+    can drop hook stderr silently — the agent then sees `1 PostToolUse hook
+    ran` with no payload and has nothing to act on. additionalContext rides
+    inside the tool-result envelope Claude Code constructs, so it survives
+    proxies. Use this for any hook output the model MUST see — first and
+    foremost the `[AR Phase: ...]` guidance line.
+    """
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "additionalContext": text,
+        }
+    }))
+
+
+def emit_phase_guidance(msg: str):
+    """Surface a phase-guidance message on both channels: stderr (for the
+    transcript) and additionalContext (load-bearing — what Claude actually
+    reads). Use for every `[AR Phase: ...]` line and any message that
+    instructs Claude what to run next."""
+    emit_status(msg)
+    emit_additional_context(msg)
+
+
 def emit_todowrite_context(task_dir: str, header: str):
     """Print PostToolUse `hookSpecificOutput.additionalContext` JSON that
     instructs Claude to mirror plan.md into TodoWrite on the next turn.

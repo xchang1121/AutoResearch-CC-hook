@@ -23,7 +23,9 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from hook_utils import read_hook_input, emit_status, emit_todowrite_context
+from hook_utils import (
+    read_hook_input, emit_status, emit_phase_guidance, emit_todowrite_context,
+)
 from phase_machine import (
     read_phase, write_phase, get_guidance, compute_resume_phase,
     get_task_dir, set_task_dir, get_active_item, touch_heartbeat,
@@ -64,7 +66,7 @@ def _clean_stale_edit_marker(task_dir: str):
 def _handle_activation(new_task_dir: str):
     new_task_dir = os.path.abspath(new_task_dir)
     if not os.path.isdir(new_task_dir):
-        emit_status(f"[AR] ERROR: task_dir not found: {new_task_dir}")
+        emit_phase_guidance(f"[AR] ERROR: task_dir not found: {new_task_dir}")
         return
 
     set_task_dir(new_task_dir)
@@ -75,15 +77,17 @@ def _handle_activation(new_task_dir: str):
 
     if has_phase:
         phase = read_phase(new_task_dir)
-        emit_status(f"[AR] Resuming. Phase: {phase}.")
-        _print_resume_context(new_task_dir)
-        emit_status(get_guidance(new_task_dir))
+        lines = [f"[AR] Resuming. Phase: {phase}."]
+        lines.extend(_resume_context_lines(new_task_dir))
+        lines.append(get_guidance(new_task_dir))
+        emit_phase_guidance("\n".join(lines))
     elif has_progress:
         phase = compute_resume_phase(new_task_dir)
         write_phase(new_task_dir, phase)
-        emit_status(f"[AR] Resuming from progress. Phase -> {phase}.")
-        _print_resume_context(new_task_dir)
-        emit_status(get_guidance(new_task_dir))
+        lines = [f"[AR] Resuming from progress. Phase -> {phase}."]
+        lines.extend(_resume_context_lines(new_task_dir))
+        lines.append(get_guidance(new_task_dir))
+        emit_phase_guidance("\n".join(lines))
     else:
         _fresh_start(new_task_dir)
 
@@ -99,34 +103,44 @@ def _fresh_start(task_dir: str):
 
     if is_placeholder_file(ref_path):
         write_phase(task_dir, GENERATE_REF)
-        emit_status(f"[AR] Fresh start (no reference). Phase -> GENERATE_REF. {get_guidance(task_dir)}")
+        emit_phase_guidance(
+            f"[AR] Fresh start (no reference). Phase -> GENERATE_REF. "
+            f"{get_guidance(task_dir)}"
+        )
         return
 
     ok, err = validate_reference(task_dir)
     if not ok:
         write_phase(task_dir, GENERATE_REF)
-        emit_status(
+        emit_phase_guidance(
             f"[AR] reference.py present but invalid — Phase -> GENERATE_REF.\n"
-            f"     {err}"
+            f"     {err}\n"
+            f"{get_guidance(task_dir)}"
         )
         return
 
     if is_placeholder_file(kernel_path):
         write_phase(task_dir, GENERATE_KERNEL)
-        emit_status(f"[AR] Fresh start (no kernel). Phase -> GENERATE_KERNEL. {get_guidance(task_dir)}")
+        emit_phase_guidance(
+            f"[AR] Fresh start (no kernel). Phase -> GENERATE_KERNEL. "
+            f"{get_guidance(task_dir)}"
+        )
         return
 
     ok, err = validate_kernel(task_dir)
     if not ok:
         write_phase(task_dir, GENERATE_KERNEL)
-        emit_status(
+        emit_phase_guidance(
             f"[AR] kernel.py present but invalid — Phase -> GENERATE_KERNEL.\n"
-            f"     {err}"
+            f"     {err}\n"
+            f"{get_guidance(task_dir)}"
         )
         return
 
     write_phase(task_dir, BASELINE)
-    emit_status(f"[AR] Fresh start. Phase -> BASELINE. {get_guidance(task_dir)}")
+    emit_phase_guidance(
+        f"[AR] Fresh start. Phase -> BASELINE. {get_guidance(task_dir)}"
+    )
 
 
 def _progress_update_for_plan(task_dir: str, phase: str):
@@ -180,7 +194,7 @@ def main():
     if invoked_script == "baseline.py" and phase == BASELINE:
         progress = load_progress(task_dir)
         if not progress:
-            emit_status("[AR] Baseline failed (no progress.json). Retry.")
+            emit_phase_guidance("[AR] Baseline failed (no progress.json). Retry.")
         elif (progress.get("seed_metric") is None
               or progress.get("baseline_correctness") is False):
             # Demote to GENERATE_KERNEL so Edit on kernel.py is permitted
@@ -193,7 +207,7 @@ def main():
                       if progress.get("seed_metric") is None
                       else "seed kernel failed correctness check")
             if retries >= 3:
-                emit_status(
+                emit_phase_guidance(
                     f"[AR] Baseline failed {retries}x ({reason}). "
                     f"Stopping auto-retry. Inspect the worker log, fix "
                     f"kernel.py manually, then re-run: "
@@ -201,7 +215,7 @@ def main():
                 )
             else:
                 write_phase(task_dir, GENERATE_KERNEL)
-                emit_status(
+                emit_phase_guidance(
                     f"[AR] Baseline failed (attempt {retries}/3): {reason}. "
                     f"Phase -> GENERATE_KERNEL so kernel.py becomes editable. "
                     f"Fix the kernel, then re-run baseline.py."
@@ -209,12 +223,19 @@ def main():
         else:
             update_progress(task_dir, baseline_retries=0)
             write_phase(task_dir, PLAN)
-            emit_status(f"[AR] Baseline complete. Phase -> PLAN. {get_guidance(task_dir)}")
+            emit_phase_guidance(
+                f"[AR] Baseline complete. Phase -> PLAN. {get_guidance(task_dir)}"
+            )
 
     elif invoked_script == "pipeline.py":
         # pipeline.py writes .phase itself; just project state + notify.
+        # Pipeline emits two stdout JSON blobs (this guidance + the
+        # TodoWrite payload). PostToolUse parses each line of stdout
+        # independently for `hookSpecificOutput`, so both reach Claude.
         new_phase = read_phase(task_dir)
-        emit_status(f"[AR] Pipeline complete. Phase -> {new_phase}. {get_guidance(task_dir)}")
+        emit_phase_guidance(
+            f"[AR] Pipeline complete. Phase -> {new_phase}. {get_guidance(task_dir)}"
+        )
         emit_todowrite_context(task_dir, f"[AR] Round settled. Phase -> {new_phase}.")
 
     elif invoked_script == "create_plan.py" and phase in (PLAN, DIAGNOSE, REPLAN):
@@ -235,25 +256,38 @@ def main():
         run_blob = parse_last_json_line(stdout)
         if run_blob is not None and run_blob.get("ok") is False:
             err = run_blob.get("error", "(no error message in stdout)")
-            emit_status(f"[AR] Plan not advanced — create_plan.py reported failure: {err}")
+            emit_phase_guidance(
+                f"[AR] Plan not advanced — create_plan.py reported failure: {err}"
+            )
         else:
             from phase_machine import validate_plan
             ok, err = validate_plan(task_dir)
             if ok:
                 _progress_update_for_plan(task_dir, phase)
                 write_phase(task_dir, EDIT)
-                emit_status(f"[AR] Plan validated. Phase -> EDIT. {get_guidance(task_dir)}")
+                emit_phase_guidance(
+                    f"[AR] Plan validated. Phase -> EDIT. {get_guidance(task_dir)}"
+                )
                 emit_todowrite_context(task_dir, "[AR] Plan validated. Phase -> EDIT.")
             else:
-                emit_status(f"[AR] Plan not valid yet: {err}")
+                emit_phase_guidance(f"[AR] Plan not valid yet: {err}")
 
     sys.exit(0)
 
 
-def _print_resume_context(task_dir: str):
+def _resume_context_lines(task_dir: str) -> list[str]:
+    """Return the resume-context lines (progress summary, recent history,
+    active plan item) so `_handle_activation` can fold them into the same
+    additionalContext payload as the [AR Phase: ...] guidance.
+
+    Returning lines instead of emitting per-line keeps everything in one
+    additionalContext blob — important on Claude Code surfaces where each
+    JSON additionalContext travels separately."""
     progress = load_progress(task_dir)
     if not progress:
-        return
+        return []
+
+    lines: list[str] = []
     rounds = progress.get("eval_rounds", 0)
     max_rounds = progress.get("max_rounds", "?")
     best = progress.get("best_metric")
@@ -261,7 +295,7 @@ def _print_resume_context(task_dir: str):
     failures = progress.get("consecutive_failures", 0)
     plan_ver = progress.get("plan_version", 0)
 
-    emit_status(
+    lines.append(
         f"[AR] Resume context: Round {rounds}/{max_rounds} | "
         f"Best: {best} | Baseline: {baseline} | "
         f"Failures: {failures} | Plan v{plan_ver}"
@@ -269,19 +303,25 @@ def _print_resume_context(task_dir: str):
 
     history = load_history(task_dir, on_corrupt="skip")
     if history:
-        emit_status(f"[AR] Last {min(3, len(history))} rounds:")
+        lines.append(f"[AR] Last {min(3, len(history))} rounds:")
         for rec in history[-3:]:
             rnd = rec.get("round")
             rnd = "?" if rnd is None else str(rnd)
             dec = rec.get("decision", "?")
             desc = rec.get("description", "")[:40]
-            emit_status(f"[AR]   R{rnd}: {dec} — {desc}")
+            lines.append(f"[AR]   R{rnd}: {dec} — {desc}")
 
     if os.path.exists(plan_path(task_dir)):
         active = get_active_item(task_dir)
         if active:
-            emit_status(f"[AR] Active item: {active['id']}: {active['description'][:50]}")
-        emit_status("[AR] Read .ar_state/plan.md and .ar_state/history.jsonl for full context.")
+            lines.append(
+                f"[AR] Active item: {active['id']}: {active['description'][:50]}"
+            )
+        lines.append(
+            "[AR] Read .ar_state/plan.md and .ar_state/history.jsonl for full context."
+        )
+
+    return lines
 
 
 if __name__ == "__main__":
