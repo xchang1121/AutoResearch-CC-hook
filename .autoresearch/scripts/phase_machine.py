@@ -188,8 +188,22 @@ _READONLY_PATTERNS = [
 # Stdin-as-program — the actual bypass — is caught by
 # `_INTERPRETER_STDIN_PROG_RE` below, which only fires when the heredoc /
 # herestring lands on an interpreter with no intervening script argument.
+# Shell write meta-syntax. Each alternation is named in `_meta_trigger` below
+# so block messages can point at the exact pattern that fired.
+#   `(^|[^<])>(?!&)(?!\s*/dev/null\b)` — bare `>file` (also catches `2>file`);
+#       excludes `>&fd` file-descriptor dup, the second `<` of `<<-` heredoc,
+#       and `>/dev/null` redirections (writing to /dev/null cannot mutate).
+#   `>>(?!\s*/dev/null\b)` — append redirect, with the same /dev/null carve-out.
+#   `<\(...)` — process substitution.
+#   `\|\s*(tee|python|...)` — pipe into an interpreter or `tee`. `cat` was
+#       previously listed here; it has been removed because cat-as-pipe-tail
+#       (`... | cat`) cannot mutate, and cat-with-redirect (`cat foo > bar`)
+#       is independently caught by the `>` clause.
 _BASH_WRITE_META_RE = re.compile(
-    r"(^|[^<])>(?!&)|>>|<\(|\|\s*(tee|cat|python|perl|ruby|node|powershell|pwsh)\b"
+    r"(^|[^<])>(?!&)(?!\s*/dev/null\b)"
+    r"|>>(?!\s*/dev/null\b)"
+    r"|<\("
+    r"|\|\s*(tee|python|perl|ruby|node|powershell|pwsh)\b"
 )
 # Interpreter-stdin-as-program: `python << EOF`, `bash <<<"…"`, `node <<` —
 # these feed the heredoc / herestring body to the interpreter as the program
@@ -440,7 +454,7 @@ def _plan_creation_guidance(task_dir: str, *, intro: str,
 
 
 def _is_readonly_bash(command: str) -> bool:
-    if _looks_mutating_bash(command):
+    if _looks_mutating_bash(command) is not None:
         return False
     for pat in _READONLY_PATTERNS:
         if re.search(pat, command.strip()):
@@ -448,13 +462,18 @@ def _is_readonly_bash(command: str) -> bool:
     return False
 
 
-def _looks_mutating_bash(command: str) -> bool:
+def _looks_mutating_bash(command: str) -> Optional[str]:
     """Conservative guard for Bash-side writes.
 
     Edit/Write hooks own file mutation policy. If a Bash command has shell
     write syntax, an interpreter reading its program from stdin (heredoc /
     herestring), or calls a commonly mutating command, it must go through
     the phase policy instead of the cross-phase readonly shortcut.
+
+    Returns the matched fragment (e.g. `'| cat'`, `'rm'`, `'bash -c'`) so
+    the block message can name the exact trigger — knowing which token
+    caused the block lets the model rewrite the command instead of
+    guessing. Returns None when the command is not mutating.
     """
     cmd = command.strip()
     # Heredoc bodies first — the opener (`<< 'EOF'`) needs its quoted
@@ -463,11 +482,17 @@ def _looks_mutating_bash(command: str) -> bool:
     # delimiter quotes themselves).
     unquoted = _strip_heredoc_bodies(cmd)
     unquoted = _strip_shell_quotes(unquoted)
-    if _BASH_WRITE_META_RE.search(unquoted):
-        return True
-    if _INTERPRETER_STDIN_PROG_RE.search(unquoted):
-        return True
-    return any(re.search(pat, unquoted) for pat in _BASH_MUTATING_PATTERNS)
+    m = _BASH_WRITE_META_RE.search(unquoted)
+    if m:
+        return m.group(0).strip()
+    m = _INTERPRETER_STDIN_PROG_RE.search(unquoted)
+    if m:
+        return m.group(0).strip()
+    for pat in _BASH_MUTATING_PATTERNS:
+        m = re.search(pat, unquoted)
+        if m:
+            return m.group(0).strip()
+    return None
 
 
 def check_bash(phase: str, command: str) -> tuple:
@@ -493,9 +518,15 @@ def check_bash(phase: str, command: str) -> tuple:
         return False, ("manual 'git commit' forbidden — commits are produced "
                        "by pipeline.py via keep_or_discard")
 
-    if _looks_mutating_bash(command):
-        return False, ("Bash-side file mutation is blocked — use Edit/Write "
-                       "so phase file permissions are enforced")
+    trigger = _looks_mutating_bash(command)
+    if trigger is not None:
+        return False, (
+            f"Bash-side file mutation is blocked (trigger: {trigger!r}) — "
+            f"use Edit/Write so phase file permissions are enforced. "
+            f"For read-only inspection prefer the Read/Glob/LS tools, or a "
+            f"plain shell command (`ls`, `cat foo`, `find ...`, `grep ...`) "
+            f"without `bash -c` wrapping or `| cat` / `| tee` piping"
+        )
 
     if "export AR_TASK_DIR=" in command:
         return True, ""
