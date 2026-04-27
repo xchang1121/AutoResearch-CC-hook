@@ -15,7 +15,7 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from hook_utils import read_hook_input, block
 from phase_machine import (
-    read_phase, get_task_dir, check_bash, INIT,
+    read_phase, get_task_dir, check_bash, norm_path, INIT,
 )
 from settings import hallucinated_scripts
 
@@ -68,7 +68,7 @@ def _script_name_check(command: str):
     m = _SCRIPT_INVOKE_RE.search(command)
     if not m:
         return
-    script_path = m.group(1).replace("\\", "/")
+    script_path = norm_path(m.group(1))
     script_name = os.path.basename(script_path)
 
     aliases = hallucinated_scripts()

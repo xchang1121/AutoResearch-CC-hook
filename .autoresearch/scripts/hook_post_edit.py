@@ -20,13 +20,13 @@ from phase_machine import (
     read_phase, _load_config_safe,
     get_task_dir, touch_heartbeat, emit_transition,
     validate_reference, validate_kernel, is_placeholder_file,
+    norm_path,
     EDIT, BASELINE, GENERATE_REF, GENERATE_KERNEL,
 )
 
 
 def _same_path(a: str, b: str) -> bool:
-    norm = lambda p: os.path.normpath(os.path.abspath(p)).replace("\\", "/")
-    return norm(a) == norm(b)
+    return norm_path(os.path.abspath(a)) == norm_path(os.path.abspath(b))
 
 
 def _commit_seed(task_dir: str, paths, message: str) -> str | None:
@@ -105,7 +105,7 @@ def main():
     is_editable = False
     if config:
         try:
-            rel = os.path.relpath(file_path, task_dir).replace("\\", "/")
+            rel = norm_path(os.path.relpath(file_path, task_dir))
             is_editable = rel in set(config.editable_files)
         except ValueError:
             is_editable = False

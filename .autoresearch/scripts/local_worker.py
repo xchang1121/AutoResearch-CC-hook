@@ -14,11 +14,15 @@ Public surface:
   - local_verify(package_bytes, op_name, timeout, device_id=0) -> dict
   - local_profile(package_bytes, op_name, timeout, device_id=0) -> dict
 
-This file deliberately does NOT depend on ar_vendored. It mirrors the
-`collect_json_artifacts` helper from the vendored LocalWorker but stays
-synchronous (subprocess.run, no asyncio) and skips the DevicePool /
-msprof / nsys / roofline machinery that doesn't apply to single-developer
-local iteration.
+This file is a synchronous, single-process counterpart to the vendored
+async LocalWorker. It mirrors `collect_json_artifacts` and stays
+subprocess.run-based (no asyncio, no DevicePool). It depends on
+ar_vendored only as a SOFT optional: `tarsafe.safe_tar_extract` for
+package extraction, and `profiler_utils` for msprof / nsys analyzers
+when a profile run is requested. Each ar_vendored import sits inside
+its own try/except so a missing or partially broken ar_vendored install
+degrades the affected feature without breaking the rest of the local
+backend (e.g. you can still verify even if profiling is unavailable).
 """
 from __future__ import annotations
 

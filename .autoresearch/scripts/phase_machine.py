@@ -75,6 +75,17 @@ KERNEL_PLACEHOLDER = (
 _PLACEHOLDER_MAX_LEN = 200
 
 
+def norm_path(p: str) -> str:
+    """Forward-slash-normalized absolute-or-passed-through path.
+
+    Hooks compare task-relative paths (`a/b.py`) against editable_files lists
+    that always use forward slashes, so on Windows we need `\\` → `/` plus
+    path normalization. Centralized so updating the rule (e.g. case folding)
+    happens in one place.
+    """
+    return os.path.normpath(p).replace("\\", "/")
+
+
 def is_placeholder_file(path: str) -> bool:
     """True iff `path` is missing OR is the scaffold TODO placeholder.
 
@@ -416,7 +427,7 @@ def parse_invoked_ar_script(command: str) -> Optional[str]:
     m = _INVOKED_SCRIPT_RE.search(cleaned)
     if not m:
         return None
-    script_path = m.group(1).replace("\\", "/")
+    script_path = norm_path(m.group(1))
     if ".autoresearch/scripts/" not in script_path:
         return None
     return os.path.basename(script_path)
@@ -781,12 +792,19 @@ def read_phase(task_dir: str) -> str:
 
 
 def write_phase(task_dir: str, phase: str):
-    """Write phase to .ar_state/.phase."""
+    """Write phase to .ar_state/.phase atomically (tmp + os.replace).
+
+    Concurrent readers (resume.py, dashboard.py, the hooks themselves) parse
+    this file every tick; a non-atomic write briefly exposes an empty file
+    and read_phase() would fall back to INIT, mis-routing the next hook.
+    """
     assert phase in ALL_PHASES, f"Invalid phase: {phase}"
     path = state_path(task_dir, PHASE_FILE)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
         f.write(phase)
+    os.replace(tmp, path)
 
 
 # ---------------------------------------------------------------------------
@@ -1399,11 +1417,27 @@ def save_progress(task_dir: str, progress: dict, *, stamp: bool = True):
 def append_history(task_dir: str, record: dict):
     """Append one JSON record to history.jsonl. Single canonical writer
     used by keep_or_discard, _baseline_init, and create_plan (supersede /
-    reactivate markers)."""
+    reactivate markers).
+
+    Builds the full `<record>\\n` string first and emits it as ONE write
+    on an O_APPEND-opened fd. On both POSIX (O_APPEND) and Windows
+    (FILE_APPEND_DATA) a single write up to a few KB is atomic w.r.t.
+    concurrent appenders and readers, so a reader streaming line-by-line
+    never sees a torn line. Followed by fsync so a hard kill mid-pipeline
+    doesn't drop the most recent record.
+    """
     path = history_path(task_dir)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    line = (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    try:
+        os.write(fd, line)
+        try:
+            os.fsync(fd)
+        except OSError:
+            pass  # fsync unsupported (e.g. some Windows network shares); skip
+    finally:
+        os.close(fd)
 
 
 def update_progress(task_dir: str, **fields) -> Optional[dict]:

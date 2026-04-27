@@ -23,7 +23,12 @@ def read_hook_input() -> dict:
 
     Tolerates the Windows-path JSON quirk: paths like `C:\\Users` come in
     with a single backslash that's not a valid JSON escape, so a fallback
-    pass doubles every unescaped `\\` before retrying."""
+    pass doubles every unescaped `\\` before retrying.
+
+    If both attempts fail, prints a clear warning to stderr (with the head
+    of the bad payload) and returns {}. The empty dict makes callers fall
+    through to "no active task / no tool name" — but the warning means a
+    real upstream JSON bug is no longer silently masked as "no-op hook"."""
     raw = sys.stdin.read()
     try:
         return json.loads(raw)
@@ -31,7 +36,11 @@ def read_hook_input() -> dict:
         fixed = re.sub(r'(?<!\\)\\(?![\\"/bfnrtu])', r'\\\\', raw)
         try:
             return json.loads(fixed)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            preview = raw[:240].replace("\n", "\\n")
+            print(f"[AR] WARNING: hook stdin JSON parse failed ({e}); "
+                  f"hook will no-op. Payload head: {preview!r}",
+                  file=sys.stderr)
             return {}
 
 

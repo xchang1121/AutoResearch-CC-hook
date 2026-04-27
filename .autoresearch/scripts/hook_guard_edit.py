@@ -18,16 +18,17 @@ from hook_utils import read_hook_input, block
 from phase_machine import (
     read_phase, get_task_dir,
     edit_marker_path, check_edit, EDIT,
+    _load_config_safe, norm_path,
 )
 
 
 def _rel_to_task(file_path: str, task_dir: str):
     """Return task-relative forward-slash path, or None if outside task_dir."""
-    fp = os.path.normpath(os.path.abspath(file_path)).replace("\\", "/")
-    td = os.path.normpath(os.path.abspath(task_dir)).replace("\\", "/")
+    fp = norm_path(os.path.abspath(file_path))
+    td = norm_path(os.path.abspath(task_dir))
     if not fp.startswith(td):
         return None
-    return os.path.relpath(file_path, task_dir).replace("\\", "/")
+    return norm_path(os.path.relpath(file_path, task_dir))
 
 
 def _edit_phase_git_gate(task_dir: str, editable_files):
@@ -118,8 +119,7 @@ def main():
     if not file_paths:
         sys.exit(0)
 
-    from task_config import load_task_config
-    config = load_task_config(task_dir)
+    config = _load_config_safe(task_dir)
     editable_files = list(config.editable_files) if config else []
     phase = read_phase(task_dir)
 
