@@ -234,17 +234,16 @@ _PLAN_XML_EXAMPLE = (
     '<desc>Fuse SwiGLU into the matmul epilogue to avoid a second launch</desc>'
     '<rationale>Separate SwiGLU kernel re-reads the matmul output from DRAM; '
     'fusing it into the epilogue cuts one round-trip and a launch.</rationale>'
-    '<keywords>fusion, epilogue</keywords>'
     '</item>'
     '<!-- repeat <item> for >= 3 total -->'
     '</items>'
 )
 _PLAN_FIELD_RULES = (
-    "Provide >= 3 items as an <items> XML document. Each <item> needs:\n"
+    "Provide >= 3 items as an <items> XML document. Each <item> needs both "
+    "fields below — omitting either is a parse error:\n"
     "  - <desc>:      short SENTENCE describing the change (>=12 chars, must "
     "have spaces — not a snake_case label; the dashboard shows this verbatim)\n"
     "  - <rationale>: 30-400 char explanation of WHY it should help\n"
-    "  - <keywords>:  comma-separated tags, e.g. fusion, epilogue\n"
     "Escape '&', '<', '>' in text as '&amp;', '&lt;', '&gt;' "
     "(or wrap the field in <![CDATA[...]]>). "
     "If shell-quoting is awkward, write the XML to a file and pass '@path.xml' "
@@ -400,7 +399,7 @@ def validate_plan(task_dir: str) -> tuple[bool, str]:
     """Validate plan.md structure. Returns (ok, error_message).
 
     Delegates item parsing to `get_plan_items` (canonical parser) and only
-    enforces invariants here: ≥3 items, rationale length, keywords present,
+    enforces invariants here: ≥3 items, rationale length within bounds,
     exactly one ACTIVE pending item.
     """
     if not os.path.exists(plan_path(task_dir)):
@@ -417,8 +416,6 @@ def validate_plan(task_dir: str) -> tuple[bool, str]:
             return False, f"Item {it['id']}: rationale too short ({len(rat)} chars, need ≥ 30)"
         if len(rat) > 400:
             return False, f"Item {it['id']}: rationale too long ({len(rat)} chars, max 400)"
-        if not it.get("keywords"):
-            return False, f"Item {it['id']}: missing keywords"
 
     active_items = [it for it in pending if it["active"]]
     if len(active_items) != 1:
@@ -675,8 +672,8 @@ def get_plan_items(task_dir: str, include_meta: bool = False) -> list:
     """Canonical plan.md parser. Returns [{id, description, done, active, tag}, ...].
 
     Every plan reader in the codebase must go through this function — no ad-hoc
-    regex scans. With include_meta=True, also captures the `- rationale:` and
-    `- keywords:` sub-lines (used by validate_plan).
+    regex scans. With include_meta=True, also captures the `- rationale:`
+    sub-line (used by validate_plan).
     """
     if not os.path.exists(plan_path(task_dir)):
         return []
@@ -704,21 +701,21 @@ def get_plan_items(task_dir: str, include_meta: bool = False) -> list:
                 "active": is_active, "tag": tag}
 
         if include_meta:
-            rationale, keywords = "", ""
+            rationale = ""
             j = i + 1
             while j < len(lines):
                 sub = lines[j].strip()
                 if sub.startswith("- rationale:"):
                     rationale = sub.split(":", 1)[1].strip()
-                elif sub.startswith("- keywords:"):
-                    keywords = sub.split(":", 1)[1].strip()
                 elif sub.startswith("- ") and not sub.startswith("- ["):
-                    pass  # other sub-fields like backing_skill
+                    # other sub-fields (legacy `- keywords:` from older
+                    # plan.md files, or future hand-written notes) are
+                    # skipped silently
+                    pass
                 else:
                     break
                 j += 1
             item["rationale"] = rationale
-            item["keywords"] = keywords
 
         out.append(item)
         i += 1

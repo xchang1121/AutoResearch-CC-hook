@@ -13,7 +13,6 @@ items_xml format:
       <item>
         <desc>short sentence describing the change</desc>
         <rationale>30-400 char explanation of why it should help</rationale>
-        <keywords>comma-separated tags</keywords>
       </item>
       ...
     </items>
@@ -49,16 +48,16 @@ import os
 import re
 import sys
 import xml.etree.ElementTree as ET
-from collections import Counter
 
 sys.path.insert(0, os.path.dirname(__file__))
 from phase_machine import (
     load_progress, save_progress, get_plan_items,
-    plan_path, progress_path, history_path,
+    plan_path, progress_path,
 )
 
 
-# Words that indicate parameter tuning (matched at word level)
+# Words that indicate parameter tuning, used by `_check_diversity` to flag
+# plans where every item is a parameter sweep.
 _PARAM_WORDS = {
     "block", "tile", "tiling", "autotune", "config", "configs",
     "warps", "stages", "size", "tune", "adjust", "sweep",
@@ -92,15 +91,17 @@ def _fail(msg: str):
     sys.exit(1)
 
 
-_ALLOWED_ITEM_TAGS = {"desc", "rationale", "keywords"}
+_ALLOWED_ITEM_TAGS = {"desc", "rationale"}
 
 
 def _parse_items_xml(xml_str: str) -> list:
     """Parse <items><item>...</item>...</items> into a list of dicts.
 
-    Recognized child elements under <item>: desc, rationale, keywords.
-    Unknown tags are rejected so typos surface loudly rather than
-    silently dropping fields.
+    Recognized child elements under <item>: desc, rationale. Unknown tags
+    are rejected so typos surface loudly rather than silently dropping
+    fields. (An earlier schema had a `<keywords>` field that the model
+    routinely omitted; it was removed because every keyword token already
+    appears in <desc>, and `_check_diversity` now reads desc directly.)
     """
     try:
         root = ET.fromstring(xml_str)
@@ -128,15 +129,9 @@ def _validate_items(items):
     if not isinstance(items, list) or len(items) < 3:
         _fail(f"Need >= 3 items, got {len(items) if isinstance(items, list) else 'non-list'}")
     for i, item in enumerate(items):
-        for field in ("desc", "rationale", "keywords"):
+        for field in ("desc", "rationale"):
             if field not in item:
                 _fail(f"Item {i}: missing <{field}>")
-        kw = item["keywords"].strip()
-        if not kw:
-            _fail(f"Item {i}: <keywords> is empty")
-        item["keywords"] = kw
-
-        for field in ("desc", "rationale"):
             if not isinstance(item[field], str) or not item[field].strip():
                 _fail(f"Item {i}: '{field}' must be a non-empty string")
 
@@ -162,65 +157,45 @@ def _validate_items(items):
 
 
 def _check_diversity(items):
-    """Reject plans where all but one item are pure parameter tuning."""
-    keyword_sets, keyword_raw = [], []
+    """Reject plans where all but one item are pure parameter tuning.
+
+    Tokenizes <desc> directly. The earlier schema carried a separate
+    <keywords> field for this signal; it was removed because every
+    keyword token already appears in desc verbatim (you cannot describe
+    a parameter sweep without using "block"/"tile"/"size"/etc.) and
+    forcing the model to write keywords twice was pure friction.
+
+    Detection rule per item: classify as parameter-only if its desc
+    contains a known parameter phrase (block_size, num_warps, ...) OR
+    if the only content tokens it has come from `_PARAM_WORDS`.
+    """
+    word_sets = []   # per-item: content tokens after stopword filter
+    raw_descs = []   # per-item: lower+normalized for phrase matching
     for item in items:
-        flat, raw = set(), set()
-        for k in item["keywords"].split(","):
-            phrase = k.strip().lower().replace("-", "_").replace(" ", "_")
-            raw.add(phrase)
-            for w in phrase.split("_"):
-                if w:
-                    flat.add(w)
-        keyword_sets.append(flat)
-        keyword_raw.append(raw)
+        raw = item["desc"].lower().replace("-", "_")
+        raw_descs.append(raw)
+        words = set()
+        for tok in raw.replace("_", " ").split():
+            tok = tok.strip(".,;:()[]{}\"'")
+            if tok and tok not in _STOPWORDS:
+                words.add(tok)
+        word_sets.append(words)
 
     param_only = 0
-    for words, phrases in zip(keyword_sets, keyword_raw):
-        has_param_phrase = bool(phrases & _PARAM_PHRASES)
+    for words, raw in zip(word_sets, raw_descs):
+        has_param_phrase = any(p in raw for p in _PARAM_PHRASES)
         non_param = words - _PARAM_WORDS - {""}
         if (has_param_phrase or not non_param) and words:
             param_only += 1
 
     if param_only >= len(items) - 1:
-        detected = _PARAM_WORDS & set().union(*keyword_sets)
+        detected = _PARAM_WORDS & set().union(*word_sets) if word_sets else set()
         _fail(
             f"Diversity rejected: {param_only}/{len(items)} items are parameter tuning. "
             f"Bundle parameter sweeps into ONE item. Other items must be structurally "
             f"different (algorithmic changes, fusion, memory access patterns, data layout). "
-            f"Param-only keywords detected: {detected}"
+            f"Param-only words detected in desc: {sorted(detected)}"
         )
-
-
-def _warn_repeated_failures(task_dir: str):
-    """Warn on stderr if recent history shows repeated failure keywords."""
-    hpath = history_path(task_dir)
-    if not os.path.exists(hpath):
-        return
-    failed = []
-    with open(hpath, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if rec.get("decision") in ("DISCARD", "FAIL"):
-                failed.append(rec.get("description", "").lower())
-    if len(failed) < 3:
-        return
-    tokens = Counter()
-    for desc in failed:
-        for w in desc.replace("-", " ").replace("_", " ").split():
-            w = w.strip(".,;:()[]{}\"'")
-            if len(w) > 2 and w not in _STOPWORDS:
-                tokens[w] += 1
-    repeated = sorted(tok for tok, cnt in tokens.items() if cnt >= 2)
-    if repeated:
-        print(f"[WARN] Previously failed keywords (avoid repeating): {repeated[:10]}",
-              file=sys.stderr)
 
 
 def _parse_old_plan(task_dir: str):
@@ -285,7 +260,6 @@ def _render_plan(version: int, item_ids: list, items: list, settled_rows: str) -
         marker = " (ACTIVE)" if i == 0 else ""
         lines.append(f"- [ ] **{pid}**{marker}: {item['desc'].strip()}")
         lines.append(f"  - rationale: {item['rationale'].strip()}")
-        lines.append(f"  - keywords: {item['keywords'].strip()}")
     lines.append("")
     lines.append("## Settled History")
     lines.append("| Item | Outcome | Metric | Reason |")
@@ -318,7 +292,6 @@ def main():
     items = _parse_items_xml(xml_str)
     _validate_items(items)
     _check_diversity(items)
-    _warn_repeated_failures(task_dir)
 
     progress = load_progress(task_dir) or {}
     version = progress.get("plan_version", 0) + 1
