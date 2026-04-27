@@ -4,10 +4,16 @@ Append plan items to plan.md from structured XML input.
 
 Behavior:
 - PLAN: writes the initial plan (no existing items).
-- DIAGNOSE / REPLAN: appends new items to the end of the existing plan.
-  Existing items keep their state (KEEP / DISCARD / FAIL / pending). pid is
-  a monotonic counter — every new item gets a fresh pN; settled items stay
-  as historical record. ACTIVE is the first pending item by pid order.
+- REPLAN: appends new items to the end of the existing plan. Existing items
+  keep their state (KEEP / DISCARD / FAIL / pending). pid is a monotonic
+  counter — every new item gets a fresh pN; settled items stay as
+  historical record. ACTIVE is the first pending item by pid order.
+- DIAGNOSE: same as REPLAN, except *all currently pending items are first
+  marked ABANDONED* (done=True, tag="ABANDONED, reason=diagnose_trigger").
+  The 3-consecutive-FAIL trigger means the prior plan's assumption chain is
+  broken; running its leftover items would just burn rounds on doomed
+  branches. They survive in plan.md as audit history, but the work queue
+  starts fresh from the new items.
 
 XML schema:
   Single source of truth lives in `phase_machine._PLAN_FIELD_RULES` and the
@@ -35,8 +41,9 @@ from collections import Counter
 
 sys.path.insert(0, os.path.dirname(__file__))
 from phase_machine import (
+    DIAGNOSE,
     load_progress, save_progress, get_plan_items,
-    plan_path, progress_path, load_history, render_plan_line,
+    plan_path, progress_path, load_history, read_phase, render_plan_line,
 )
 
 
@@ -380,11 +387,24 @@ def main():
     ppath = plan_path(task_dir)
     next_pid = _compute_next_pid(progress, ppath)
 
-    # Append-only: old items (settled + still-pending) survive untouched.
-    # New items get fresh pids appended at the end. ACTIVE is recomputed in
+    # Append-only: old items (settled + still-pending) survive untouched in
+    # PLAN / REPLAN. In DIAGNOSE, the still-pending tail is converted to
+    # ABANDONED first — see module docstring for the rationale. New items
+    # always get fresh pids appended at the end. ACTIVE is recomputed in
     # render: first pending pid across the merged set (natural FIFO).
     old_items = get_plan_items(task_dir, include_meta=True)
     settled_rows = _read_settled_history_rows(task_dir)
+
+    if read_phase(task_dir) == DIAGNOSE:
+        for it in old_items:
+            if not it["done"]:
+                it["done"] = True
+                it["tag"] = "ABANDONED, reason=diagnose_trigger"
+                # Mirror the abandonment in the audit table so plan.md and
+                # the settled-history view stay consistent.
+                settled_rows += (
+                    f"| {it['id']} | ABANDONED | - | diagnose_trigger |\n"
+                )
 
     new_pids, new_next_pid = _allocate_ids(len(items), next_pid)
 

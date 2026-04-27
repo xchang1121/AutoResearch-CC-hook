@@ -186,7 +186,15 @@ def _collect_report(task_dir: str) -> dict[str, Any]:
         for rec in history
         if rec.get("decision") == "DISCARD"
     ]
-    pending_items = [it for it in get_plan_items(task_dir) if not it.get("done")]
+    plan_items = get_plan_items(task_dir)
+    pending_items = [it for it in plan_items if not it.get("done")]
+    # ABANDONED items are settled (done=True) with a tag carrying the
+    # ABANDONED prefix; surface them separately so the audit trail shows
+    # what got dropped at DIAGNOSE without polluting pending or KEEP/etc.
+    abandoned_items = [
+        it for it in plan_items
+        if it.get("done") and (it.get("tag") or "").startswith("ABANDONED")
+    ]
 
     return {
         "schema_version": 1,
@@ -219,6 +227,7 @@ def _collect_report(task_dir: str) -> dict[str, Any]:
         "discarded_rounds": discards,
         "failed_rounds": failures,
         "pending_items": pending_items,
+        "abandoned_items": abandoned_items,
         "history": history,
         "files": {
             "progress": state_path(task_dir, "progress.json"),
@@ -477,6 +486,7 @@ def _render_markdown(report: dict[str, Any]) -> str:
         lines.append("- No failed rounds were recorded.")
 
     pending = report.get("pending_items") or []
+    abandoned = report.get("abandoned_items") or []
     lines.extend(["", "## Residual State", ""])
     if pending:
         lines.append("- Pending items remain in plan.md:")
@@ -488,6 +498,17 @@ def _render_markdown(report: dict[str, Any]) -> str:
             )
     else:
         lines.append("- No pending plan items remain.")
+
+    if abandoned:
+        lines.extend([
+            "",
+            "- Abandoned items (dropped at DIAGNOSE, kept for audit):",
+        ])
+        for item in abandoned:
+            lines.append(
+                f"- `{_md_escape(item.get('id'))}` [{_md_escape(item.get('tag') or 'ABANDONED')}] "
+                f"{_md_escape(item.get('description'))}"
+            )
 
     if not report.get("is_finish_phase"):
         lines.extend([

@@ -340,10 +340,11 @@ def render(task_dir, history_offset=0, history_window=None):
         tag = parsed["tag"]
 
         # Extract a status keyword from the tag prefix (KEEP / DISCARD /
-        # FAIL / SKIP). Any extra metadata (e.g. ``KEEP, metric=...``) is
-        # ignored at render time — the dashboard only colors by status.
+        # FAIL / SKIP / ABANDONED). Any extra metadata (e.g. ``KEEP,
+        # metric=...`` or ``ABANDONED, reason=...``) is ignored at render
+        # time — the dashboard only colors by status.
         outcome = ""
-        for kw in ("KEEP", "DISCARD", "FAIL", "SKIP"):
+        for kw in ("KEEP", "DISCARD", "FAIL", "SKIP", "ABANDONED"):
             if tag.startswith(kw):
                 outcome = kw
                 break
@@ -364,6 +365,9 @@ def render(task_dir, history_offset=0, history_window=None):
             desc_str = f"{DIM}{desc}{RESET}"
         elif outcome == "SKIP":
             status_str = f"{MAGENTA}  SKIP   {RESET}"
+            desc_str = f"{DIM}{desc}{RESET}"
+        elif outcome == "ABANDONED":
+            status_str = f"{DIM}  ABANDON{RESET}"
             desc_str = f"{DIM}{desc}{RESET}"
         else:
             status_str = " pending "  # 9 visible chars, matches other statuses

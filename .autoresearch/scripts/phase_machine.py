@@ -1308,9 +1308,12 @@ def get_guidance(task_dir: str) -> str:
                 f"  - NOT more parameter tuning\n"
                 f"Recent failures:\n{fail_summary}"
                 f"{_plan_creation_guidance(task_dir, intro='After diagnosis, append >= 3 new diagnosis-informed items:')}\n"
-                f"create_plan.py APPENDS to the existing plan; pending items survive "
-                f"untouched (the loop processes them in pid order). Settled items stay "
-                f"as historical record. Items must be diverse: max 1 parameter-tuning "
+                f"create_plan.py will MARK ALL CURRENT PENDING ITEMS AS ABANDONED "
+                f"before appending the new ones — DIAGNOSE means the previous plan's "
+                f"assumption chain is broken, so its outstanding items get dropped from "
+                f"the queue (they stay in plan.md tagged ABANDONED, for audit). If any "
+                f"of the abandoned ideas still looks viable, the planner should re-add "
+                f"it under a fresh pid. Items must be diverse: max 1 parameter-tuning "
                 f"item, rest must be structural changes.\n"
                 f"Then sync TodoWrite.")
 
