@@ -1566,13 +1566,26 @@ def _todowrite_addendum(task_dir: str) -> str:
             "activeForm": f"Working on {it['id']}: {it['description'][:60]}",
             "status": status,
         })
+    # IMPORTANT: name the tool unambiguously and warn against the Agent /
+    # Task / TaskCreate confusion. Some Claude Code tool dispatchers route
+    # "task list" wording to the Agent (subagent) tool, which rejects the
+    # `status` field with `TaskCreate failed ... unexpected parameter
+    # 'status'`. The text below is calibrated to keep that from happening.
     return (
-        "Required action: call TodoWrite NOW with the exact list below. "
-        "This REPLACES any existing todos — do NOT merge, append, or "
-        "preserve older entries. plan.md is the source of truth; TodoWrite "
-        "is a UI mirror of current live work only (completed items live in "
-        "plan.md's Settled History). Pass this payload verbatim.\n"
-        f"TodoWrite payload:\n{json.dumps({'todos': todos}, ensure_ascii=False)}"
+        "Required action: call the **TodoWrite** tool (in-session todo "
+        "tracker) with the JSON object below as its single argument.\n"
+        "  - This is TodoWrite, NOT the Agent / Task / TaskCreate "
+        "subagent tool. Do not spawn a subagent. Do not wrap the payload "
+        "in any other tool call.\n"
+        "  - TodoWrite REPLACES the existing list — do not merge, append, "
+        "or preserve older entries. plan.md is the source of truth; "
+        "TodoWrite is just a UI mirror of currently-live work (settled "
+        "items live in plan.md's Settled History).\n"
+        "  - Each item has exactly three fields: content, activeForm, "
+        "status. Pass them through unchanged; the `status` field belongs "
+        "to each todo item, not to the outer call.\n"
+        f"TodoWrite arguments (verbatim):\n"
+        f"{json.dumps({'todos': todos}, ensure_ascii=False)}"
     )
 
 
