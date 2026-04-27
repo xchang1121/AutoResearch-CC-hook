@@ -109,10 +109,20 @@ def _parse_items_xml(xml_str: str) -> list:
         _fail(f"Invalid XML: {e}")
     if root.tag != "items":
         _fail(f"Root element must be <items>, got <{root.tag}>")
+    if root.attrib:
+        _fail(f"<items> must have no attributes, got {sorted(root.attrib)}")
     items = []
     for i, child in enumerate(list(root)):
         if child.tag != "item":
             _fail(f"Unexpected <{child.tag}> under <items> (only <item> allowed)")
+        # <item> takes no attributes — pids are auto-assigned, and the
+        # XML example's inline comments say so explicitly. Reject anything
+        # the model invents (id="p1", pid="p1", priority="high", ...) so
+        # the lesson lands instead of slipping through silently.
+        if child.attrib:
+            _fail(f"Item {i}: <item> must have no attributes, got "
+                  f"{sorted(child.attrib)} — pids are auto-assigned, do "
+                  f"not supply them")
         d = {}
         for sub in list(child):
             if sub.tag not in _ALLOWED_ITEM_TAGS:
