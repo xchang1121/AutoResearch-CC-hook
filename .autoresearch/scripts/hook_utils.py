@@ -41,11 +41,17 @@ def emit_todowrite_context(task_dir: str, header: str):
     cycles have happened.
 
     plan.md is the source of truth; TodoWrite is a UI mirror of current work.
+
+    Emits even when no live items remain — an empty `{"todos": []}` payload
+    explicitly clears the UI. Without that, the last item of each plan was
+    stuck as in_progress in the model's TodoWrite UI: when it settled, this
+    function previously short-circuited (live=[]), the model received no
+    instruction, the next emit at create_plan time only listed the new
+    plan's items, and the stale in_progress survived a non-strict REPLACE
+    on the model side. Clearing here makes the transition unambiguous.
     """
     from phase_machine import get_plan_items
     live = [it for it in get_plan_items(task_dir) if not it["done"]]
-    if not live:
-        return  # All items settled, replan pending — let next emit handle it.
 
     todos = []
     for it in live:
