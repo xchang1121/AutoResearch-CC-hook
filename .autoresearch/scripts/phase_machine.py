@@ -44,9 +44,6 @@ ALL_PHASES = {INIT, GENERATE_REF, GENERATE_KERNEL, BASELINE, PLAN, EDIT,
 # Canonical filenames and templates
 # ---------------------------------------------------------------------------
 
-# Reference / kernel filenames at the task_dir root.
-DEFAULT_REF_FILE = "reference.py"
-
 # Files inside <task_dir>/.ar_state/. All path helpers below use these.
 PHASE_FILE = ".phase"
 PROGRESS_FILE = "progress.json"
@@ -146,11 +143,6 @@ def touch_heartbeat(task_dir: str):
               f"misreport this task as inactive.", file=sys.stderr)
 
 
-def clear_task_dir():
-    """Remove .active_task file (session ended)."""
-    if os.path.exists(_ACTIVE_TASK_FILE):
-        os.remove(_ACTIVE_TASK_FILE)
-
 # ---------------------------------------------------------------------------
 # Phase rules — the declarative authority on what's allowed per phase.
 #
@@ -225,12 +217,6 @@ _EDIT_RULES = {
     EDIT:            {"editable"},
     # All other phases: no writable user files.
 }
-
-# Phases where Claude can edit editable_files (typically kernel.py).
-# Kept as a set for hook_post_edit's `phase in CODE_EDIT_PHASES` check; it
-# mirrors _EDIT_RULES.
-CODE_EDIT_PHASES = {p for p, classes in _EDIT_RULES.items() if "editable" in classes}
-REF_WRITE_PHASES = {p for p, classes in _EDIT_RULES.items() if "ref" in classes}
 
 
 # Shared plan-item scaffolding shown in PLAN / DIAGNOSE / REPLAN guidance.

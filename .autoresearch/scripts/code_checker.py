@@ -25,7 +25,6 @@ import py_compile
 import re
 import tempfile
 import tokenize
-from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 
@@ -87,15 +86,6 @@ def _find_forward(cls_node: ast.ClassDef) -> Optional[ast.FunctionDef]:
         if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == _KERNEL_FORWARD:
             return item
     return None
-
-
-@dataclass
-class CheckError:
-    line: int
-    error_type: str
-    detail: str
-    suggestion: str
-    code_snippet: str
 
 
 # ---------------------------------------------------------------------------

@@ -17,7 +17,6 @@ import io
 import json
 import operator as _op
 import os
-import subprocess
 import sys
 import tarfile
 import uuid
