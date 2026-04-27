@@ -151,7 +151,15 @@ def main():
     target = _activation_target(command)
     if target:
         _handle_activation(target)
-        sys.exit(0)
+        # DO NOT early-exit. Compound commands like
+        # `export AR_TASK_DIR=... && python .autoresearch/scripts/create_plan.py ...`
+        # carry both an activation and a real script invocation in a single
+        # Bash call (the model joins them because Claude Code's Bash tool
+        # spawns a fresh shell per call so a previous `export AR_TASK_DIR=`
+        # doesn't persist; on Windows it also prepends KMP_DUPLICATE_LIB_OK=
+        # TRUE to the same call). If we returned here the script invocation
+        # would be silently skipped — the plan would never get validated,
+        # .phase would stay at PLAN, and the loop would stall.
 
     task_dir = get_task_dir()
     if not task_dir:
