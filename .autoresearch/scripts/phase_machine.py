@@ -228,35 +228,26 @@ _EDIT_RULES = {
 # XML is the required format — tag-delimited text is structurally harder for
 # LLMs to hallucinate than JSON (no stray commas / quote escaping / brace
 # balance to track).
-_PLAN_XML_FILE = ".ar_state/plan_items.xml"
-
-# Multi-line, indented form — easier for the model to mimic correctly.
-# This is a TEMPLATE shown in the guidance, not a value passed inline as
-# argv (the model writes its own XML to .ar_state/plan_items.xml then
-# invokes create_plan.py with @path, which sidesteps shell-quoting).
-_PLAN_XML_EXAMPLE = """\
-<items>
-  <item>
-    <desc>Fuse SwiGLU into the matmul epilogue to avoid a second launch</desc>
-    <rationale>Separate SwiGLU kernel re-reads the matmul output from DRAM; fusing it into the epilogue cuts one round-trip and a launch.</rationale>
-  </item>
-  <!-- repeat <item> for >= 3 total -->
-</items>"""
-
+_PLAN_XML_EXAMPLE = (
+    '<items>'
+    '<item>'
+    '<desc>Fuse SwiGLU into the matmul epilogue to avoid a second launch</desc>'
+    '<rationale>Separate SwiGLU kernel re-reads the matmul output from DRAM; '
+    'fusing it into the epilogue cuts one round-trip and a launch.</rationale>'
+    '</item>'
+    '<!-- repeat <item> for >= 3 total -->'
+    '</items>'
+)
 _PLAN_FIELD_RULES = (
-    "STRICT SCHEMA. <items> contains >= 3 <item> elements. Each <item> "
-    "contains EXACTLY these two children — no other tags or attributes "
-    "are accepted; the parser rejects them with `unknown element <X>`:\n"
-    "  - <desc>:      short SENTENCE describing the change (>=12 chars, "
-    "must have spaces — not a snake_case label; the dashboard shows this "
-    "verbatim)\n"
+    "Provide >= 3 items as an <items> XML document. Each <item> needs both "
+    "fields below — omitting either is a parse error:\n"
+    "  - <desc>:      short SENTENCE describing the change (>=12 chars, must "
+    "have spaces — not a snake_case label; the dashboard shows this verbatim)\n"
     "  - <rationale>: 30-400 char explanation of WHY it should help\n"
-    "Do NOT add any of: <id> / <pid> / <keywords> / <priority> / "
-    "<reactivate_pid>, attributes like id=\"p1\", or any other field. "
-    "pids are auto-assigned by create_plan.py from a monotonic counter; "
-    "the model never supplies them.\n"
-    "Escape '&', '<', '>' in text as '&amp;', '&lt;', '&gt;' (or wrap "
-    "the offending field in <![CDATA[...]]>)."
+    "Escape '&', '<', '>' in text as '&amp;', '&lt;', '&gt;' "
+    "(or wrap the field in <![CDATA[...]]>). "
+    "If shell-quoting is awkward, write the XML to a file and pass '@path.xml' "
+    "as the second argument instead."
 )
 
 
@@ -799,15 +790,12 @@ def get_guidance(task_dir: str) -> str:
             if baseline is not None:
                 metric_hint = f" Baseline {primary_metric}: {baseline}."
 
-        xml_path = os.path.join(task_dir, _PLAN_XML_FILE)
         return (f"[AR Phase: PLAN] "
                 f"Read task.yaml, editable files ({editable}), and reference.py.{skills_hint}{metric_hint}\n"
-                f"Then create the plan in two steps:\n"
-                f"  1. Write the XML to {xml_path}\n"
-                f"  2. Run: python .autoresearch/scripts/create_plan.py \"{task_dir}\" @{xml_path}\n"
-                f"\n{_PLAN_FIELD_RULES}\n"
-                f"\nXML template — copy the structure exactly:\n{_PLAN_XML_EXAMPLE}\n"
-                f"\nThe script writes plan.md in the correct format. Hook validates and advances to EDIT.\n"
+                f"Then create the plan by running:\n"
+                f'python .autoresearch/scripts/create_plan.py "{task_dir}" \'{_PLAN_XML_EXAMPLE}\'\n'
+                f"{_PLAN_FIELD_RULES}\n"
+                f"The script writes plan.md in the correct format. Hook validates and advances to EDIT.\n"
                 f"After plan creation, sync items to TodoWrite.")
 
     if phase == EDIT:
@@ -839,7 +827,6 @@ def get_guidance(task_dir: str) -> str:
                 _r = "?" if _r is None else _r
                 fail_summary += f"  R{_r}: {rec.get('decision','?')} — {rec.get('description','')[:60]}\n"
 
-        xml_path = os.path.join(task_dir, _PLAN_XML_FILE)
         return (f"[AR Phase: DIAGNOSE] consecutive_failures >= 3.\n"
                 f"Spawn a SUBAGENT (Agent tool) for fresh-context diagnosis:\n"
                 f"  - Have it Read {', '.join(editable)} and .ar_state/history.jsonl\n"
@@ -847,12 +834,10 @@ def get_guidance(task_dir: str) -> str:
                 f"  - It must propose STRUCTURALLY different approaches (algorithmic, fusion, memory layout)\n"
                 f"  - NOT more parameter tuning\n"
                 f"Recent failures:\n{fail_summary}\n"
-                f"After diagnosis, create NEW plan with >= 3 items in two steps:\n"
-                f"  1. Write the XML to {xml_path}\n"
-                f"  2. Run: python .autoresearch/scripts/create_plan.py \"{task_dir}\" @{xml_path}\n"
-                f"\n{_PLAN_FIELD_RULES}\n"
-                f"\nXML template — copy the structure exactly:\n{_PLAN_XML_EXAMPLE}\n"
-                f"\nItems must be diverse: max 1 parameter-tuning item, rest must be structural changes.\n"
+                f"After diagnosis, create NEW plan with >= 3 items:\n"
+                f'python .autoresearch/scripts/create_plan.py "{task_dir}" \'{_PLAN_XML_EXAMPLE}\'\n'
+                f"{_PLAN_FIELD_RULES}\n"
+                f"Items must be diverse: max 1 parameter-tuning item, rest must be structural changes.\n"
                 f"create_plan.py will REPLACE plan.md's Active Items — any pid "
                 f"left pending in the previous plan is silently dropped (its "
                 f"slot in the monotonic pid counter stays consumed). If a past "
@@ -878,15 +863,12 @@ def get_guidance(task_dir: str) -> str:
                 "one, just include it as a new item with a fresh pid "
                 "(reference the prior pid in <desc> for audit context)."
             )
-        xml_path = os.path.join(task_dir, _PLAN_XML_FILE)
         return (f"[AR Phase: REPLAN] All items settled. Budget: {remaining} rounds left. "
                 f"Read .ar_state/history.jsonl. Analyze what worked/failed.\n"
-                f"To continue, create a new plan in two steps:\n"
-                f"  1. Write the XML to {xml_path}\n"
-                f"  2. Run: python .autoresearch/scripts/create_plan.py \"{task_dir}\" @{xml_path}\n"
-                f"\n{_PLAN_FIELD_RULES}\n"
-                f"\nXML template — copy the structure exactly:\n{_PLAN_XML_EXAMPLE}\n"
-                f"\nOr if no promising directions, do nothing (hooks will advance to FINISH)."
+                f"To continue, create new plan:\n"
+                f'python .autoresearch/scripts/create_plan.py "{task_dir}" \'{_PLAN_XML_EXAMPLE}\'\n'
+                f"{_PLAN_FIELD_RULES}\n"
+                f"Or if no promising directions, do nothing (hooks will advance to FINISH)."
                 f"{retry_hint}")
 
     if phase == FINISH:
