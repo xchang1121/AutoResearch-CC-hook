@@ -228,26 +228,38 @@ _EDIT_RULES = {
 # XML is the required format — tag-delimited text is structurally harder for
 # LLMs to hallucinate than JSON (no stray commas / quote escaping / brace
 # balance to track).
+# Inline XML comments inside the example double as schema reminders. The
+# model is far more likely to obey rules embedded in the structure it's
+# mimicking than rules sitting in a separate paragraph it has to remember
+# to apply. Anti-drift hints are placed where each drift tends to land:
+# attributes on <item>, extra child elements, missing fields.
 _PLAN_XML_EXAMPLE = (
     '<items>'
+    '<!-- Provide >= 3 <item> elements. No attributes or extra tags on <items>. -->'
     '<item>'
+    '<!-- An <item> has NO attributes and EXACTLY two child elements: '
+    '<desc> and <rationale>. Do NOT add <id>, <pid>, <keywords>, '
+    '<priority>, <reactivate_pid>, or id="..." / pid="..." attributes. '
+    'Pids are auto-assigned by create_plan.py from a monotonic counter; '
+    'the model never supplies them — supplying one is rejected. -->'
     '<desc>Fuse SwiGLU into the matmul epilogue to avoid a second launch</desc>'
+    '<!-- <desc>: short SENTENCE (>=12 chars, has spaces). Not a '
+    'snake_case label; the dashboard shows desc verbatim. -->'
     '<rationale>Separate SwiGLU kernel re-reads the matmul output from DRAM; '
     'fusing it into the epilogue cuts one round-trip and a launch.</rationale>'
+    '<!-- <rationale>: 30-400 chars, explains WHY this should help. -->'
     '</item>'
-    '<!-- repeat <item> for >= 3 total -->'
+    '<!-- Repeat <item> blocks for >= 3 total items. Same two-child rule '
+    'each time; nothing per-item is optional and nothing extra is allowed. -->'
     '</items>'
 )
 _PLAN_FIELD_RULES = (
-    "Provide >= 3 items as an <items> XML document. Each <item> needs both "
-    "fields below — omitting either is a parse error:\n"
-    "  - <desc>:      short SENTENCE describing the change (>=12 chars, must "
-    "have spaces — not a snake_case label; the dashboard shows this verbatim)\n"
-    "  - <rationale>: 30-400 char explanation of WHY it should help\n"
-    "Escape '&', '<', '>' in text as '&amp;', '&lt;', '&gt;' "
-    "(or wrap the field in <![CDATA[...]]>). "
-    "If shell-quoting is awkward, write the XML to a file and pass '@path.xml' "
-    "as the second argument instead."
+    "Schema reminders are embedded as <!-- comments --> inside the XML "
+    "example above; read them — each comment marks the spot where a "
+    "field rule applies. Beyond schema: escape '&', '<', '>' in text as "
+    "'&amp;', '&lt;', '&gt;' (or wrap the offending field in "
+    "<![CDATA[...]]>). If shell-quoting is awkward, write the XML to a "
+    "file and pass '@path.xml' as the second argument instead."
 )
 
 
