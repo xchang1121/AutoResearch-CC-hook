@@ -839,23 +839,58 @@ def get_guidance(task_dir: str) -> str:
                 _r = "?" if _r is None else _r
                 fail_summary += f"  R{_r}: {rec.get('decision','?')} — {rec.get('description','')[:60]}\n"
 
+        editable_list = ", ".join(editable)
+        # Pre-baked subagent prompt. The parent model passes this verbatim
+        # to the Agent tool so the subagent doesn't improvise its own
+        # research strategy (a previous open-ended brief sent it greppting
+        # git log for 100+ tool calls before timing out).
+        subagent_prompt = (
+            f"Diagnose why the current optimization rounds are failing.\n\n"
+            f"Read these files AND ONLY these files (no other Read / Glob / Grep):\n"
+            f"  - {task_dir}/reference.py\n"
+            f"  - {task_dir}/{editable_list}\n"
+            f"  - {task_dir}/.ar_state/plan.md\n"
+            f"  - {task_dir}/.ar_state/history.jsonl (focus on the last "
+            f"~10 rounds; older entries are usually stale)\n\n"
+            f"Hard constraints:\n"
+            f"  - Do NOT run `git log`, `git show`, `git grep`, or any git "
+            f"history search — the task git history only contains generic "
+            f"per-round commits and grepping it for keywords ('vector', "
+            f"'Welford', etc.) returns nothing useful and burns tool calls.\n"
+            f"  - Do NOT Glob / Grep the wider codebase. Everything you need "
+            f"is in the files above.\n"
+            f"  - Stop after at most 8 tool uses total; if you can't fully "
+            f"conclude, output what you have.\n\n"
+            f"Produce a tight report (<300 words total) with three sections:\n"
+            f"  1. Root cause: one paragraph on what's making rounds fail\n"
+            f"  2. Fix directions: at most 3 STRUCTURALLY different "
+            f"approaches (algorithmic change / fusion / memory layout / "
+            f"data movement). One sentence each. NOT more parameter tuning.\n"
+            f"  3. What to avoid: at most 3 patterns to NOT repeat. One "
+            f"sentence each."
+        )
         return (f"[AR Phase: DIAGNOSE] consecutive_failures >= 3.\n"
-                f"Spawn a SUBAGENT (Agent tool) for fresh-context diagnosis:\n"
-                f"  - Have it Read {', '.join(editable)} and .ar_state/history.jsonl\n"
-                f"  - Ask it to produce: Root cause / Fix direction / What to avoid\n"
-                f"  - It must propose STRUCTURALLY different approaches (algorithmic, fusion, memory layout)\n"
-                f"  - NOT more parameter tuning\n"
-                f"Recent failures:\n{fail_summary}\n"
-                f"After diagnosis, create NEW plan with >= 3 items:\n"
-                f'python .autoresearch/scripts/create_plan.py "{task_dir}" \'{_PLAN_XML_EXAMPLE}\'\n'
+                f"Spawn a SUBAGENT (Agent tool) with this EXACT prompt — "
+                f"do not paraphrase, do not add or remove constraints:\n"
+                f"---BEGIN SUBAGENT PROMPT---\n"
+                f"{subagent_prompt}\n"
+                f"---END SUBAGENT PROMPT---\n"
+                f"Recent failures (already in your context, no need to "
+                f"re-fetch):\n{fail_summary}\n"
+                f"After the subagent returns, create NEW plan with >= 3 "
+                f"items:\n"
+                f'python .autoresearch/scripts/create_plan.py "{task_dir}" '
+                f"'{_PLAN_XML_EXAMPLE}'\n"
                 f"{_PLAN_FIELD_RULES}\n"
-                f"Items must be diverse: max 1 parameter-tuning item, rest must be structural changes.\n"
-                f"create_plan.py will REPLACE plan.md's Active Items — any pid "
-                f"left pending in the previous plan is silently dropped (its "
-                f"slot in the monotonic pid counter stays consumed). If a past "
-                f"DISCARD/FAIL idea now looks salvageable, just re-propose it "
-                f"as a new item; the desc text carries the audit, fresh pid is "
-                f"the right signal that it's a new attempt.\n"
+                f"Items must be diverse: max 1 parameter-tuning item, rest "
+                f"must be structural changes.\n"
+                f"create_plan.py will REPLACE plan.md's Active Items — any "
+                f"pid left pending in the previous plan is silently dropped "
+                f"(its slot in the monotonic pid counter stays consumed). "
+                f"If a past DISCARD/FAIL idea now looks salvageable, just "
+                f"re-propose it as a new item; the desc text carries the "
+                f"audit, fresh pid is the right signal that it's a new "
+                f"attempt.\n"
                 f"Then sync TodoWrite.")
 
     if phase == REPLAN:
