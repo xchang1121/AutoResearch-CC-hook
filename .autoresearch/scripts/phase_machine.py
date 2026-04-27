@@ -259,8 +259,7 @@ _PLAN_FIELD_RULES = (
     "have spaces — not a snake_case label; the dashboard shows this verbatim)\n"
     "  - <rationale>: 30-400 char explanation of WHY it should help\n"
     "  - <keywords>:  comma-separated tags, e.g. fusion, epilogue\n"
-    "Optional: <reactivate_pid>pN</reactivate_pid> to reuse a previously "
-    "DISCARD/FAIL pid. Escape '&', '<', '>' in text as '&amp;', '&lt;', '&gt;' "
+    "Escape '&', '<', '>' in text as '&amp;', '&lt;', '&gt;' "
     "(or wrap the field in <![CDATA[...]]>). "
     "If shell-quoting is awkward, write the XML to a file and pass '@path.xml' "
     "as the second argument instead."
@@ -856,10 +855,12 @@ def get_guidance(task_dir: str) -> str:
                 f'python .autoresearch/scripts/create_plan.py "{task_dir}" \'{_PLAN_XML_EXAMPLE}\'\n'
                 f"{_PLAN_FIELD_RULES}\n"
                 f"Items must be diverse: max 1 parameter-tuning item, rest must be structural changes.\n"
-                f"If a past DISCARD/FAIL pid now looks salvageable (e.g. root "
-                f"cause was unrelated, structural state has changed), add "
-                f"`<reactivate_pid>pN</reactivate_pid>` to an item to reuse that id "
-                f"instead of consuming a fresh counter slot.\n"
+                f"create_plan.py will REPLACE plan.md's Active Items — any pid "
+                f"left pending in the previous plan is silently dropped (its "
+                f"slot in the monotonic pid counter stays consumed). If a past "
+                f"DISCARD/FAIL idea now looks salvageable, just re-propose it "
+                f"as a new item; the desc text carries the audit, fresh pid is "
+                f"the right signal that it's a new attempt.\n"
                 f"Then sync TodoWrite.")
 
     if phase == REPLAN:
@@ -868,18 +869,16 @@ def get_guidance(task_dir: str) -> str:
         if progress:
             remaining = str(progress.get("max_rounds", 0) - progress.get("eval_rounds", 0))
             plan_ver = progress.get("plan_version", 0)
-        reactivation_hint = ""
+        retry_hint = ""
         if plan_ver >= 2:
-            reactivation_hint = (
-                "\nREACTIVATION: plan_version is already {v}. Before inventing "
-                "entirely new ideas, scan history.jsonl for DISCARD items whose "
-                "metric was close to best (within ~20%) — those ideas may "
-                "compose differently now that the kernel's structural baseline "
-                "has shifted. To reactivate one, add "
-                "`<reactivate_pid>pN</reactivate_pid>` to an item; the old pid is reused "
-                "(not a new pN allocated), and history.jsonl gets a REACTIVATE "
-                "marker. Only DISCARD/FAIL pids may be reactivated."
-                .format(v=plan_ver)
+            retry_hint = (
+                f"\nNote: plan_version is already {plan_ver}. Before "
+                "inventing entirely new ideas, scan history.jsonl for "
+                "DISCARD items whose metric was close to best (within "
+                "~20%) — those ideas may compose differently now that "
+                "the kernel's structural baseline has shifted. To revisit "
+                "one, just include it as a new item with a fresh pid "
+                "(reference the prior pid in <desc> for audit context)."
             )
         return (f"[AR Phase: REPLAN] All items settled. Budget: {remaining} rounds left. "
                 f"Read .ar_state/history.jsonl. Analyze what worked/failed.\n"
@@ -887,7 +886,7 @@ def get_guidance(task_dir: str) -> str:
                 f'python .autoresearch/scripts/create_plan.py "{task_dir}" \'{_PLAN_XML_EXAMPLE}\'\n'
                 f"{_PLAN_FIELD_RULES}\n"
                 f"Or if no promising directions, do nothing (hooks will advance to FINISH)."
-                f"{reactivation_hint}")
+                f"{retry_hint}")
 
     if phase == FINISH:
         best = progress.get("best_metric") if progress else "?"
@@ -961,8 +960,7 @@ def save_progress(task_dir: str, progress: dict, *, stamp: bool = True):
 
 def append_history(task_dir: str, record: dict):
     """Append one JSON record to history.jsonl. Single canonical writer
-    used by keep_or_discard, _baseline_init, and create_plan (supersede /
-    reactivate markers)."""
+    used by keep_or_discard and _baseline_init."""
     path = history_path(task_dir)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:

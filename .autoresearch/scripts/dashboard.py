@@ -321,9 +321,11 @@ def render(task_dir, history_offset=0, history_window=None):
             dec_str = f"{RED}  FAIL  {RESET}"
         elif decision == "SEED":
             dec_str = f"{CYAN}  SEED  {RESET}"
-        elif decision == "REACTIVATE":
-            dec_str = f"{MAGENTA} REACT'V{RESET}"
         else:
+            # Older history.jsonl files may carry deprecated decisions
+            # (e.g. REACTIVATE, the now-removed pid-revival marker). Fall
+            # through to the generic dim renderer rather than colour-code
+            # them — the model never produces new ones.
             dec_str = f"{DIM}{decision:^8}{RESET}"
 
         lines.append(f"  {rnd:>3}  │ {dec_str} │ {metric_val:>13} │ {desc}")
@@ -363,9 +365,9 @@ def render(task_dir, history_offset=0, history_window=None):
         is_active = "(ACTIVE)" in rest
         rest = rest.replace("(ACTIVE)", "").strip()
 
-        # Extract outcome tag like [KEEP, metric=1294.77] or [DISCARD] or [SKIP]
+        # Extract outcome tag like [KEEP, metric=1294.77] or [DISCARD].
         outcome = ""
-        om = re.match(r'\[(KEEP|DISCARD|FAIL|SKIP)[^\]]*\]:?\s*(.*)', rest)
+        om = re.match(r'\[(KEEP|DISCARD|FAIL)[^\]]*\]:?\s*(.*)', rest)
         if om:
             outcome = om.group(1)
             desc = om.group(2).lstrip(": ").strip()
@@ -385,9 +387,6 @@ def render(task_dir, history_offset=0, history_window=None):
             desc_str = f"{DIM}{desc}{RESET}"
         elif outcome == "FAIL":
             status_str = f"{RED}  FAIL   {RESET}"
-            desc_str = f"{DIM}{desc}{RESET}"
-        elif outcome == "SKIP":
-            status_str = f"{MAGENTA}  SKIP   {RESET}"
             desc_str = f"{DIM}{desc}{RESET}"
         else:
             status_str = " pending "  # 9 visible chars, matches other statuses
