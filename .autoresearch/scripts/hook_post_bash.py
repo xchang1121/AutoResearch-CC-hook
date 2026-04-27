@@ -43,6 +43,35 @@ def _activation_target(command: str) -> str | None:
     return m.group(1) if m else None
 
 
+# Mirror hook_guard_bash's invocation regex so the post-handler accepts the
+# same set of commands the pre-handler does. Without this, dispatch fell
+# back to `"baseline.py" in command` substring matching, which fires on
+# `cat baseline.py`, `git log -- baseline.py`, `python -c "print('baseline.py')"`,
+# or any path that happens to contain the script name — silently advancing
+# the phase when no script actually ran.
+_INVOKED_SCRIPT_RE = re.compile(
+    r'\b(?:python(?:\d+(?:\.\d+)?)?|py|bash|sh)\b'
+    r'(?:\s+-[A-Za-z][^\s"\']*)*'
+    r'\s+["\']?([^\s"\']+\.py)'
+)
+
+
+def _invoked_script(command: str) -> str | None:
+    """Basename of an .autoresearch/scripts/*.py invocation, or None.
+
+    Substring matches are NOT enough — `cat baseline.py` would falsely
+    advance phase. Mirror the regex hook_guard_bash already uses so the
+    post-handler agrees with the guard on what counts as an invocation.
+    """
+    m = _INVOKED_SCRIPT_RE.search(command)
+    if not m:
+        return None
+    script_path = m.group(1).replace("\\", "/")
+    if ".autoresearch/scripts/" not in script_path:
+        return None
+    return os.path.basename(script_path)
+
+
 def _clean_stale_edit_marker(task_dir: str):
     """Remove .edit_started if git is clean (nothing to resume)."""
     marker = edit_marker_path(task_dir)
@@ -167,8 +196,9 @@ def main():
     touch_heartbeat(task_dir)
 
     phase = read_phase(task_dir)
+    invoked = _invoked_script(command)
 
-    if "baseline.py" in command and phase == BASELINE:
+    if invoked == "baseline.py" and phase == BASELINE:
         progress = load_progress(task_dir)
         if not progress:
             emit_status("[AR] Baseline failed (no progress.json). Retry.")
@@ -202,13 +232,13 @@ def main():
             write_phase(task_dir, PLAN)
             emit_status(f"[AR] Baseline complete. Phase -> PLAN. {get_guidance(task_dir)}")
 
-    elif "pipeline.py" in command:
+    elif invoked == "pipeline.py":
         # pipeline.py writes .phase itself; just project state + notify.
         new_phase = read_phase(task_dir)
         emit_status(f"[AR] Pipeline complete. Phase -> {new_phase}. {get_guidance(task_dir)}")
         emit_todowrite_context(task_dir, f"[AR] Round settled. Phase -> {new_phase}.")
 
-    elif "create_plan.py" in command and phase in (PLAN, DIAGNOSE, REPLAN):
+    elif invoked == "create_plan.py" and phase in (PLAN, DIAGNOSE, REPLAN):
         from phase_machine import validate_plan
         ok, err = validate_plan(task_dir)
         if ok:

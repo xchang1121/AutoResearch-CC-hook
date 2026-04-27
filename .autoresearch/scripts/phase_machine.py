@@ -935,15 +935,28 @@ def load_progress(task_dir: str) -> Optional[dict]:
 
 
 def save_progress(task_dir: str, progress: dict, *, stamp: bool = True):
-    """Write progress dict to .ar_state/progress.json, optionally stamping
-    last_updated. Single canonical writer."""
+    """Write progress dict to .ar_state/progress.json atomically.
+    Optionally stamps last_updated. Single canonical writer.
+
+    Atomicity matters: a non-atomic truncate-then-write would let a
+    concurrent reader (e.g. ``compute_next_phase`` reading via
+    ``load_progress``) catch an empty / partial file, which
+    ``load_progress`` swallows as ``None`` (parse error) and
+    ``compute_next_phase`` then treats as ``FINISH`` (budget exhausted).
+    The probability per round is tiny but compounds with round count —
+    long runs were occasionally short-circuited to FINISH well before
+    ``max_rounds``. Writing to a sibling ``.tmp`` and ``os.replace``-ing
+    into place gives readers an all-or-nothing view.
+    """
     from datetime import datetime, timezone
     path = progress_path(task_dir)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     if stamp:
         progress["last_updated"] = datetime.now(timezone.utc).isoformat()
-    with open(path, "w", encoding="utf-8") as f:
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(progress, f, indent=2)
+    os.replace(tmp_path, path)
 
 
 def append_history(task_dir: str, record: dict):
