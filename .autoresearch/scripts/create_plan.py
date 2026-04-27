@@ -93,15 +93,23 @@ def _fail(msg: str):
 
 _ALLOWED_ITEM_TAGS = {"desc", "rationale"}
 
+# Tags / attributes the parser silently drops instead of rejecting. Models
+# repeatedly invent <id>p1</id> / id="p1" / <pid>...</pid> sub-elements
+# even when guidance forbids them — pid is a "natural" field for plan
+# items in the LLM's prior. Tolerating + discarding avoids a round-trip
+# every plan creation; the auto-allocated monotonic pid is authoritative.
+_IGNORED_ITEM_TAGS = {"id", "pid"}
+_IGNORED_ITEM_ATTRS = {"id", "pid"}
+
 
 def _parse_items_xml(xml_str: str) -> list:
     """Parse <items><item>...</item>...</items> into a list of dicts.
 
-    Recognized child elements under <item>: desc, rationale. Unknown tags
-    are rejected so typos surface loudly rather than silently dropping
-    fields. (An earlier schema had a `<keywords>` field that the model
-    routinely omitted; it was removed because every keyword token already
-    appears in <desc>, and `_check_diversity` now reads desc directly.)
+    Recognized child elements under <item>: desc, rationale.
+    Tolerated and silently dropped: <id>, <pid> children and id=/pid=
+    attributes on <item> (the parser owns pid allocation; supplying one
+    is a no-op).
+    Other unknown tags are rejected so real typos still surface.
     """
     try:
         root = ET.fromstring(xml_str)
@@ -113,8 +121,17 @@ def _parse_items_xml(xml_str: str) -> list:
     for i, child in enumerate(list(root)):
         if child.tag != "item":
             _fail(f"Unexpected <{child.tag}> under <items> (only <item> allowed)")
+        # Silently drop tolerated attributes (id="p1" etc.) — the rest of
+        # the parser doesn't look at item attributes.
+        for attr in list(child.attrib):
+            if attr in _IGNORED_ITEM_ATTRS:
+                continue
+            _fail(f"Item {i}: unknown attribute {attr!r} on <item> "
+                  f"(item should have no attributes; pids are auto-assigned)")
         d = {}
         for sub in list(child):
+            if sub.tag in _IGNORED_ITEM_TAGS:
+                continue
             if sub.tag not in _ALLOWED_ITEM_TAGS:
                 _fail(f"Item {i}: unknown element <{sub.tag}> "
                       f"(allowed: {sorted(_ALLOWED_ITEM_TAGS)})")
