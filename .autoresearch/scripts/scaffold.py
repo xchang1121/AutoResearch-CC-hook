@@ -348,7 +348,11 @@ def main():
             sys.exit(1)
     else:
         # --desc mode: scaffold without reference. Claude Code fills it later.
-        ref_code = f"# TODO: Claude Code will generate reference from description:\n# {args.desc}\n"
+        # Source the placeholder from phase_machine so is_placeholder_file's
+        # prefix predicate stays in lockstep with what we actually write.
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from phase_machine import REFERENCE_PLACEHOLDER_PREFIX
+        ref_code = f"{REFERENCE_PLACEHOLDER_PREFIX}\n# {args.desc}\n"
 
     # Read initial kernel (optional)
     kernel_code = None

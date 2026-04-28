@@ -9,7 +9,7 @@ directly via the Bash tool:
                                 appropriate GENERATE_* / BASELINE phase)
   - `baseline.py`             → PLAN on success;
                                 GENERATE_KERNEL on seed-metric failure
-                                (capped at 3 retries via baseline_retries)
+                                (so kernel.py becomes editable again)
   - `pipeline.py`             → whatever phase pipeline.py itself wrote
   - `create_plan.py`          → EDIT on plan validation pass
                                 (called from PLAN / DIAGNOSE / REPLAN)
@@ -205,30 +205,21 @@ def main():
         elif (progress.get("seed_metric") is None
               or progress.get("baseline_correctness") is False):
             # Demote to GENERATE_KERNEL so Edit on kernel.py is permitted
-            # again — BASELINE's _EDIT_RULES forbid it. Cap at 3 attempts
-            # so a fundamentally-broken kernel doesn't loop forever; after
-            # that we leave the phase pinned and ask for a manual fix.
-            retries = int(progress.get("baseline_retries", 0)) + 1
-            update_progress(task_dir, baseline_retries=retries)
+            # again — BASELINE's _EDIT_RULES forbid it. The previous
+            # cap-at-3 branch left phase pinned at BASELINE, which
+            # deadlocked the task (kernel.py uneditable, baseline.py the
+            # only allowed command, and re-running it just kept failing).
+            # Always demoting back to GENERATE_KERNEL avoids that trap.
             reason = ("seed kernel produced no timing"
                       if progress.get("seed_metric") is None
                       else "seed kernel failed correctness check")
-            if retries >= 3:
-                emit_status(
-                    f"[AR] Baseline failed {retries}x ({reason}). "
-                    f"Stopping auto-retry. Inspect the worker log, fix "
-                    f"kernel.py manually, then re-run: "
-                    f"python .autoresearch/scripts/baseline.py \"{task_dir}\""
-                )
-            else:
-                write_phase(task_dir, GENERATE_KERNEL)
-                emit_status(
-                    f"[AR] Baseline failed (attempt {retries}/3): {reason}. "
-                    f"Phase -> GENERATE_KERNEL so kernel.py becomes editable. "
-                    f"Fix the kernel, then re-run baseline.py."
-                )
+            write_phase(task_dir, GENERATE_KERNEL)
+            emit_status(
+                f"[AR] Baseline failed: {reason}. "
+                f"Phase -> GENERATE_KERNEL so kernel.py becomes editable. "
+                f"Fix the kernel, then re-run baseline.py."
+            )
         else:
-            update_progress(task_dir, baseline_retries=0)
             write_phase(task_dir, PLAN)
             emit_status(f"[AR] Baseline complete. Phase -> PLAN. {get_guidance(task_dir)}")
 

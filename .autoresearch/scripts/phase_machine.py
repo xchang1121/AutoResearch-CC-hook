@@ -62,19 +62,29 @@ KERNEL_PLACEHOLDER = (
     "# Must define class ModelNew (may inherit from Model).\n"
 )
 
-# Maximum body length for a file to still count as the scaffold placeholder.
-# 200 chars is well above the placeholder template (~150 chars) and well
-# below any real implementation, even a one-liner ModelNew that imports
-# torch.nn.
-_PLACEHOLDER_MAX_LEN = 200
-
+# In --desc mode, scaffold.py writes reference.py as a parametric stub:
+#   "# TODO: Claude Code will generate reference from description:\n# <desc>\n"
+# We can't exact-match it (the description is per-task), so the predicate
+# uses this prefix instead.
+REFERENCE_PLACEHOLDER_PREFIX = (
+    "# TODO: Claude Code will generate reference from description:"
+)
 
 def is_placeholder_file(path: str) -> bool:
-    """True iff `path` is missing OR is the scaffold TODO placeholder.
+    """True iff `path` is missing OR matches one of the scaffold placeholders.
 
     Single source of truth used by hook_post_edit, hook_post_bash._fresh_start,
-    and validate_kernel. Update this rule and the placeholder template
-    (`KERNEL_PLACEHOLDER`) together.
+    and validate_kernel. Update this rule and the placeholder templates
+    (`KERNEL_PLACEHOLDER`, `REFERENCE_PLACEHOLDER_PREFIX`) together.
+
+    Earlier versions used a "contains 'TODO' AND length < 200" heuristic,
+    which false-positived a legitimate short seed kernel that happened to
+    carry a TODO comment (e.g. `# TODO: tune block size later`) and trapped
+    GENERATE_KERNEL forever. We now match against the canonical templates:
+      - kernel.py: byte-for-byte match against KERNEL_PLACEHOLDER (fixed text)
+      - reference.py: prefix match against REFERENCE_PLACEHOLDER_PREFIX
+        (parametric — description text is appended per task)
+    Anything Claude has actually written deviates and is no longer a stub.
     """
     if not os.path.exists(path):
         return True
@@ -83,7 +93,12 @@ def is_placeholder_file(path: str) -> bool:
             content = f.read()
     except OSError:
         return True
-    return "TODO" in content and len(content) < _PLACEHOLDER_MAX_LEN
+    stripped = content.strip()
+    if stripped == KERNEL_PLACEHOLDER.strip():
+        return True
+    if stripped.startswith(REFERENCE_PLACEHOLDER_PREFIX):
+        return True
+    return False
 
 # File-based task_dir tracking (env vars don't persist across Bash calls)
 # Use a FIXED absolute path derived from the project root, not __file__

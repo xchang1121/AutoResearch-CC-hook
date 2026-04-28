@@ -12,7 +12,7 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from task_config import load_task_config
 from phase_machine import (
-    write_phase, append_history, save_progress, load_progress, PLAN,
+    write_phase, append_history, save_progress, PLAN,
 )
 
 
@@ -63,9 +63,6 @@ def main():
     except Exception:
         baseline_commit = "unknown"
 
-    # Carry baseline_retries across attempts so hook_post_bash can cap the
-    # GENERATE_KERNEL ↔ BASELINE loop. Read it before overwriting progress.
-    prior = load_progress(task_dir) or {}
     save_progress(task_dir, {
         "task": config.name,
         "eval_rounds": 0,
@@ -76,7 +73,6 @@ def main():
         "baseline_metric": baseline_val,
         "baseline_source": baseline_source,
         "baseline_correctness": correctness,
-        "baseline_retries": prior.get("baseline_retries", 0),
         "seed_metric": seed_val,
         "consecutive_failures": 0,
         "plan_version": 0,
