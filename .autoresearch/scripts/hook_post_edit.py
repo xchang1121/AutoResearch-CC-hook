@@ -115,9 +115,7 @@ def main():
                 f"phase stays at GENERATE_KERNEL.\n"
                 f"     git error: {info}\n"
                 f"     Resolve the git issue, then re-Edit kernel.py to "
-                f"retry the commit. Without a clean HEAD, the EDIT-phase "
-                f"git gate would later misreport this as 'uncommitted "
-                f"changes from previous round'."
+                f"retry the commit."
             )
             sys.exit(0)
         write_phase(task_dir, BASELINE)

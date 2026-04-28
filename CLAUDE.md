@@ -18,7 +18,9 @@ claude
 # 2. Start a task (init + run is one command).
 #    Drop the source ref/kernel files into workspace/ first, named
 #    workspace/<op_name>_ref.py and workspace/<op_name>_kernel.py.
-/autoresearch --ref workspace/<op_name>_ref.py --op-name <op_name> --backend cuda
+#    --dsl is required; pick --devices N (local) XOR --worker-url (remote).
+#    --backend / --arch are auto-derived; never typed.
+/autoresearch --ref workspace/<op_name>_ref.py --op-name <op_name> --dsl triton_cuda --devices 0
 
 # 3. Resume later
 /autoresearch --resume
@@ -51,8 +53,11 @@ Or pass `--worker-url 127.0.0.1:9111` directly to `/autoresearch` on init.
 
 ## Skills Library
 
-`skills/` contains 88 optimization knowledge documents organized by DSL/backend:
+`skills/` contains optimization knowledge organized by DSL/backend, plus
+several cross-cutting workflow skills. Use `Glob("skills/**/*.md")` to
+enumerate the current set; do not rely on a hand-maintained count here.
 
+DSL / backend skills:
 ```
 skills/
   triton-ascend/   — Triton on Ascend NPU (guides + cases)
@@ -61,6 +66,16 @@ skills/
   cpp/             — CPU C++ optimization
   tilelang-cuda/   — TileLang DSL
   pypto/           — PyTorch operator patterns (cases)
+```
+
+Workflow skills (cross-DSL):
+```
+skills/
+  designer/             — kernel design / decomposition guides
+  kernel-agent/         — agent flow for kernel generation
+  kernel-workflow/      — overall workflow orchestration
+  performance-summary/  — perf report templates
+  task-constructor/     — task spec authoring
 ```
 
 During the PLAN phase, use Glob to find relevant skills by DSL/backend:
@@ -88,10 +103,14 @@ following invariants are non-negotiable:
    substitute.
 2. **Plan item IDs are globally monotonic.** `p1, p2, p3, ...` allocated from
    a single counter in `progress.json.next_pid`. Never reuse IDs, never skip.
-3. **Every `pN` must end in KEEP / DISCARD / FAIL.** When DIAGNOSE or REPLAN
-   supersedes a plan with pending items, `create_plan.py` auto-settles them
-   as `DISCARD (superseded by replan vN)` and records to `history.jsonl`. No
-   item may vanish without an outcome row.
+3. **Every `pN` either settles (KEEP / DISCARD / FAIL in `history.jsonl`) or
+   gets dropped at a REPLAN/DIAGNOSE boundary.** `create_plan.py` does NOT
+   write a synthetic DISCARD row for pending items it supersedes — they're
+   silently dropped. The audit chain is `progress.json.plan_version` plus
+   the absence of a `history.jsonl` record for that pid; the pid counter
+   stays consumed (no reuse). A pid that exists only in plan_version N's
+   plan.md and has no history.jsonl entry was abandoned at the N→N+1
+   transition.
 4. **Phase transitions are hook-controlled.** Never write `.ar_state/.phase`
    manually and never "guess the next step" — wait for the hook's guidance.
 5. **Editable files are scoped by `task.yaml.editable_files`.** Editing

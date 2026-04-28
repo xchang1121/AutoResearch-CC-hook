@@ -6,8 +6,7 @@ Per-phase allow/block for file targets lives in phase_machine.check_edit.
 This hook handles two concerns check_edit can't express as a pure function:
 
   1. Files outside the task dir are always allowed (out of scope).
-  2. EDIT phase's "uncommitted-diff from previous round" gate — needs git
-     state, not just phase; stays in the hook.
+  2. EDIT-phase dirty-tree gate — needs live git state, not just phase.
 """
 import json
 import os
@@ -116,7 +115,7 @@ def main():
         _block(f"[AR] {reason}. {get_guidance(task_dir)}")
 
     # Phase says OK. For EDIT writes to editable files, also check the git
-    # state gate (previous-round leftovers).
+    # state gate (dirty tree on entry to a new round).
     if phase == EDIT and rel in set(editable_files):
         _edit_phase_git_gate(task_dir, editable_files)
 

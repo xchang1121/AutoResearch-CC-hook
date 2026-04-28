@@ -231,24 +231,32 @@ INIT
                                                             │
                                           ┌─ scaffold --run-baseline 原子完成
                                           ▼
-   ┌────────────────────────  PLAN  ◀────────────────────────┐
-   │   create_plan.py 校验 (≥3 项 / 多样性 / rationale 长度) │
-   ▼                                                          │
-  EDIT  ──→  pipeline.py:                                     │
-            quick_check → eval_wrapper → keep_or_discard      │
-            → settle ──→ history.jsonl + plan.md + .phase     │
-            │                                                 │
-            ├─ KEEP    : git commit (editable_files)，best 更新 │
-            ├─ DISCARD : 回滚 editable_files                    │
-            └─ FAIL    : consecutive_failures++，回滚          │
-            │                                                 │
-            ├─ consecutive_failures ≥ 3 ─→ DIAGNOSE ─────────┤
-            ├─ plan 全部 settle          ─→ REPLAN ──────────┘
-            └─ 预算用完                  ─→ FINISH
+                                         PLAN
+                                          │ create_plan.py 校验 (≥3 项 /
+                                          │ 多样性 / rationale 长度)
+                                          ▼
+   ┌─────────────────────────────────── EDIT ◀──────────────┐
+   │  pipeline.py:                                          │
+   │    quick_check → eval_wrapper → keep_or_discard        │
+   │    → settle ──→ history.jsonl + plan.md + .phase       │
+   │   ├─ KEEP    : git commit (editable_files)，best 更新   │
+   │   ├─ DISCARD : 回滚 editable_files                      │
+   │   └─ FAIL    : consecutive_failures++，回滚            │
+   │                                                        │
+   │   ├─ consecutive_failures ≥ 3 ─→ DIAGNOSE ─→ create_plan ─┤
+   │   ├─ plan 全部 settle          ─→ REPLAN  ─→ create_plan ─┤
+   │   └─ eval_rounds == max_rounds ─→ FINISH
+   └─────────────────────────────────────────────────────────┘
 ```
 
-每个 `pN` 必有 KEEP / DISCARD / FAIL 终态。REPLAN 时旧版 pending 项被
-`create_plan.py` 写为 `DISCARD (superseded by replan vN)`。
+DIAGNOSE / REPLAN 不绕回 PLAN——`create_plan.py` 校验通过后 hook 直接写
+phase = EDIT。
+
+每个 `pN` 要么在 `history.jsonl` 里有 KEEP / DISCARD / FAIL 终态，要么在
+REPLAN/DIAGNOSE 边界被静默丢弃（不写假 DISCARD 行，不写 history.jsonl）。
+pid 计数器单调推进、不复用；审计链是 `plan_version` + `history.jsonl`
+缺记录——某 pid 只在 plan vN 出现而 history.jsonl 找不到，就是 N→N+1 时
+被丢的。
 
 各阶段产物：
 
@@ -387,16 +395,18 @@ stdout 输出 `{"decision":"block","reason":"..."}` + `sys.exit(2)` 即阻断
 - **规则单点**：`_BASH_RULES` / `_EDIT_RULES` 只在 phase_machine 定义一次，
   两个 PreToolUse hook 共享；改一处两端同步。
 - **pipeline 子步骤禁止手调**：`quick_check.py` / `eval_wrapper.py` /
-  `keep_or_discard.py` / `settle.py` 跨 phase 黑名单；`git commit` 也只
-  允许 `keep_or_discard.py` 在 KEEP 时发起。Claude 无法绕过 KEEP/DISCARD
-  直接提交，也无法跑任一 pipeline 分片。
+  `keep_or_discard.py` / `settle.py` 跨 phase 黑名单；`git commit` 全部走
+  `git_utils.commit_in_task`，三个调用方分别是 `scaffold._git_init`（初始
+  baseline）、`hook_post_edit`（GENERATE_REF / GENERATE_KERNEL 的 seed
+  commit）、`keep_or_discard`（轮末 KEEP commit）。Claude 直接 `git commit`
+  被全局 ban，也无法跑任一 pipeline 分片。
 - **EDIT 的 git gate**：新轮首次 Edit 前若 editable_files 仍有未提交 diff
   且没有 `.edit_started` 标记，说明上一轮没走 `pipeline.py` 收尾——
   gate block 并提示先跑 pipeline，防止单轮累积多个未结算的 diff。
 - **plan 校验阻塞**：`create_plan.py` 强制 ≥3 项、rationale 30-400 字符、
   最多 1 项纯调参，pid 由 `progress.json.next_pid` 单调分配（不复用不
   跳号）。不通过即非零退出，`hook_post_bash` 不推进 phase。REPLAN 时
-  旧版 pending 项被批量标为 `DISCARD (superseded by replan vN)`。
+  旧版 pending 项静默丢弃（`dropped` 字段报告，不写 history）。
 
 ### 6. Guidance 与 Resume
 

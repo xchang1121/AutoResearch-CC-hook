@@ -7,9 +7,12 @@ All hooks import from here. Claude Code never drives the flow — hooks do.
 Phases (all transitions mediated by hooks):
     INIT → [GENERATE_REF → GENERATE_KERNEL →] BASELINE → PLAN → EDIT
          (EDIT → pipeline.py → EDIT ...)
-         → DIAGNOSE (≥3 consecutive FAIL) → PLAN
-         → REPLAN (all items settled) → PLAN
-         → FINISH (budget exhausted)
+         → DIAGNOSE (≥3 consecutive FAIL) → create_plan.py → EDIT
+         → REPLAN (all items settled)     → create_plan.py → EDIT
+         → FINISH (eval_rounds == max_rounds)
+
+DIAGNOSE / REPLAN do NOT loop back through PLAN — they go directly to EDIT
+once `create_plan.py` validates and `hook_post_bash` writes phase=EDIT.
 
 pipeline.py is a subprocess chain (quick_check → eval → keep_or_discard →
 settle). Those inner steps run without firing the Bash hook — so they don't
@@ -998,15 +1001,7 @@ def get_guidance(task_dir: str) -> str:
                 f"{_create_plan_instruction(task_dir)}"
                 f"\n"
                 f"Items must be diverse: max 1 parameter-tuning item, rest "
-                f"must be structural changes.\n"
-                f"create_plan.py will REPLACE plan.md's Active Items — any "
-                f"pid left pending in the previous plan is silently dropped "
-                f"(its slot in the monotonic pid counter stays consumed). "
-                f"If a past DISCARD/FAIL idea now looks salvageable, just "
-                f"re-propose it as a new item; the desc text carries the "
-                f"audit, fresh pid is the right signal that it's a new "
-                f"attempt.\n"
-                f"Then sync TodoWrite.")
+                f"must be structural changes. Then sync TodoWrite.")
 
     if phase == REPLAN:
         remaining = "?"
