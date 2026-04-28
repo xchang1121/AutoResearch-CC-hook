@@ -400,9 +400,12 @@ stdout 输出 `{"decision":"block","reason":"..."}` + `sys.exit(2)` 即阻断
 
 ### 6. Guidance 与 Resume
 
-每次 phase 切换，Hook 调用 `phase_machine.get_guidance(task_dir)` 生成
-phase-specific 提示（包含 editable_files、当前 active item、最近三条
-history、剩余 budget 等），通过 `additionalContext` 回注给 LLM。
+每次 phase 切换，Hook 内部生成 phase-specific 提示（包含 editable_files、
+当前 active item、最近三条 history、剩余 budget 等），通过 `[AR Phase: ...]`
+消息和 `additionalContext` 回注给 LLM。**LLM 只消费这条消息，不要自己
+调取**——`phase_machine.py` 是库不是 CLI，`hook_guard_bash` 会拒绝把它当
+脚本调用。如果某一步看不到新的 `[AR Phase: ...]`，下一条合法命令跑出来
+hook 自然会再发一条；不要尝试手动"刷新"。
 
 `/autoresearch --resume` 由 `resume.py` 定位最新 task 并 `export
 AR_TASK_DIR=…`，PostToolUse 触发 `_handle_activation()`：存在 `.phase`
@@ -429,11 +432,11 @@ skills/tilelang-cuda/   TileLang DSL
 skills/pypto/           PyTorch operator patterns
 ```
 
-PLAN 阶段 Claude 按
-[phase_machine.get_guidance](.autoresearch/scripts/phase_machine.py) 的
-提示 `Glob("skills/<dsl>/**/*.md")` 检索，Read 命中的 SKILL.md
-（YAML frontmatter 含 id / category / description / keywords），把 id
-写进 plan item 的 rationale。
+PLAN 阶段 Claude 根据 hook 输出的 `[AR Phase: PLAN]` 提示（由 hook
+内部生成，agent 仅消费消息，不要也不能直接调 phase_machine 模块）执行
+`Glob("skills/<dsl>/**/*.md")` 检索，Read 命中的 SKILL.md（YAML
+frontmatter 含 id / category / description / keywords），把 id 写进
+plan item 的 rationale。
 
 `skills/` 下还有若干跨 DSL 的工作流 skill（如 `kernel-agent/`、
 `kernel-workflow/`、`performance-summary/`、`task-constructor/`、

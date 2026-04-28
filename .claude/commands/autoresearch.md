@@ -12,10 +12,15 @@ one, or kick off the optimization. The hook machine takes it from there.
 - **Task dir** — resume that specific task: `ar_tasks/my_task_123456_abc`.
 - **Init flags** — new task from an existing reference file:
   `--ref <file> --op-name <name>
-   --dsl triton_ascend|triton_cuda|ascendc|cuda_c|cpp|tilelang_cuda|tilelang_npuir|pypto|swft|torch
+   --dsl ascendc|cpp|cuda_c|pypto|swft|tilelang_cuda|tilelang_npuir|torch|triton_ascend|triton_cuda
    [--framework torch|mindspore|numpy]
    (--devices <N[,M,...]> | --worker-url <host:port>)
    [--kernel <file>] [--max-rounds <N>]`
+
+  <!-- DSL list above must stay in lockstep with hw_detect._DSL_BACKEND.
+       parse_args.py and scaffold.py derive their copies from
+       hw_detect.list_supported_dsls(); this prose copy is the only manual one. -->
+
 
   **Hardware spec is exactly one of `--devices` (local eval) or
   `--worker-url` (remote).**
@@ -122,7 +127,13 @@ activation drops you straight into PLAN. (`--desc` mode and `--ref` without
 export AR_TASK_DIR="<task_dir from step 2>"
 ```
 
-The activation hook prints `[AR Phase: ...]` guidance. Follow it.
+The activation hook prints `[AR Phase: ...]` guidance on stderr. Follow it.
+
+**Do not** chain anything else onto this command to "also fetch guidance" —
+in particular, do not write `export AR_TASK_DIR=... && python .../phase_machine.py get_guidance ...`.
+`phase_machine.py` is a library, not a CLI; `hook_guard_bash` will reject
+the invocation. The hook emits guidance automatically — read its output
+on stderr and proceed.
 
 ## Step 4: Loop
 
@@ -133,21 +144,33 @@ Follow the phase guidance. Never stop between phases.
 - **BASELINE** — `python .autoresearch/scripts/baseline.py "$AR_TASK_DIR"`
   (append `--worker-url` if configured). If scaffold already ran baseline,
   this phase is skipped automatically.
-- **PLAN / DIAGNOSE / REPLAN** — run
-  `python .autoresearch/scripts/create_plan.py "$AR_TASK_DIR" @<path>` after
-  writing the XML `<items>` document to `<path>` with the Write tool (see the
-  hook guidance for the exact schema — XML is used instead of JSON to reduce
-  structural hallucinations). The canonical path is
-  `"$AR_TASK_DIR/.ar_state/plan_items.xml"`.
+- **PLAN / DIAGNOSE / REPLAN** — two-step flow, no path transcription:
 
-  **Do not** quote multi-line XML inline on the command line — on Windows,
-  bash / CreateProcess silently truncates it and the script then emits what
-  looks like a schema error (`"missing <desc>"` etc.) even though your XML is
-  correct. If you see that error after an inline invocation, stop retrying
-  the schema and switch to the `@<path>` form.
+  1. Use the **Write tool** to write your `<items>...</items>` XML to:
+     ```
+     $AR_TASK_DIR/.ar_state/plan_items.xml
+     ```
+     This path is **fixed**. Do not invent a different one (no `/tmp/...`,
+     no shell expansion games). The hook's PLAN/DIAGNOSE/REPLAN guidance
+     also prints this exact path — copy it from there.
 
-  Alternative when writing a file is not convenient: pass `-` as the second
-  argument and pipe the XML in on stdin via a single-quoted heredoc.
+  2. Run:
+     ```bash
+     python .autoresearch/scripts/create_plan.py "$AR_TASK_DIR"
+     ```
+     **No second argument.** `create_plan.py` reads from
+     `.ar_state/plan_items.xml` automatically. Adding `@/some/path` or an
+     inline XML string reintroduces the path-drift class of bugs this
+     two-step form exists to prevent (LLM Writes to one path, then passes
+     a different path to the script).
+
+  See the hook guidance for the exact XML schema — XML is used instead
+  of JSON to reduce structural hallucinations.
+
+  Alternatives (only when the canonical-path form is genuinely unsuitable,
+  e.g. an out-of-tree audit script):
+  - `create_plan.py "$AR_TASK_DIR" @<path>` reads from `<path>`.
+  - `create_plan.py "$AR_TASK_DIR" -` reads XML from stdin.
 
   When the hook's `additionalContext` gives you a TodoWrite payload, call
   TodoWrite with it verbatim.

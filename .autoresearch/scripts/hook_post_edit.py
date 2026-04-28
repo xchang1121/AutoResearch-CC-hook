@@ -11,7 +11,6 @@ plan.md is never a legal target for Edit/Write — hook_guard_edit blocks it
 at every phase and directs Claude to create_plan.py.
 """
 import os
-import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -22,49 +21,12 @@ from phase_machine import (
     validate_reference, validate_kernel, is_placeholder_file,
     EDIT, BASELINE, GENERATE_REF, GENERATE_KERNEL,
 )
+from git_utils import commit_in_task
 
 
 def _same_path(a: str, b: str) -> bool:
     norm = lambda p: os.path.normpath(os.path.abspath(p)).replace("\\", "/")
     return norm(a) == norm(b)
-
-
-def _commit_seed(task_dir: str, paths, message: str) -> str | None:
-    """Stage `paths` (task-dir-relative) and create a commit with `message`.
-
-    Makes the newly generated reference.py / seed kernel.py the git baseline
-    for downstream steps: _baseline_init records HEAD as baseline_commit,
-    rollback via `git checkout HEAD -- kernel.py` restores the seed (not the
-    scaffold placeholder), and hook_guard_edit's "uncommitted previous-round"
-    gate sees a clean tree on first entry to EDIT.
-
-    Silently no-ops when there's nothing to commit (e.g. file was already
-    committed by a prior path). Failures are logged to stderr but never abort
-    the phase transition — the hook can't refuse to advance phase just because
-    `git` is unhappy, that would strand the task.
-    """
-    try:
-        for p in paths:
-            full = os.path.join(task_dir, p)
-            if not os.path.exists(full):
-                continue
-            subprocess.run(["git", "add", "--", p],
-                           cwd=task_dir, capture_output=True, text=True, timeout=10)
-        r = subprocess.run(["git", "commit", "-m", message],
-                           cwd=task_dir, capture_output=True, text=True, timeout=10)
-        if r.returncode != 0:
-            blob = (r.stdout or "") + (r.stderr or "")
-            if "nothing to commit" in blob or "no changes added" in blob:
-                return None
-            print(f"[AR] WARNING: seed commit failed: {blob.strip()[-400:]}",
-                  file=sys.stderr)
-            return None
-        h = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
-                           cwd=task_dir, capture_output=True, text=True, timeout=5)
-        return h.stdout.strip() if h.returncode == 0 else None
-    except Exception as e:
-        print(f"[AR] WARNING: seed commit failed: {e}", file=sys.stderr)
-        return None
 
 
 def main():
@@ -103,16 +65,29 @@ def main():
                 f"until it passes."
             )
             sys.exit(0)
-        # Reference is good. Route to GENERATE_KERNEL if kernel.py is still
-        # the scaffold placeholder, else straight to BASELINE.
+        # Freeze the generated reference.py as a git baseline before advancing.
+        # If the commit fails we HOLD phase here — the alternative is silent
+        # advance with an uncommitted file, which surfaces as a misleading
+        # "previous round" block several phases later.
+        commit_ok, info = commit_in_task(
+            task_dir, ["reference.py"],
+            "autoresearch: seed reference.py (GENERATE_REF)",
+        )
+        if not commit_ok:
+            emit_status(
+                f"[AR] reference.py validated but seed commit FAILED — "
+                f"phase stays at GENERATE_REF.\n"
+                f"     git error: {info}\n"
+                f"     Resolve the git issue (e.g. clear .git/index.lock, "
+                f"check disk space, fix .git/config), then re-Edit reference.py "
+                f"to retry the commit."
+            )
+            sys.exit(0)
+        # Route to GENERATE_KERNEL if kernel.py is still the scaffold
+        # placeholder, else straight to BASELINE.
         next_phase = GENERATE_KERNEL if is_placeholder_file(
             os.path.join(task_dir, "kernel.py")
         ) else BASELINE
-        # Freeze the generated reference.py as a git baseline before advancing
-        # so later steps (baseline HEAD read, rollback on FAIL) see the seed,
-        # not the scaffold placeholder.
-        _commit_seed(task_dir, ["reference.py"],
-                     "autoresearch: seed reference.py (GENERATE_REF)")
         write_phase(task_dir, next_phase)
         emit_status(f"[AR] reference.py validated. Phase -> {next_phase}. {get_guidance(task_dir)}")
 
@@ -126,13 +101,25 @@ def main():
                 f"until it passes."
             )
             sys.exit(0)
-        # Freeze the seed kernel as git baseline. Without this, the first
-        # EDIT round's guard would misread the seed as "uncommitted previous-
-        # round leftover", and rollbacks would revert kernel.py to the
-        # scaffold TODO placeholder instead of the seed.
+        # Freeze the seed kernel as git baseline. If commit fails we HOLD
+        # phase at GENERATE_KERNEL — same reasoning as the GENERATE_REF
+        # branch above. The agent's next Edit re-fires the hook and retries.
         editable_files = list(config.editable_files) if config else ["kernel.py"]
-        _commit_seed(task_dir, editable_files,
-                     "autoresearch: seed kernel (GENERATE_KERNEL)")
+        commit_ok, info = commit_in_task(
+            task_dir, editable_files,
+            "autoresearch: seed kernel (GENERATE_KERNEL)",
+        )
+        if not commit_ok:
+            emit_status(
+                f"[AR] kernel.py validated but seed commit FAILED — "
+                f"phase stays at GENERATE_KERNEL.\n"
+                f"     git error: {info}\n"
+                f"     Resolve the git issue, then re-Edit kernel.py to "
+                f"retry the commit. Without a clean HEAD, the EDIT-phase "
+                f"git gate would later misreport this as 'uncommitted "
+                f"changes from previous round'."
+            )
+            sys.exit(0)
         write_phase(task_dir, BASELINE)
         emit_status(f"[AR] kernel.py validated. Phase -> BASELINE. {get_guidance(task_dir)}")
 

@@ -35,6 +35,9 @@ import shlex
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
+from hw_detect import list_supported_dsls
+
+_SUPPORTED_DSLS_DOC = "|".join(list_supported_dsls())
 
 
 def _emit(payload: dict) -> None:
@@ -88,7 +91,7 @@ def main():
             "missing": [
                 "--ref <file> or --desc \"...\"",
                 "--op-name <name>",
-                "--dsl <triton_ascend|triton_cuda|ascendc|cuda_c|...>",
+                f"--dsl <{_SUPPORTED_DSLS_DOC}>",
                 "--devices <N> or --worker-url <host:port>",
                 "--max-rounds (optional, default 20)",
             ],
@@ -169,7 +172,7 @@ def main():
         # the slash command level we want explicit DSL so the LLM never
         # silently picks one. Surfacing this here matches the rest of
         # the slash's contract (every flag value visible up front).
-        missing.append("--dsl <triton_ascend|triton_cuda|...>")
+        missing.append(f"--dsl <{_SUPPORTED_DSLS_DOC}>")
     if not args.devices and not args.worker_url:
         missing.append("--devices <N> or --worker-url <host:port>")
     if args.devices and args.worker_url:

@@ -53,6 +53,19 @@ def backend_for_dsl(dsl: str) -> str:
     return _DSL_BACKEND[key]
 
 
+def list_supported_dsls() -> tuple:
+    """Sorted tuple of all DSL names autoresearch knows about.
+
+    Single source of truth for the DSL menu surfaced to LLM-facing text
+    (scaffold --help, parse_args missing-fields payload, slash-command
+    docs). Earlier each surface hardcoded its own copy and they drifted
+    silently — parse_args had `<...>` ellipsis that signaled "list is
+    non-exhaustive, invent if needed", which is exactly the misread we
+    want to prevent.
+    """
+    return tuple(sorted(_DSL_BACKEND))
+
+
 def device_type_for_backend(backend: str) -> str:
     key = backend.lower()
     if key not in _BACKEND_DEVICE_TYPE:

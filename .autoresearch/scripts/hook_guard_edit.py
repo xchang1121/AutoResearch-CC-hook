@@ -38,11 +38,18 @@ def _rel_to_task(file_path: str, task_dir: str):
 
 def _edit_phase_git_gate(task_dir: str, editable_files):
     """In EDIT phase, if any editable file has uncommitted changes AND the
-    edit-started marker is absent, that's leftover from a previous round —
-    force Claude to run pipeline.py before editing more.
+    edit-started marker is absent, the tree is dirty without an in-progress
+    round to attribute it to. Force Claude to run pipeline.py to finalize.
 
     Sets the marker on success so subsequent edits within the same round
     pass through.
+
+    Note on the message wording: "uncommitted changes from previous round"
+    used to be the only diagnosis here, but the same gate also fires when
+    GENERATE_REF / GENERATE_KERNEL had a seed commit failure (now caught
+    earlier — phase holds at GENERATE_*) or when something off-flow edited
+    an editable file. Keep the message neutral so the LLM doesn't latch
+    onto "previous round" as the only possible cause.
     """
     try:
         repo_root = subprocess.run(
@@ -67,8 +74,11 @@ def _edit_phase_git_gate(task_dir: str, editable_files):
             continue
         if diff.stdout.strip():
             _block(
-                f"[AR] Uncommitted changes from previous round detected. "
-                f"Run pipeline.py to finalize before editing: "
+                f"[AR] Uncommitted change in {ef!r} on entry to EDIT phase. "
+                f"Likely an unfinalized previous round, but could also be "
+                f"a seed commit that didn't land or an off-flow edit. "
+                f"Run pipeline.py to settle the current diff into a round "
+                f"before editing more: "
                 f"python .autoresearch/scripts/pipeline.py \"{task_dir}\""
             )
 

@@ -49,6 +49,7 @@ PHASE_FILE = ".phase"
 PROGRESS_FILE = "progress.json"
 HISTORY_FILE = "history.jsonl"
 PLAN_FILE = "plan.md"
+PLAN_ITEMS_FILE = "plan_items.xml"  # canonical XML payload path under .ar_state/
 EDIT_MARKER_FILE = ".edit_started"
 HEARTBEAT_FILE = ".heartbeat"
 ACTIVE_TASK_FILE = ".active_task"  # under .autoresearch/, not .ar_state/
@@ -99,6 +100,57 @@ def is_placeholder_file(path: str) -> bool:
     if stripped.startswith(REFERENCE_PLACEHOLDER_PREFIX):
         return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Script invocation parser (single source for hook_guard_bash + hook_post_bash)
+# ---------------------------------------------------------------------------
+
+# Matches `python <flags> <script>.py`, `python3.10 ...`, `py -3 ...`, `bash
+# something.py`, etc. The two-step form (interpreter, optional flags, then
+# the .py argument) is what guards both hooks against false positives like
+# `cat baseline.py` or `git log -- baseline.py`. Earlier each hook had its
+# own regex; hook_guard_bash's was the simpler/laggard one and silently
+# disagreed with hook_post_bash on `python3 ...` and `bash ...py`. Single
+# definition here keeps them in lockstep.
+INVOKED_SCRIPT_RE = re.compile(
+    r'\b(?:python(?:\d+(?:\.\d+)?)?|py|bash|sh)\b'
+    r'(?:\s+-[A-Za-z][^\s"\']*)*'
+    r'\s+["\']?([^\s"\']+\.py)'
+)
+
+
+def parse_script_name(command: str) -> Optional[tuple]:
+    """Return (script_path_forward_slashes, basename) for any python/bash
+    invocation of a .py file in `command`, else None.
+
+    Used by hook_guard_bash to validate ANY invoked script (alias check,
+    library-not-CLI check, blessed check) — not restricted to scripts under
+    .autoresearch/scripts/.
+    """
+    m = INVOKED_SCRIPT_RE.search(command)
+    if not m:
+        return None
+    script_path = m.group(1).replace("\\", "/")
+    return script_path, os.path.basename(script_path)
+
+
+def parse_invoked_ar_script(command: str) -> Optional[str]:
+    """Basename of an .autoresearch/scripts/*.py invocation, or None.
+
+    Used by hook_post_bash to dispatch phase advances on
+    `baseline.py` / `pipeline.py` / `create_plan.py`. Restricts to scripts
+    under .autoresearch/scripts/ so unrelated python invocations don't
+    accidentally trigger phase logic.
+    """
+    parsed = parse_script_name(command)
+    if parsed is None:
+        return None
+    script_path, basename = parsed
+    if ".autoresearch/scripts/" not in script_path:
+        return None
+    return basename
+
 
 # File-based task_dir tracking (env vars don't persist across Bash calls)
 # Use a FIXED absolute path derived from the project root, not __file__
@@ -289,9 +341,39 @@ _PLAN_FIELD_RULES = (
     "example above; read them — each comment marks the spot where a "
     "field rule applies. Beyond schema: escape '&', '<', '>' in text as "
     "'&amp;', '&lt;', '&gt;' (or wrap the offending field in "
-    "<![CDATA[...]]>). If shell-quoting is awkward, write the XML to a "
-    "file and pass '@path.xml' as the second argument instead."
+    "<![CDATA[...]]>)."
 )
+
+
+def _create_plan_instruction(task_dir: str) -> str:
+    """Common 'how to invoke create_plan.py' block used by PLAN, DIAGNOSE,
+    and REPLAN guidance. Emits the canonical two-step flow:
+
+      1. Write XML to the FIXED path .ar_state/plan_items.xml.
+      2. Run create_plan.py with just <task_dir> — it reads from that path.
+
+    The fixed path eliminates the LLM-drift class where the model wrote
+    to one path and then passed a different `@<path>` to create_plan
+    (most often a hallucinated /tmp/... or a typoed task subdir).
+    """
+    xml_path = state_path(task_dir, PLAN_ITEMS_FILE)
+    return (
+        f"To create the plan, do EXACTLY these two steps:\n"
+        f"  1. Use the Write tool to write your <items>...</items> XML to:\n"
+        f"       {xml_path}\n"
+        f"     (Path is fixed — do NOT invent a different path, do NOT use "
+        f"/tmp/, do NOT pass it as a CLI arg later. The Write tool is the "
+        f"only thing that touches this path.)\n"
+        f"  2. Run:\n"
+        f"       python .autoresearch/scripts/create_plan.py \"{task_dir}\"\n"
+        f"     (No second argument. The script reads .ar_state/{PLAN_ITEMS_FILE} "
+        f"automatically. Adding `@/some/path` reintroduces the drift this "
+        f"two-step form exists to prevent.)\n"
+        f"\n"
+        f"XML schema (write this exact shape to the file in step 1):\n"
+        f"{_PLAN_XML_EXAMPLE}\n"
+        f"{_PLAN_FIELD_RULES}\n"
+    )
 
 
 def _is_phase_agnostic_bash(command: str) -> bool:
@@ -356,7 +438,7 @@ def check_edit(phase: str, rel_path: str, editable_files) -> tuple:
       - .ar_state/ranking.md: the FINISH-phase summary (phase-gated).
     """
     if rel_path.startswith(".ar_state/"):
-        if rel_path == ".ar_state/plan_items.xml":
+        if rel_path == f".ar_state/{PLAN_ITEMS_FILE}":
             return True, ""
         if rel_path == ".ar_state/ranking.md":
             if phase == FINISH:
@@ -367,15 +449,16 @@ def check_edit(phase: str, rel_path: str, editable_files) -> tuple:
             )
         if rel_path == f".ar_state/{PLAN_FILE}":
             return False, (
-                "plan.md is machine-generated — never hand-edit it. Use "
-                "`python .autoresearch/scripts/create_plan.py "
-                "\"<task_dir>\" @<path>` to propose a new plan."
+                f"plan.md is machine-generated — never hand-edit it. Write "
+                f"your <items>...</items> XML to .ar_state/{PLAN_ITEMS_FILE} "
+                f"with the Write tool, then run "
+                f"`python .autoresearch/scripts/create_plan.py \"<task_dir>\"`."
             )
         return False, (
             f"{rel_path!r} is machine-maintained state. Only "
-            ".ar_state/plan_items.xml (plan input) and .ar_state/ranking.md "
-            "(FINISH summary) are writable under .ar_state/; everything else "
-            "is owned by hooks and scripts."
+            f".ar_state/{PLAN_ITEMS_FILE} (plan input) and .ar_state/ranking.md "
+            f"(FINISH summary) are writable under .ar_state/; everything else "
+            f"is owned by hooks and scripts."
         )
 
     allowed_classes = _EDIT_RULES.get(phase, set())
@@ -837,9 +920,9 @@ def get_guidance(task_dir: str) -> str:
 
         return (f"[AR Phase: PLAN] "
                 f"Read task.yaml, editable files ({editable}), and reference.py.{skills_hint}{metric_hint}\n"
-                f"Then create the plan by running:\n"
-                f'python .autoresearch/scripts/create_plan.py "{task_dir}" \'{_PLAN_XML_EXAMPLE}\'\n'
-                f"{_PLAN_FIELD_RULES}\n"
+                f"\n"
+                f"{_create_plan_instruction(task_dir)}"
+                f"\n"
                 f"The script writes plan.md in the correct format. Hook validates and advances to EDIT.\n"
                 f"After plan creation, sync items to TodoWrite.")
 
@@ -910,11 +993,10 @@ def get_guidance(task_dir: str) -> str:
                 f"---END SUBAGENT PROMPT---\n"
                 f"Recent failures (already in your context, no need to "
                 f"re-fetch):\n{fail_summary}\n"
-                f"After the subagent returns, create NEW plan with >= 3 "
-                f"items:\n"
-                f'python .autoresearch/scripts/create_plan.py "{task_dir}" '
-                f"'{_PLAN_XML_EXAMPLE}'\n"
-                f"{_PLAN_FIELD_RULES}\n"
+                f"After the subagent returns, create a NEW plan with >= 3 items.\n"
+                f"\n"
+                f"{_create_plan_instruction(task_dir)}"
+                f"\n"
                 f"Items must be diverse: max 1 parameter-tuning item, rest "
                 f"must be structural changes.\n"
                 f"create_plan.py will REPLACE plan.md's Active Items — any "
@@ -945,9 +1027,9 @@ def get_guidance(task_dir: str) -> str:
             )
         return (f"[AR Phase: REPLAN] All items settled. Budget: {remaining} rounds left. "
                 f"Read .ar_state/history.jsonl. Analyze what worked/failed.\n"
-                f"To continue, create new plan:\n"
-                f'python .autoresearch/scripts/create_plan.py "{task_dir}" \'{_PLAN_XML_EXAMPLE}\'\n'
-                f"{_PLAN_FIELD_RULES}\n"
+                f"\n"
+                f"{_create_plan_instruction(task_dir)}"
+                f"\n"
                 f"Or if no promising directions, do nothing (hooks will advance to FINISH)."
                 f"{retry_hint}")
 

@@ -15,55 +15,12 @@ Output (stdout, last line):
 import argparse
 import json
 import os
-import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 from task_config import load_task_config, EvalResult, is_improvement, check_constraints
-from phase_machine import load_progress, save_progress, append_history
-
-
-def _git_repo_root(task_dir: str) -> str:
-    result = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        capture_output=True, text=True, cwd=task_dir,
-    )
-    return result.stdout.strip()
-
-
-def _git_commit(repo_root: str, task_dir: str, editable_files: list, description: str, metric_str: str) -> str | None:
-    """Git add + commit. Returns commit hash or None."""
-    for f in editable_files:
-        fpath = os.path.relpath(os.path.join(task_dir, f), repo_root)
-        subprocess.run(["git", "diff", "--", fpath], cwd=repo_root, capture_output=True)
-        subprocess.run(["git", "add", fpath], cwd=repo_root, capture_output=True)
-
-    msg = f"autoresearch: {description} | {metric_str}"
-    result = subprocess.run(
-        ["git", "commit", "-m", msg],
-        cwd=repo_root, capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        if "nothing to commit" in result.stdout + result.stderr:
-            return None
-        print(f"[keep_or_discard] git commit failed: {result.stderr}", file=sys.stderr)
-        return None
-
-    hash_result = subprocess.run(
-        ["git", "rev-parse", "--short", "HEAD"],
-        cwd=repo_root, capture_output=True, text=True,
-    )
-    return hash_result.stdout.strip() if hash_result.returncode == 0 else None
-
-
-def _git_rollback(repo_root: str, task_dir: str, editable_files: list):
-    """Rollback editable files to HEAD."""
-    for f in editable_files:
-        fpath = os.path.relpath(os.path.join(task_dir, f), repo_root)
-        subprocess.run(
-            ["git", "checkout", "HEAD", "--", fpath],
-            cwd=repo_root, capture_output=True,
-        )
+from phase_machine import load_progress, save_progress, append_history, auto_rollback
+from git_utils import commit_in_task
 
 
 def main():
@@ -93,7 +50,6 @@ def main():
         sys.exit(1)
 
     progress = load_progress(task_dir) or {}
-    repo_root = _git_repo_root(task_dir)
 
     eval_result = EvalResult(
         correctness=eval_data.get("correctness", False),
@@ -141,13 +97,20 @@ def main():
     if decision == "KEEP":
         metric_val = eval_result.metrics.get(config.primary_metric)
         metric_str = f"{config.primary_metric}={metric_val}"
-        commit_hash = _git_commit(repo_root, task_dir, config.editable_files, args.description, metric_str)
+        ok, info = commit_in_task(
+            task_dir,
+            config.editable_files,
+            f"autoresearch: {args.description} | {metric_str}",
+        )
+        commit_hash = info if ok and info != "noop" else None
+        if not ok:
+            print(f"[keep_or_discard] git commit failed: {info}", file=sys.stderr)
         progress["best_metric"] = metric_val
         progress["best_commit"] = commit_hash
         progress["consecutive_failures"] = 0
         print(f"[keep_or_discard] KEEP: {metric_str} (commit: {commit_hash})", file=sys.stderr)
     else:
-        _git_rollback(repo_root, task_dir, config.editable_files)
+        auto_rollback(task_dir)
         print(f"[keep_or_discard] {decision}: rolled back editable files", file=sys.stderr)
 
     progress["eval_rounds"] = round_num

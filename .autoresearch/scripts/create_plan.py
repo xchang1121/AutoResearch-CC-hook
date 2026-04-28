@@ -6,16 +6,26 @@ Claude provides content, this script handles format. XML is preferred over JSON
 because LLMs hallucinate fewer structural/escape errors in tag-delimited text.
 
 Usage:
+    python .autoresearch/scripts/create_plan.py <task_dir>
     python .autoresearch/scripts/create_plan.py <task_dir> '<items_xml>'
 
-items_xml format:
-    <items>
-      <item>
-        <desc>short sentence describing the change</desc>
-        <rationale>30-400 char explanation of why it should help</rationale>
-      </item>
-      ...
-    </items>
+The single-arg form (no <items_xml>) is preferred — it reads from the
+canonical path `<task_dir>/.ar_state/plan_items.xml`. The recommended
+flow is:
+
+  1. Write the XML to <task_dir>/.ar_state/plan_items.xml using the
+     Write tool (Claude already has $AR_TASK_DIR; the path is fixed).
+  2. Run `create_plan.py "<task_dir>"` — no second arg.
+
+This eliminates a class of LLM drift where the path the model wrote to
+and the path it later passed to create_plan.py disagreed (`@/tmp/x.xml`
+vs the actual `.ar_state/plan_items.xml` write target, etc.). With one
+hardcoded canonical path, the model can't transcribe it wrong because
+the model never types it twice.
+
+See `phase_machine._PLAN_XML_EXAMPLE` for the canonical schema (with
+inline schema-reminder comments). That constant is the single source of
+truth — keep this file's parsing rules in lockstep with it.
 
 Behavior:
   Every successful run REPLACES plan.md's `## Active Items` with the new
@@ -52,7 +62,7 @@ import xml.etree.ElementTree as ET
 sys.path.insert(0, os.path.dirname(__file__))
 from phase_machine import (
     load_progress, save_progress, get_plan_items,
-    plan_path, progress_path,
+    plan_path, progress_path, PLAN_ITEMS_FILE,
 )
 
 
@@ -74,7 +84,12 @@ _STOPWORDS = {"the", "a", "to", "of", "in", "for", "and", "with", "from", "by",
 # Tracks where the XML payload came from so error messages can steer the
 # caller toward a robust input channel when argv looks suspicious. Set in
 # main() before any _fail() call that depends on parsed content.
-_SOURCE_MODE = "argv"  # one of: "argv", "file", "stdin"
+_SOURCE_MODE = "argv"  # one of: "argv", "file", "stdin", "default-file"
+
+# Canonical path the slash command's PLAN/DIAGNOSE/REPLAN guidance steers
+# the LLM to write to. Hardcoded so create_plan.py can default to it when
+# called with just <task_dir> — no path transcription required.
+_DEFAULT_XML_RELPATH = os.path.join(".ar_state", PLAN_ITEMS_FILE)
 
 
 def _fail(msg: str):
@@ -281,10 +296,33 @@ def _render_plan(version: int, item_ids: list, items: list, settled_rows: str) -
 
 def main():
     global _SOURCE_MODE
+    if len(sys.argv) < 2:
+        _fail("Usage: create_plan.py <task_dir> [<items_xml> | @<path> | -]")
     task_dir = sys.argv[1]
-    arg = sys.argv[2]
+    arg = sys.argv[2] if len(sys.argv) > 2 else None
 
-    if arg == "-":
+    if arg is None:
+        # Single-arg form: read from the canonical path. This is the form
+        # the slash command guidance now recommends — Claude Writes to the
+        # fixed location, then runs create_plan with just <task_dir>, never
+        # transcribing the path twice.
+        _SOURCE_MODE = "default-file"
+        path = os.path.join(task_dir, _DEFAULT_XML_RELPATH)
+        if not os.path.exists(path):
+            _fail(
+                f"No XML payload provided and the default file does not "
+                f"exist: {path!r}.\nWrite the <items>...</items> XML to "
+                f"that path with the Write tool, then re-run "
+                f"`create_plan.py \"{task_dir}\"` — or pass the XML "
+                f"explicitly as a second arg (inline / '@<path>' / '-' "
+                f"for stdin)."
+            )
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                xml_str = f.read()
+        except OSError as e:
+            _fail(f"Cannot read XML from default {path!r}: {e}")
+    elif arg == "-":
         _SOURCE_MODE = "stdin"
         xml_str = sys.stdin.read()
     elif arg.startswith("@"):

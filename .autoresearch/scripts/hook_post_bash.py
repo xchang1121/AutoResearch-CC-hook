@@ -30,6 +30,7 @@ from phase_machine import (
     get_task_dir, set_task_dir, get_active_item, touch_heartbeat,
     load_progress, update_progress,
     validate_reference, validate_kernel, is_placeholder_file,
+    parse_invoked_ar_script,
     progress_path, history_path, plan_path, edit_marker_path, state_path,
     PHASE_FILE,
     BASELINE, PLAN, EDIT, DIAGNOSE, REPLAN, GENERATE_REF, GENERATE_KERNEL,
@@ -43,33 +44,9 @@ def _activation_target(command: str) -> str | None:
     return m.group(1) if m else None
 
 
-# Mirror hook_guard_bash's invocation regex so the post-handler accepts the
-# same set of commands the pre-handler does. Without this, dispatch fell
-# back to `"baseline.py" in command` substring matching, which fires on
-# `cat baseline.py`, `git log -- baseline.py`, `python -c "print('baseline.py')"`,
-# or any path that happens to contain the script name — silently advancing
-# the phase when no script actually ran.
-_INVOKED_SCRIPT_RE = re.compile(
-    r'\b(?:python(?:\d+(?:\.\d+)?)?|py|bash|sh)\b'
-    r'(?:\s+-[A-Za-z][^\s"\']*)*'
-    r'\s+["\']?([^\s"\']+\.py)'
-)
-
-
-def _invoked_script(command: str) -> str | None:
-    """Basename of an .autoresearch/scripts/*.py invocation, or None.
-
-    Substring matches are NOT enough — `cat baseline.py` would falsely
-    advance phase. Mirror the regex hook_guard_bash already uses so the
-    post-handler agrees with the guard on what counts as an invocation.
-    """
-    m = _INVOKED_SCRIPT_RE.search(command)
-    if not m:
-        return None
-    script_path = m.group(1).replace("\\", "/")
-    if ".autoresearch/scripts/" not in script_path:
-        return None
-    return os.path.basename(script_path)
+# Script-invocation parsing lives in phase_machine.parse_invoked_ar_script —
+# single regex shared with hook_guard_bash to avoid silent disagreement on
+# edge cases like `python3 baseline.py` or `bash some.py`.
 
 
 def _clean_stale_edit_marker(task_dir: str):
@@ -196,7 +173,7 @@ def main():
     touch_heartbeat(task_dir)
 
     phase = read_phase(task_dir)
-    invoked = _invoked_script(command)
+    invoked = parse_invoked_ar_script(command)
 
     if invoked == "baseline.py" and phase == BASELINE:
         progress = load_progress(task_dir)

@@ -71,9 +71,16 @@ Then Read the SKILL.md files that match your optimization direction. Each SKILL.
 
 ## Invariants (hook-driven flow)
 
-Step-by-step actions are injected by hooks as `[AR Phase: ...]` messages (see
-`phase_machine.get_guidance()`). Do not try to memorize the flow — follow the
-latest hook message. The following invariants are non-negotiable:
+Step-by-step actions are injected by hooks as `[AR Phase: ...]` messages.
+The text is generated INTERNALLY by hooks and emitted on stderr; you only
+consume those messages. Do not try to fetch guidance yourself — there is
+no CLI for it, `phase_machine.py` is a library and invoking it as a script
+is rejected by `hook_guard_bash`. If you have not seen a fresh
+`[AR Phase: ...]` message, wait for one (run the next legal command and
+the hook will emit guidance), don't try to "refresh" it manually.
+
+Do not try to memorize the flow — follow the latest hook message. The
+following invariants are non-negotiable:
 
 1. **`.ar_state/plan.md` is the source of truth.** Only `create_plan.py` and
    `settle.py` / `pipeline.py` may write to it. Never hand-edit `plan.md`.

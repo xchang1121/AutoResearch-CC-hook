@@ -176,15 +176,20 @@ def _write(task_dir: str, rel_path: str, content: str):
 
 
 def _git_init(task_dir: str):
-    """Initialize git repo and create baseline commit."""
-    def _run(cmd):
-        subprocess.run(cmd, cwd=task_dir, capture_output=True, check=True)
+    """Initialize git repo and create baseline commit.
 
-    _run(["git", "init"])
-    _run(["git", "config", "user.name", "autoresearch"])
-    _run(["git", "config", "user.email", "auto@research"])
-    _run(["git", "add", "."])
-    _run(["git", "commit", "-m", "scaffold: baseline"])
+    The actual commit goes through git_utils.commit_in_task — same code
+    path hook_post_edit uses for seed commits, so reliability differences
+    between Mode-1 (scaffold-time) and Mode-2 (GENERATE_KERNEL-time)
+    commits are eliminated.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from git_utils import commit_in_task
+
+    subprocess.run(["git", "init"], cwd=task_dir, capture_output=True, check=True)
+    ok, info = commit_in_task(task_dir, ["."], "scaffold: baseline")
+    if not ok:
+        raise RuntimeError(f"scaffold baseline commit failed: {info}")
 
 
 # ---------------------------------------------------------------------------
@@ -213,11 +218,15 @@ def _make_arg_parser() -> argparse.ArgumentParser:
     # DSL = primary pivot. backend is a pure function of DSL; arch is
     # derived from hardware (local: npu-smi on --devices; remote: worker
     # /api/v1/status). Neither needs to be user-facing.
+    # Pull the canonical DSL list from hw_detect at construction time so
+    # the help string can't drift from _DSL_BACKEND (and so we don't
+    # silently prime the LLM with a stale or abbreviated list — this used
+    # to read `--devices 0` from a stale example, etc.).
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from hw_detect import list_supported_dsls
     parser.add_argument("--dsl", default=None,
-                        help="DSL name (triton_ascend, triton_cuda, ascendc, "
-                             "cuda_c, cpp, tilelang_cuda, tilelang_npuir, "
-                             "pypto, swft, torch). Defaults to "
-                             "config.yaml:default_dsl.")
+                        help=f"DSL name (one of: {', '.join(list_supported_dsls())}). "
+                             f"Defaults to config.yaml:default_dsl.")
     parser.add_argument("--framework", default="torch",
                         choices=["torch", "mindspore", "numpy"],
                         help="Framework for the reference/kernel code "
