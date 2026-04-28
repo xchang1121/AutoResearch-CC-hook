@@ -25,7 +25,7 @@ _BLESSED_SCRIPTS = {
     "quick_check.py", "eval_wrapper.py", "keep_or_discard.py",
     "scaffold.py", "baseline.py", "_baseline_init.py", "dashboard.py",
     "create_plan.py", "settle.py", "pipeline.py", "resume.py",
-    "code_checker.py",
+    "code_checker.py", "parse_args.py",
 }
 
 # Alias → real script mapping lives in .autoresearch/config.yaml under

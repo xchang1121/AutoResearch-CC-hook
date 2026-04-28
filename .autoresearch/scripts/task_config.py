@@ -938,7 +938,21 @@ def run_local_eval(task_dir: str, config: TaskConfig,
     elif config.devices:
         dev = int(config.devices[0])
     else:
+        # No explicit device on the call AND task.yaml has no `devices`
+        # field — fall back to NPU 0. We emit a loud warning instead of
+        # raising because legitimate callers (notebooks, ad-hoc reruns)
+        # do hit this path, but a SILENT fallback to 0 is what once let
+        # `--devices 6` get rewritten to 0 and OOM on a busy NPU. The
+        # warning surfaces the implicit choice so the user can spot it
+        # before sinking minutes into a wrong-card eval.
         dev = 0
+        print(
+            "[local_eval] WARNING: no device specified (no device_id arg, "
+            "no `devices` field in task.yaml). Defaulting to NPU 0. If "
+            "another card is intended, pass --device-id N or set "
+            "`devices: [N]` in task.yaml.",
+            file=sys.stderr,
+        )
     try:
         package = _build_package(task_dir, config, device_id=dev)
     except Exception as e:

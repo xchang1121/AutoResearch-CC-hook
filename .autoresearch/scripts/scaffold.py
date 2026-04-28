@@ -13,17 +13,23 @@ Zero external dependency. Creates a self-contained task directory with:
   - .git/ (baseline commit)
 
 Usage:
-    # Local eval on NPU 5 (arch auto-derived via npu-smi):
-    python .autoresearch/scripts/scaffold.py --ref reference.py --op-name my_op --dsl triton_ascend --devices 5
+    # NOTE: --devices values below are placeholders; pass the actual free
+    # device id at invocation time. Earlier versions of these examples all
+    # used `--devices 0`, which biased the LLM driving /autoresearch into
+    # silently rewriting the user's --devices to 0 on hook-blocked retries.
+    # parse_args.py is now the single source of truth for flag values.
+
+    # Local eval (arch auto-derived via npu-smi):
+    python .autoresearch/scripts/scaffold.py --ref reference.py --op-name my_op --dsl triton_ascend --devices <DEV>
 
     # With initial kernel:
-    python .autoresearch/scripts/scaffold.py --ref reference.py --kernel kernel.py --op-name my_op --dsl triton_cuda --devices 0
+    python .autoresearch/scripts/scaffold.py --ref reference.py --kernel kernel.py --op-name my_op --dsl triton_cuda --devices <DEV>
 
     # Remote worker (arch fetched from /api/v1/status):
     python .autoresearch/scripts/scaffold.py --ref reference.py --op-name my_op --dsl triton_ascend --worker-url 127.0.0.1:9111
 
     # Custom output directory:
-    python .autoresearch/scripts/scaffold.py --ref reference.py --op-name my_op --dsl triton_cuda --devices 0 --output-dir /tmp/tasks
+    python .autoresearch/scripts/scaffold.py --ref reference.py --op-name my_op --dsl triton_cuda --devices <DEV> --output-dir /tmp/tasks
 
 Output (last line of stdout):
     {"task_dir": "/absolute/path/to/task_dir", "status": "ok"}
@@ -185,7 +191,13 @@ def _git_init(task_dir: str):
 # CLI
 # ---------------------------------------------------------------------------
 
-def main():
+def _make_arg_parser() -> argparse.ArgumentParser:
+    """Construct scaffold's argparse, with no side effects.
+
+    Extracted out of main() so parse_args.py can reuse the exact same flag
+    spec without duplicating it. Single source of truth for which flags
+    /autoresearch accepts and how they're typed/defaulted.
+    """
     parser = argparse.ArgumentParser(
         description="Scaffold a task directory for Claude Code autoresearch",
     )
@@ -233,7 +245,11 @@ def main():
                               "kernel style. Writes "
                               "`code_checker: {enabled: false}` into "
                               "task.yaml; flip the field to re-enable later."))
+    return parser
 
+
+def main():
+    parser = _make_arg_parser()
     args = parser.parse_args()
 
     # Resolve DSL (and via it, backend).

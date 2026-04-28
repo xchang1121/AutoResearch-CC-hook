@@ -176,10 +176,26 @@ _GLOBAL_BASH_BANS = {
     "settle.py":         "subprocess-only (invoked by pipeline.py)",
 }
 
-# Read-only command prefixes allowed in every phase.
-_READONLY_PATTERNS = [
+# Commands the bash gate always allows, regardless of phase.
+# Two reasons something lands here:
+#   (a) Phase-agnostic inspection — ls/cat/head/tail/grep/wc/find,
+#       read-only git, dashboard.py, parse_args.py, echo, pwd. No side
+#       effects on task state.
+#   (b) Task lifecycle ops — scaffold.py (creates a new task) and resume.py
+#       (switches the active task pointer). These have side effects, but
+#       the side effects are about WHICH task is active, not about the
+#       inner state of an already-active task. The phase machine is meant
+#       to keep the agent on the rails of a SINGLE task's optimization
+#       loop; lifecycle ops sit above that. If they were subject to phase
+#       rules, /autoresearch could not start a new task whenever a prior
+#       `.active_task` happened to point at one mid-BASELINE — exactly
+#       the deadlock that motivated this list.
+_PHASE_AGNOSTIC_PATTERNS = [
     r"^(ls|cat|head|tail|wc|find|grep|git\s+(log|diff|status|show|branch))",
     r"dashboard\.py",
+    r"parse_args\.py",
+    r"scaffold\.py",
+    r"resume\.py",
     r"^echo\s",
     r"^pwd$",
 ]
@@ -278,8 +294,8 @@ _PLAN_FIELD_RULES = (
 )
 
 
-def _is_readonly_bash(command: str) -> bool:
-    for pat in _READONLY_PATTERNS:
+def _is_phase_agnostic_bash(command: str) -> bool:
+    for pat in _PHASE_AGNOSTIC_PATTERNS:
         if re.search(pat, command.strip()):
             return True
     return False
@@ -290,7 +306,9 @@ def check_bash(phase: str, command: str) -> tuple:
 
     Decision order:
       1. Global bans (subprocess-only scripts, `git commit`) — always block.
-      2. Read-only commands — always allow.
+      2. Phase-agnostic commands — always allow (read-only inspection plus
+         lifecycle ops like scaffold.py / resume.py that manage which task
+         is active).
       3. Activation (`export AR_TASK_DIR=…`) — always allow; hook_post_bash
          uses it to switch tasks regardless of current phase.
       4. Phase policy (strict whitelist or permissive blocklist).
@@ -302,7 +320,7 @@ def check_bash(phase: str, command: str) -> tuple:
         return False, ("manual 'git commit' forbidden — commits are produced "
                        "by pipeline.py via keep_or_discard")
 
-    if _is_readonly_bash(command):
+    if _is_phase_agnostic_bash(command):
         return True, ""
     if "export AR_TASK_DIR=" in command:
         return True, ""
