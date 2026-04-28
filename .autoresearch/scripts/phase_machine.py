@@ -714,17 +714,17 @@ def validate_kernel(task_dir: str) -> tuple[bool, str]:
 def compute_next_phase(task_dir: str) -> str:
     """After a pipeline round finishes, mechanically determine the next phase.
 
-    Reads progress.json for counters and plan.md for remaining items.
+    `eval_rounds >= max_rounds` is the only legitimate FINISH trigger; the
+    `not progress` branch is an error fallback for unrecoverable state.
     """
     progress = load_progress(task_dir)
     if not progress:
-        return FINISH
+        return FINISH  # error fallback: corrupt/missing progress.json
 
     consecutive_failures = progress.get("consecutive_failures", 0)
     eval_rounds = progress.get("eval_rounds", 0)
     max_rounds = progress.get("max_rounds", 999)
 
-    # Budget exhausted
     if eval_rounds >= max_rounds:
         return FINISH
 
@@ -1029,8 +1029,6 @@ def get_guidance(task_dir: str) -> str:
                 f"Read .ar_state/history.jsonl. Analyze what worked/failed.\n"
                 f"\n"
                 f"{_create_plan_instruction(task_dir)}"
-                f"\n"
-                f"Or if no promising directions, do nothing (hooks will advance to FINISH)."
                 f"{retry_hint}")
 
     if phase == FINISH:
