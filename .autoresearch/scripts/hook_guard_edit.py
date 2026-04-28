@@ -8,28 +8,22 @@ This hook handles two concerns check_edit can't express as a pure function:
   1. Files outside the task dir are always allowed (out of scope).
   2. EDIT-phase dirty-tree gate — needs live git state, not just phase.
 """
-import json
 import os
 import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from hook_utils import read_hook_input
+from hook_utils import read_hook_input, block_decision, norm_abs_fwd_slash
 from phase_machine import (
     read_phase, get_guidance, get_task_dir, touch_heartbeat,
     edit_marker_path, check_edit, EDIT,
 )
 
 
-def _block(reason):
-    print(json.dumps({"decision": "block", "reason": reason}))
-    sys.exit(2)
-
-
 def _rel_to_task(file_path: str, task_dir: str):
     """Return task-relative forward-slash path, or None if outside task_dir."""
-    fp = os.path.normpath(os.path.abspath(file_path)).replace("\\", "/")
-    td = os.path.normpath(os.path.abspath(task_dir)).replace("\\", "/")
+    fp = norm_abs_fwd_slash(file_path)
+    td = norm_abs_fwd_slash(task_dir)
     if not fp.startswith(td):
         return None
     return os.path.relpath(file_path, task_dir).replace("\\", "/")
@@ -72,7 +66,7 @@ def _edit_phase_git_gate(task_dir: str, editable_files):
         except Exception:
             continue
         if diff.stdout.strip():
-            _block(
+            block_decision(
                 f"[AR] Uncommitted change in {ef!r} on entry to EDIT phase. "
                 f"Likely an unfinalized previous round, but could also be "
                 f"a seed commit that didn't land or an off-flow edit. "
@@ -112,7 +106,7 @@ def main():
     phase = read_phase(task_dir)
     ok, reason = check_edit(phase, rel, editable_files)
     if not ok:
-        _block(f"[AR] {reason}. {get_guidance(task_dir)}")
+        block_decision(f"[AR] {reason}. {get_guidance(task_dir)}")
 
     # Phase says OK. For EDIT writes to editable files, also check the git
     # state gate (dirty tree on entry to a new round).

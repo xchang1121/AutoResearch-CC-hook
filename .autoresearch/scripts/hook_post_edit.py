@@ -14,7 +14,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from hook_utils import read_hook_input, emit_status
+from hook_utils import read_hook_input, emit_status, norm_abs_fwd_slash
 from phase_machine import (
     read_phase, write_phase, get_guidance, _load_config_safe,
     get_task_dir, touch_heartbeat,
@@ -25,8 +25,7 @@ from git_utils import commit_in_task
 
 
 def _same_path(a: str, b: str) -> bool:
-    norm = lambda p: os.path.normpath(os.path.abspath(p)).replace("\\", "/")
-    return norm(a) == norm(b)
+    return norm_abs_fwd_slash(a) == norm_abs_fwd_slash(b)
 
 
 def main():

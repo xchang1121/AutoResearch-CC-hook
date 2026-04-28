@@ -2,8 +2,33 @@
 Shared utilities for Claude Code hook scripts.
 """
 import json
+import os
 import re
 import sys
+
+
+def block_decision(reason: str):
+    """Emit a PreToolUse block decision and exit.
+
+    Wire format `{"decision": "block", "reason": ...}` is what Claude Code's
+    hook framework expects to abort the in-flight tool call. Exit code 2
+    means "hook ran successfully and reached a block verdict"; 0 means
+    proceed, non-zero non-2 means the hook itself errored. Single helper
+    so hook_guard_bash and hook_guard_edit can't drift on the protocol.
+    """
+    print(json.dumps({"decision": "block", "reason": reason}))
+    sys.exit(2)
+
+
+def norm_abs_fwd_slash(p: str) -> str:
+    """Absolute, normalized, forward-slash form of a path.
+
+    Used by hook guards to compare paths (and to test prefix membership)
+    in a Windows-friendly way. Folded out of the inline lambda in
+    hook_post_edit and the duplicated pair of lines in
+    hook_guard_edit._rel_to_task.
+    """
+    return os.path.normpath(os.path.abspath(p)).replace("\\", "/")
 
 
 def read_hook_input() -> dict:

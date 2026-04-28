@@ -8,12 +8,11 @@ This hook only handles two hook-specific concerns:
   2. Turning check_bash's (False, reason) into the `{decision: block}` wire
      format Claude Code expects.
 """
-import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from hook_utils import read_hook_input
+from hook_utils import read_hook_input, block_decision
 from phase_machine import (
     read_phase, get_guidance, get_task_dir, touch_heartbeat, check_bash,
     parse_script_name,
@@ -52,11 +51,6 @@ _LIBRARY_NOT_CLI = {
 # `hallucinated_scripts`; loaded lazily so the config can be hot-edited.
 
 
-def _block(reason):
-    print(json.dumps({"decision": "block", "reason": reason}))
-    sys.exit(2)
-
-
 def _script_name_check(command: str):
     """Flag unknown / hallucinated .autoresearch/scripts/*.py names before
     they reach the phase rule — gives a clearer message than 'not allowed'.
@@ -75,12 +69,12 @@ def _script_name_check(command: str):
     aliases = hallucinated_scripts()
     if script_name in aliases:
         real = aliases[script_name]
-        _block(f"[AR] '{script_name}' does not exist. "
+        block_decision(f"[AR] '{script_name}' does not exist. "
                f"Use: python .autoresearch/scripts/{real}")
     if script_name in _LIBRARY_NOT_CLI:
-        _block(f"[AR] {_LIBRARY_NOT_CLI[script_name]}")
+        block_decision(f"[AR] {_LIBRARY_NOT_CLI[script_name]}")
     if ".autoresearch/scripts/" in script_path and script_name not in _BLESSED_SCRIPTS:
-        _block(f"[AR] Unknown script '{script_name}'. "
+        block_decision(f"[AR] Unknown script '{script_name}'. "
                f"Valid scripts: {sorted(_BLESSED_SCRIPTS)}")
 
 
@@ -100,7 +94,7 @@ def main():
     phase = read_phase(task_dir)
     ok, reason = check_bash(phase, command)
     if not ok:
-        _block(f"[AR] {reason}. {get_guidance(task_dir)}")
+        block_decision(f"[AR] {reason}. {get_guidance(task_dir)}")
     sys.exit(0)
 
 
