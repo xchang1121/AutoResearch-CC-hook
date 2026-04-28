@@ -864,17 +864,33 @@ def run_remote_eval(task_dir: str, config: TaskConfig,
     task_id = f"{config.name}_{uuid.uuid4().hex[:8]}"
     print(f"[remote_eval] Using worker: {worker_url}", file=sys.stderr)
 
-    # Build package
-    try:
-        package = _build_package(task_dir, config)
-    except Exception as e:
-        return EvalResult(correctness=False, error=f"failed to build package: {e}")
-
-    # Acquire device
-    device_id = _worker_acquire_device(worker_url, task_id)
-    if device_id is None:
-        print("[remote_eval] WARNING: acquire_device returned None, proceeding anyway",
+    # Acquire device BEFORE building the package. The vendored worker
+    # (`ar_vendored/core/worker/local_worker.py`) by contract trusts the
+    # device_id baked into the generated verify/profile scripts and does
+    # NOT override DEVICE_ID env at execution time. If we built the
+    # package first and acquired the device second, the package would
+    # bake in `_build_package`'s default (device_id=0) and the entire
+    # multi-device device_pool would be ineffective — every task would
+    # land on NPU 0 regardless of which slot was acquired.
+    acquired_id = _worker_acquire_device(worker_url, task_id)
+    if acquired_id is None:
+        print("[remote_eval] WARNING: acquire_device returned None; falling "
+              "back to device 0 baked into the package. The release call "
+              "in the finally block will be skipped — no device to release.",
               file=sys.stderr)
+        device_id = 0
+    else:
+        device_id = acquired_id
+
+    # Build package — device_id is now the acquired slot (or 0 fallback),
+    # baked into the generated verify/profile scripts so the worker runs
+    # them on the right card.
+    try:
+        package = _build_package(task_dir, config, device_id=device_id)
+    except Exception as e:
+        if acquired_id is not None:
+            _worker_release_device(worker_url, task_id, acquired_id)
+        return EvalResult(correctness=False, error=f"failed to build package: {e}")
 
     try:
         # Step 1: Verify (correctness check)
@@ -908,9 +924,11 @@ def run_remote_eval(task_dir: str, config: TaskConfig,
         return _assemble_eval_result(verify_resp, profile_resp)
 
     finally:
-        # Always release device
-        if device_id is not None:
-            _worker_release_device(worker_url, task_id, device_id)
+        # Release only what we actually acquired. The fallback path sets
+        # device_id=0 without calling acquire — releasing that would
+        # decrement the pool's count for a slot we never reserved.
+        if acquired_id is not None:
+            _worker_release_device(worker_url, task_id, acquired_id)
 
 
 # ---------------------------------------------------------------------------

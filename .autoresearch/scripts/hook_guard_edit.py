@@ -13,7 +13,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from hook_utils import read_hook_input, block_decision, norm_abs_fwd_slash
+from hook_utils import read_hook_input, block_decision
 from phase_machine import (
     read_phase, get_guidance, get_task_dir, touch_heartbeat,
     edit_marker_path, check_edit, EDIT,
@@ -21,10 +21,29 @@ from phase_machine import (
 
 
 def _rel_to_task(file_path: str, task_dir: str):
-    """Return task-relative forward-slash path, or None if outside task_dir."""
-    fp = norm_abs_fwd_slash(file_path)
-    td = norm_abs_fwd_slash(task_dir)
-    if not fp.startswith(td):
+    """Return task-relative forward-slash path, or None if outside task_dir.
+
+    Uses os.path.commonpath to test containment instead of `startswith`,
+    which would false-match siblings whose name is a prefix of the active
+    task's name (e.g. file in `ar_tasks/sinkhorn` would be misidentified
+    as inside the active task `ar_tasks/sinkhorn_v2`). With unique
+    timestamp+hash suffixes from scaffold this collision is rare in
+    practice but the wrong primitive — the right test is genuine path
+    ancestry, not string prefix.
+
+    Containment check uses native-separator paths (commonpath returns
+    os.sep-form regardless of input), THEN converts the relative result
+    to forward-slash for downstream check_edit which compares against
+    forward-slash patterns.
+    """
+    fp_native = os.path.normpath(os.path.abspath(file_path))
+    td_native = os.path.normpath(os.path.abspath(task_dir))
+    try:
+        if os.path.commonpath([fp_native, td_native]) != td_native:
+            return None
+    except ValueError:
+        # commonpath raises on cross-drive paths (Windows) and on
+        # absolute-vs-relative mixes — both mean fp is outside task_dir.
         return None
     return os.path.relpath(file_path, task_dir).replace("\\", "/")
 
@@ -81,9 +100,12 @@ def _edit_phase_git_gate(task_dir: str, editable_files):
         f.write("1")
 
 
+_WRITE_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+
+
 def main():
     hook_input = read_hook_input()
-    if hook_input.get("tool_name", "") not in ("Edit", "Write"):
+    if hook_input.get("tool_name", "") not in _WRITE_TOOLS:
         sys.exit(0)
 
     task_dir = get_task_dir()

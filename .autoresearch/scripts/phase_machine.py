@@ -379,11 +379,36 @@ def _create_plan_instruction(task_dir: str) -> str:
     )
 
 
-def _is_phase_agnostic_bash(command: str) -> bool:
+def _segment_is_phase_agnostic(segment: str) -> bool:
+    s = segment.strip()
+    if not s:
+        return True  # empty segments (trailing `&&`) don't add restrictions
     for pat in _PHASE_AGNOSTIC_PATTERNS:
-        if re.search(pat, command.strip()):
+        if re.search(pat, s):
             return True
     return False
+
+
+# Bash separators used to chain commands. We split on these and require EVERY
+# segment to be phase-agnostic before taking the agnostic shortcut. The
+# previous regex only anchored to the start of the whole string, so
+# `ls && python pipeline.py` matched `^ls`, returned True, and bypassed the
+# phase rule that would have blocked pipeline.py in BASELINE phase.
+# Patterns to consider as separators: && || ; | (newline / `&` standalone
+# left out — the model rarely uses those in slash-issued commands and bash
+# treats `&` as backgrounding rather than chaining).
+_BASH_CHAIN_SEPARATOR_RE = re.compile(r'&&|\|\||;|\|')
+
+
+def _is_phase_agnostic_bash(command: str) -> bool:
+    """True iff every chain segment in `command` is phase-agnostic.
+
+    A single chained call where any segment is non-agnostic falls through
+    to the per-phase policy, where it'll be matched against the strict
+    required-substrings or permissive banned-substrings as appropriate.
+    """
+    segments = _BASH_CHAIN_SEPARATOR_RE.split(command)
+    return all(_segment_is_phase_agnostic(s) for s in segments)
 
 
 def check_bash(phase: str, command: str) -> tuple:

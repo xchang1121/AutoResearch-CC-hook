@@ -28,9 +28,12 @@ def _same_path(a: str, b: str) -> bool:
     return norm_abs_fwd_slash(a) == norm_abs_fwd_slash(b)
 
 
+_WRITE_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+
+
 def main():
     hook_input = read_hook_input()
-    if hook_input.get("tool_name", "") not in ("Edit", "Write"):
+    if hook_input.get("tool_name", "") not in _WRITE_TOOLS:
         sys.exit(0)
 
     task_dir = get_task_dir()

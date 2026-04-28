@@ -126,11 +126,27 @@ def main():
     decision = kd_json.get("decision", "FAIL")
 
     # === Step 4: Settle (update plan.md) ===
-    subprocess.run(
+    # progress.json + history.jsonl were already mutated by keep_or_discard;
+    # plan.md is the only state piece settle.py owns. If settle fails (no
+    # ACTIVE item, malformed plan.md, etc.) and we still advance phase, the
+    # next round sees inconsistent state — same ACTIVE item, advanced
+    # eval_rounds, and pipeline will keep dispatching the same plan_item
+    # forever. Surface the failure loud and abort phase advance instead.
+    settle = subprocess.run(
         [sys.executable, os.path.join(SCRIPT_DIR, "settle.py"),
          task_dir, json.dumps(kd_json)],
         capture_output=True, text=True, timeout=10,
     )
+    if settle.returncode != 0:
+        tail_out = (settle.stdout or "").strip()[-400:]
+        tail_err = (settle.stderr or "").strip()[-400:]
+        print(f"[PIPELINE] SETTLE FAILED (rc={settle.returncode}). "
+              f"plan.md was NOT updated even though progress.json + "
+              f"history.jsonl already moved. Phase NOT advanced — fix "
+              f"plan.md by hand or rerun pipeline once the underlying "
+              f"issue is resolved.\nstdout tail: {tail_out}\n"
+              f"stderr tail: {tail_err}", file=sys.stderr)
+        sys.exit(1)
 
     # === Step 5: Compute next phase + clear edit marker ===
     next_phase = compute_next_phase(task_dir)

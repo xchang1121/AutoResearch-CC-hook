@@ -65,34 +65,42 @@ def main():
     # DISCARD (correct but not faster) is not a failure — it's a signal to
     # REPLAN with different ideas, which happens naturally when all plan
     # items settle. DIAGNOSE is reserved for broken kernels.
+    #
+    # Decision flow: correctness gate → constraint gate → improvement check.
+    # Earlier this was an if/elif/else chain where the constraint branch
+    # only handled violations and never fell through to the improvement
+    # check, so a constraint-passing AND faster kernel got `decision`
+    # left at the initial "DISCARD" — every constraint-using task would
+    # silently never KEEP anything. Use sequential gates instead so the
+    # improvement check runs whenever both gates pass.
     if not eval_result.correctness:
         decision = "FAIL"
         progress["consecutive_failures"] = progress.get("consecutive_failures", 0) + 1
         print(f"[keep_or_discard] FAIL: correctness check failed", file=sys.stderr)
-    elif config.constraints:
-        violations = check_constraints(eval_result, config.constraints)
+    else:
+        violations = check_constraints(eval_result, config.constraints) if config.constraints else []
         if violations:
             decision = "FAIL"
             progress["consecutive_failures"] = progress.get("consecutive_failures", 0) + 1
             print(f"[keep_or_discard] FAIL: constraint violations: {violations}", file=sys.stderr)
-    else:
-        best_metric_val = progress.get("best_metric")
-        if best_metric_val is None:
-            decision = "KEEP"
         else:
-            best_result = EvalResult(
-                correctness=True,
-                metrics={config.primary_metric: best_metric_val},
-            )
-            if is_improvement(
-                eval_result, best_result,
-                metric=config.primary_metric,
-                lower_is_better=config.lower_is_better,
-                threshold=config.improvement_threshold,
-            ):
+            best_metric_val = progress.get("best_metric")
+            if best_metric_val is None:
                 decision = "KEEP"
             else:
-                decision = "DISCARD"
+                best_result = EvalResult(
+                    correctness=True,
+                    metrics={config.primary_metric: best_metric_val},
+                )
+                if is_improvement(
+                    eval_result, best_result,
+                    metric=config.primary_metric,
+                    lower_is_better=config.lower_is_better,
+                    threshold=config.improvement_threshold,
+                ):
+                    decision = "KEEP"
+                else:
+                    decision = "DISCARD"
 
     if decision == "KEEP":
         metric_val = eval_result.metrics.get(config.primary_metric)
