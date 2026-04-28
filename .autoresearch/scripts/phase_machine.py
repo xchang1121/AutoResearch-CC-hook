@@ -961,25 +961,31 @@ def get_guidance(task_dir: str) -> str:
         editable_list = ", ".join(editable)
         # Pre-baked subagent prompt. The parent model passes this verbatim
         # to the Agent tool so the subagent doesn't improvise its own
-        # research strategy (a previous open-ended brief sent it greppting
+        # research strategy (a previous open-ended brief sent it grepping
         # git log for 100+ tool calls before timing out).
+        #
+        # The "Constraints" block below is LLM-followed, not tool-enforced —
+        # the Agent tool has no max-tool-use counter and no file-access
+        # filter. Earlier wording ("Hard constraints") implied runtime
+        # enforcement that doesn't exist; rely on directive phrasing alone.
         subagent_prompt = (
             f"Diagnose why the current optimization rounds are failing.\n\n"
-            f"Read these files AND ONLY these files (no other Read / Glob / Grep):\n"
+            f"Read these files and only these files (no other Read / Glob / Grep):\n"
             f"  - {task_dir}/reference.py\n"
             f"  - {task_dir}/{editable_list}\n"
             f"  - {task_dir}/.ar_state/plan.md\n"
             f"  - {task_dir}/.ar_state/history.jsonl (focus on the last "
             f"~10 rounds; older entries are usually stale)\n\n"
-            f"Hard constraints:\n"
+            f"Constraints:\n"
             f"  - Do NOT run `git log`, `git show`, `git grep`, or any git "
             f"history search — the task git history only contains generic "
             f"per-round commits and grepping it for keywords ('vector', "
             f"'Welford', etc.) returns nothing useful and burns tool calls.\n"
             f"  - Do NOT Glob / Grep the wider codebase. Everything you need "
             f"is in the files above.\n"
-            f"  - Stop after at most 8 tool uses total; if you can't fully "
-            f"conclude, output what you have.\n\n"
+            f"  - Stop after roughly 8 tool uses; if you can't fully "
+            f"conclude, output what you have rather than continuing to "
+            f"explore.\n\n"
             f"Produce a tight report (<300 words total) with three sections:\n"
             f"  1. Root cause: one paragraph on what's making rounds fail\n"
             f"  2. Fix directions: at most 3 STRUCTURALLY different "
