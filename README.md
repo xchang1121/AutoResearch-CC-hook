@@ -107,8 +107,8 @@ dashboard 顶栏始终显示 PyTorch baseline。
 ## DSL 分派层
 
 verify / profile 脚本按 DSL **独立生成**。
-[task_config._gen_verify_script](.autoresearch/scripts/task_config.py) /
-[_gen_profile_script](.autoresearch/scripts/task_config.py) 不再硬编码
+[task_config.package_builder._gen_verify_script](.autoresearch/scripts/task_config/package_builder.py) /
+[_gen_profile_script](.autoresearch/scripts/task_config/package_builder.py) 不再硬编码
 triton 模板，转而驱动 vendored 的 adapter：
 
 ```python
@@ -272,7 +272,7 @@ pid 计数器单调推进、不复用；审计链是 `plan_version` + `history.j
 ## CodeChecker 静态分析
 
 [quick_check.py](.autoresearch/scripts/quick_check.py) 和
-[phase_machine.validate_kernel](.autoresearch/scripts/phase_machine.py) 共享
+[phase_machine.validators.validate_kernel](.autoresearch/scripts/phase_machine/validators.py) 共享
 一份 [code_checker.py](.autoresearch/scripts/code_checker.py) pipeline（AST
 → py_compile → import 解析 → 散落中文 → DSL 合规 → `@triton.autotune`
 合规），分别在每轮 EDIT 收尾和 GENERATE_KERNEL → BASELINE 推进前触发。
@@ -285,20 +285,22 @@ false`。关掉后占位 kernel（scaffold TODO）仍会被拒，GENERATE_KERNEL
 
 ## Hooks 与状态机
 
-[phase_machine.py](.autoresearch/scripts/phase_machine.py) 提供 phase 常量
-和规则查询。`<task_dir>/.ar_state/.phase` 记录当前阶段。Hook 脚本在
-Claude Code 的 PreToolUse / PostToolUse 事件中调用这些规则决定允许或
-阻断工具调用。
+[phase_machine/](.autoresearch/scripts/phase_machine/) 是一个包，按职责
+拆成 `state_store` / `validators` / `phase_policy` / `guidance`，由
+[__init__.py](.autoresearch/scripts/phase_machine/__init__.py) re-export
+保持外部导入兼容。`<task_dir>/.ar_state/.phase` 记录当前阶段。Hook 脚本
+在 Claude Code 的 PreToolUse / PostToolUse 事件中调用这些规则决定允许
+或阻断工具调用。
 
-### 1. phase_machine.py
+### 1. phase_machine 包
 
-导出内容：
+子模块导出内容：
 
-**phase 常量**（[:30-41](.autoresearch/scripts/phase_machine.py#L30-L41)）：
+**phase 常量**（[state_store.py:34-44](.autoresearch/scripts/phase_machine/state_store.py#L34-L44)）：
 `INIT` / `GENERATE_REF` / `GENERATE_KERNEL` / `BASELINE` / `PLAN` / `EDIT` /
 `DIAGNOSE` / `REPLAN` / `FINISH`。
 
-**规则表**（[:204-227](.autoresearch/scripts/phase_machine.py#L204-L227)）：
+**规则表**（[phase_policy.py](.autoresearch/scripts/phase_machine/phase_policy.py)）：
 
 ```python
 _BASH_RULES = {
@@ -325,9 +327,11 @@ _EDIT_RULES = {
 DIAGNOSE / REPLAN 需要 `git log`、读文件等 ad-hoc 操作，使用 permissive；
 BASELINE / INIT 只允许单一命令，使用 strict。
 
-**查询函数**（[:277-358](.autoresearch/scripts/phase_machine.py#L277-L358)）：
+**查询函数**（[phase_policy.py](.autoresearch/scripts/phase_machine/phase_policy.py)）：
 `check_bash` 和 `check_edit`，输入 phase 名 + 命令 / 文件名，返回
-`(allowed, reason)`。纯函数，不读写任何状态。
+`(allowed, reason)`。纯函数，不读写任何状态。`check_bash` 按 bash 链
+分隔符（`&&` `||` `;` `|`）切片后**逐段**评估——避免链式命令把单个
+strict-required 子串带飞整个链路。
 
 跨 phase 全局黑名单也在此定义：`quick_check.py` / `eval_wrapper.py` /
 `keep_or_discard.py` / `settle.py` 在任何 phase 均禁止手动调用（只能由
@@ -413,7 +417,7 @@ stdout 输出 `{"decision":"block","reason":"..."}` + `sys.exit(2)` 即阻断
 每次 phase 切换，Hook 内部生成 phase-specific 提示（包含 editable_files、
 当前 active item、最近三条 history、剩余 budget 等），通过 `[AR Phase: ...]`
 消息和 `additionalContext` 回注给 LLM。**LLM 只消费这条消息，不要自己
-调取**——`phase_machine.py` 是库不是 CLI，`hook_guard_bash` 会拒绝把它当
+调取**——`phase_machine` 是库不是 CLI，`hook_guard_bash` 会拒绝把它当
 脚本调用。如果某一步看不到新的 `[AR Phase: ...]`，下一条合法命令跑出来
 hook 自然会再发一条；不要尝试手动"刷新"。
 

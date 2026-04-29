@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from hook_utils import read_hook_input, block_decision
 from phase_machine import (
     read_phase, get_guidance, get_task_dir, touch_heartbeat, check_bash,
-    parse_script_name,
+    parse_script_names,
 )
 from settings import hallucinated_scripts
 
@@ -55,27 +55,27 @@ def _script_name_check(command: str):
     """Flag unknown / hallucinated .autoresearch/scripts/*.py names before
     they reach the phase rule — gives a clearer message than 'not allowed'.
 
-    Uses phase_machine.parse_script_name (shared with hook_post_bash) so
-    both hooks agree on what counts as a python invocation, including
-    `python3 ...`, `py -3 ...`, `bash some.py`. The earlier hand-rolled
-    regex here matched only `python <script>` and silently disagreed with
-    hook_post_bash on edge cases.
+    Iterates EVERY python/bash invocation in `command`, not just the first.
+    The earlier `parse_script_name` (singular) returned only the first
+    match, so a chain like
+        `python baseline.py && python evil_unknown.py`
+    sailed past the blessed/library/alias checks because evil_unknown.py
+    was never inspected. The phase_policy chain-segment rule still
+    catches it via the strict allow-list, but giving an unambiguous
+    "Unknown script 'evil_unknown.py'" beats the generic "phase BASELINE:
+    allowed = ['baseline.py']".
     """
-    parsed = parse_script_name(command)
-    if parsed is None:
-        return
-    script_path, script_name = parsed
-
     aliases = hallucinated_scripts()
-    if script_name in aliases:
-        real = aliases[script_name]
-        block_decision(f"[AR] '{script_name}' does not exist. "
-               f"Use: python .autoresearch/scripts/{real}")
-    if script_name in _LIBRARY_NOT_CLI:
-        block_decision(f"[AR] {_LIBRARY_NOT_CLI[script_name]}")
-    if ".autoresearch/scripts/" in script_path and script_name not in _BLESSED_SCRIPTS:
-        block_decision(f"[AR] Unknown script '{script_name}'. "
-               f"Valid scripts: {sorted(_BLESSED_SCRIPTS)}")
+    for script_path, script_name in parse_script_names(command):
+        if script_name in aliases:
+            real = aliases[script_name]
+            block_decision(f"[AR] '{script_name}' does not exist. "
+                   f"Use: python .autoresearch/scripts/{real}")
+        if script_name in _LIBRARY_NOT_CLI:
+            block_decision(f"[AR] {_LIBRARY_NOT_CLI[script_name]}")
+        if ".autoresearch/scripts/" in script_path and script_name not in _BLESSED_SCRIPTS:
+            block_decision(f"[AR] Unknown script '{script_name}'. "
+                   f"Valid scripts: {sorted(_BLESSED_SCRIPTS)}")
 
 
 def main():

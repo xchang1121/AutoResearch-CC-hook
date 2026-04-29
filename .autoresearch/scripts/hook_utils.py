@@ -31,6 +31,29 @@ def norm_abs_fwd_slash(p: str) -> str:
     return os.path.normpath(os.path.abspath(p)).replace("\\", "/")
 
 
+# Path field names by tool. Edit / Write / MultiEdit all use `file_path`;
+# NotebookEdit uses `notebook_path`. Reading only `file_path` (the
+# original implementation) silently let NotebookEdit hits skip the hook
+# entirely — the matcher caught the tool name but the empty path made
+# main() fall to `sys.exit(0)`. Centralized here so both guard and post
+# hooks agree on the extraction.
+_TOOL_PATH_FIELDS = ("file_path", "notebook_path")
+
+
+def extract_target_path(hook_input: dict) -> str:
+    """Pull the target file path out of a hook payload regardless of
+    whether the tool is Edit / Write / MultiEdit (file_path) or
+    NotebookEdit (notebook_path). Returns '' if neither is set —
+    callers should treat that as 'nothing to gate' and exit 0.
+    """
+    tool_input = hook_input.get("tool_input", {}) or {}
+    for field in _TOOL_PATH_FIELDS:
+        v = tool_input.get(field)
+        if v:
+            return v
+    return ""
+
+
 def read_hook_input() -> dict:
     """Read and parse hook input from stdin.
 

@@ -54,12 +54,20 @@ from .validators import (
     is_placeholder_file,
     validate_reference, validate_kernel, validate_plan,
     get_plan_items, has_pending_items, get_active_item,
+    # Internal — re-exported so debug / extension scripts that previously
+    # reached into phase_machine can still find them at the old name.
+    _PLAN_ITEM_RE, _PLAN_TAG_RE, _REF_RUNCHECK_SCRIPT,
 )
 from .phase_policy import (
     INVOKED_SCRIPT_RE,
-    parse_script_name, parse_invoked_ar_script,
+    parse_script_name, parse_script_names, parse_invoked_ar_script,
     check_bash, check_edit,
     compute_next_phase, compute_resume_phase,
+    # Policy tables — public-ish because tests / dashboards reference
+    # them. Underscore-prefixed for a "do not mutate at runtime" hint
+    # rather than for true privacy.
+    _BASH_RULES, _EDIT_RULES, _GLOBAL_BASH_BANS, _PHASE_AGNOSTIC_PATTERNS,
+    _BashPolicy,
 )
 from .guidance import (
     get_guidance,
@@ -67,6 +75,11 @@ from .guidance import (
     # of the helper today). Re-exported even though it's underscore-prefixed
     # because the call site predates the package split.
     _load_config_safe,
+    # XML schema and field rules — referenced by name in create_plan.py's
+    # docstring and used by tests / dashboards that want to render the
+    # canonical example. Re-exported to keep the old `phase_machine.
+    # _PLAN_XML_EXAMPLE` reference resolvable.
+    _PLAN_XML_EXAMPLE, _PLAN_FIELD_RULES,
 )
 
 # auto_rollback used to live in phase_machine; the implementation moved to

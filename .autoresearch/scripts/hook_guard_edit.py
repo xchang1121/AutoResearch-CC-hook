@@ -13,7 +13,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from hook_utils import read_hook_input, block_decision
+from hook_utils import read_hook_input, block_decision, extract_target_path
 from phase_machine import (
     read_phase, get_guidance, get_task_dir, touch_heartbeat,
     edit_marker_path, check_edit, EDIT,
@@ -113,7 +113,7 @@ def main():
         sys.exit(0)
     touch_heartbeat(task_dir)
 
-    file_path = hook_input.get("tool_input", {}).get("file_path", "")
+    file_path = extract_target_path(hook_input)
     if not file_path:
         sys.exit(0)
 

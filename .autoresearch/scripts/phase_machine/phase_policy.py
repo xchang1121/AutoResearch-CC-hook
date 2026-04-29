@@ -54,36 +54,49 @@ INVOKED_SCRIPT_RE = re.compile(
 )
 
 
-def parse_script_name(command: str) -> Optional[tuple]:
-    """Return (script_path_forward_slashes, basename) for any python/bash
-    invocation of a .py file in `command`, else None.
+def parse_script_names(command: str) -> list:
+    """Return [(script_path_forward_slashes, basename), ...] for EVERY
+    python/bash invocation of a .py file in `command`, in order.
 
-    Used by hook_guard_bash to validate ANY invoked script (alias check,
-    library-not-CLI check, blessed check) — not restricted to scripts under
-    .autoresearch/scripts/.
+    `findall` instead of `search` because chains like
+    `python a.py && python b.py` carry two invocations and the guard
+    must inspect both — otherwise an unknown / banned script tucked
+    after a known-good one rides through. Returns empty list if no
+    interpreter+script pattern matches.
     """
-    m = INVOKED_SCRIPT_RE.search(command)
-    if not m:
-        return None
-    script_path = m.group(1).replace("\\", "/")
-    return script_path, os.path.basename(script_path)
+    out = []
+    for raw in INVOKED_SCRIPT_RE.findall(command):
+        script_path = raw.replace("\\", "/")
+        out.append((script_path, os.path.basename(script_path)))
+    return out
+
+
+def parse_script_name(command: str) -> Optional[tuple]:
+    """Single-invocation form — first .py invocation in `command`.
+
+    Kept for callers that only care about the first script. New code
+    that needs full-chain awareness should use parse_script_names.
+    """
+    matches = parse_script_names(command)
+    return matches[0] if matches else None
 
 
 def parse_invoked_ar_script(command: str) -> Optional[str]:
     """Basename of an .autoresearch/scripts/*.py invocation, or None.
 
     Used by hook_post_bash to dispatch phase advances on
-    `baseline.py` / `pipeline.py` / `create_plan.py`. Restricts to scripts
-    under .autoresearch/scripts/ so unrelated python invocations don't
-    accidentally trigger phase logic.
+    `baseline.py` / `pipeline.py` / `create_plan.py` after the user-issued
+    Bash returns. The dispatch logic deliberately inspects only the FIRST
+    matching .autoresearch/scripts/*.py — chained invocations would have
+    been blocked by hook_guard_bash before they reached the post hook
+    (the chain-segment rule rejects any chain that includes a non-allowed
+    script in the current phase), so post-hook only sees the legitimate
+    single invocation that was just permitted.
     """
-    parsed = parse_script_name(command)
-    if parsed is None:
-        return None
-    script_path, basename = parsed
-    if ".autoresearch/scripts/" not in script_path:
-        return None
-    return basename
+    for script_path, basename in parse_script_names(command):
+        if ".autoresearch/scripts/" in script_path:
+            return basename
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -199,28 +212,53 @@ def _segment_is_phase_agnostic(segment: str) -> bool:
 _BASH_CHAIN_SEPARATOR_RE = re.compile(r'&&|\|\||;|\|')
 
 
-def _is_phase_agnostic_bash(command: str) -> bool:
-    """True iff every chain segment in `command` is phase-agnostic.
+def _segment_passes_phase_rule(segment: str, policy: "_BashPolicy") -> tuple:
+    """Decide whether a single chain segment is allowed under `policy`.
 
-    A single chained call where any segment is non-agnostic falls through
-    to the per-phase policy, where it'll be matched against the strict
-    required-substrings or permissive banned-substrings as appropriate.
+    Returns (ok, reason). The phase-agnostic patterns (read-only +
+    lifecycle ops) and the activation special case are checked first;
+    only when both fail does the per-phase strict/permissive rule apply.
     """
-    segments = _BASH_CHAIN_SEPARATOR_RE.split(command)
-    return all(_segment_is_phase_agnostic(s) for s in segments)
+    s = segment.strip()
+    if not s:
+        return True, ""  # empty (trailing `&&`) — no restriction
+
+    if _segment_is_phase_agnostic(s):
+        return True, ""
+    if "export AR_TASK_DIR=" in s:
+        return True, ""
+
+    if policy.mode == "strict":
+        for req in policy.required:
+            if req in s:
+                return True, ""
+        required_txt = sorted(policy.required) or "(no user bash legal here; only file edits)"
+        return False, f"segment {s!r}: allowed = {required_txt}"
+
+    # permissive
+    for b in policy.banned:
+        if b in s:
+            return False, f"segment {s!r}: '{b}' is blocked here"
+    return True, ""
 
 
 def check_bash(phase: str, command: str) -> tuple:
     """Return (allowed: bool, reason: str) for a Bash command at `phase`.
 
     Decision order:
-      1. Global bans (subprocess-only scripts, `git commit`) — always block.
-      2. Phase-agnostic commands — always allow (read-only inspection plus
-         lifecycle ops like scaffold.py / resume.py that manage which task
-         is active).
-      3. Activation (`export AR_TASK_DIR=…`) — always allow; hook_post_bash
-         uses it to switch tasks regardless of current phase.
-      4. Phase policy (strict whitelist or permissive blocklist).
+      1. Global bans (subprocess-only scripts, `git commit`) — checked
+         against the full command first; a chain that smuggles a banned
+         substring anywhere is rejected.
+      2. Per-chain-segment phase rules: split on bash chain separators,
+         every
+         segment must independently pass either the agnostic-shortcut
+         (read-only + lifecycle), the activation special case, or the
+         per-phase strict/permissive rule. The previous implementation
+         applied phase rules to the whole command, so a strict phase
+         like BASELINE accepted `python baseline.py && python pipeline.py`
+         (the "baseline.py" required substring matched the WHOLE chain
+         and let pipeline.py ride along). Per-segment evaluation closes
+         that hole.
     """
     for ban, why in _GLOBAL_BASH_BANS.items():
         if ban in command:
@@ -229,25 +267,15 @@ def check_bash(phase: str, command: str) -> tuple:
         return False, ("manual 'git commit' forbidden — commits are produced "
                        "by pipeline.py via keep_or_discard")
 
-    if _is_phase_agnostic_bash(command):
-        return True, ""
-    if "export AR_TASK_DIR=" in command:
-        return True, ""
-
     policy = _BASH_RULES.get(phase)
     if policy is None:
         return False, f"unknown phase {phase!r}"
 
-    if policy.mode == "strict":
-        for req in policy.required:
-            if req in command:
-                return True, ""
-        required_txt = sorted(policy.required) or "(no user bash legal here; only file edits)"
-        return False, f"phase {phase}: allowed commands = {required_txt}"
-
-    for b in policy.banned:
-        if b in command:
-            return False, f"phase {phase}: '{b}' is blocked here"
+    segments = _BASH_CHAIN_SEPARATOR_RE.split(command)
+    for seg in segments:
+        ok, reason = _segment_passes_phase_rule(seg, policy)
+        if not ok:
+            return False, f"phase {phase}: {reason}"
     return True, ""
 
 

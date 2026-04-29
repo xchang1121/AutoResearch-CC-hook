@@ -35,11 +35,17 @@ from .loader import (
 )
 from .metric_policy import (
     EvalResult, check_constraints, is_improvement, format_result_summary,
+    # Operator table — internal but referenced by some debug scripts that
+    # introspect supported constraint operators.
+    _CONSTRAINT_OPS,
 )
 from .package_builder import (
     _build_package, _gen_verify_script, _gen_profile_script,
     _compute_worker_ref_path, _exclude_pycache,
     _detect_device_type, _get_dsl_adapter,
+    # Worker cache root — used by dashboards / cleanup scripts that want
+    # to GC the cache. Re-exported to keep old import paths valid.
+    _WORKER_CACHE_ROOT,
 )
 from .eval_client import (
     run_eval, run_remote_eval, run_local_eval,
