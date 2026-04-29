@@ -18,6 +18,7 @@ from .state_store import (
     DIAGNOSE, REPLAN, FINISH,
     PLAN_ITEMS_FILE,
     history_path, load_progress, read_phase, state_path,
+    _PROJECT_ROOT,
 )
 from .validators import get_active_item
 
@@ -113,6 +114,34 @@ def _load_config_safe(task_dir: str):
         return None
 
 
+def _skill_dir_for_dsl(dsl) -> Optional[str]:
+    """Resolve the on-disk skills/<...> directory for `dsl`, or None if
+    no such directory exists.
+
+    The skills/ tree uses dash-separated names (`skills/triton-ascend/`,
+    `skills/cuda-c/`) while the canonical DSL strings use underscores
+    (`triton_ascend`, `cuda_c`). Without this translation, the prompts
+    that previously read `Glob skills/{dsl}/**/*.md` produced **zero**
+    matches at runtime — agents dutifully ran the Glob, got nothing back,
+    and silently skipped the skill-reading step. This was the original
+    "agent looks like it's reading skills but actually isn't" trap.
+
+    Returns the directory NAME (relative to skills/), not a full path —
+    callers want it for the prompt's Glob pattern. None when the DSL has
+    no skills tree at all (e.g. ascendc / swft / torch / tilelang_npuir),
+    in which case `_skills_hint` returns "" instead of pointing the agent
+    at a dead path.
+    """
+    if not dsl:
+        return None
+    candidate = dsl.lower().replace("_", "-")
+    if os.path.isdir(os.path.join(_PROJECT_ROOT, "skills", candidate)):
+        return candidate
+    # A few DSLs may legitimately not have a skills tree yet. Don't fall
+    # back to the underscore form — that's the broken historical path.
+    return None
+
+
 def _skills_hint(dsl) -> str:
     """Recommend reading DSL skills when authoring plan items.
 
@@ -120,14 +149,17 @@ def _skills_hint(dsl) -> str:
     directly and writes the plan). DIAGNOSE has its own inline skills
     section because the subagent's framing differs: it's diagnosing
     failures, not opening a plan, and the prompt wording reflects that.
-    Returns "" when dsl is unset so callers can interpolate unconditionally.
+    Returns "" when the DSL has no skills directory so callers can
+    interpolate unconditionally.
     """
-    if not dsl:
+    skill_dir = _skill_dir_for_dsl(dsl)
+    if not skill_dir:
         return ""
     return (
-        f"\nDSL skills: Glob skills/{dsl}/**/*.md, then Read 1-3 SKILL.md "
-        f"files whose frontmatter description / keywords match a candidate "
-        f"plan-item direction. Cite SKILL ids in the item rationale."
+        f"\nDSL skills: Glob skills/{skill_dir}/**/*.md, then Read 1-3 "
+        f"SKILL.md files whose frontmatter description / keywords match "
+        f"a candidate plan-item direction. Cite SKILL ids in the item "
+        f"rationale."
     )
 
 
@@ -232,13 +264,44 @@ def get_guidance(task_dir: str) -> str:
         arch = (config.arch if config and config.arch else "<unknown>")
         backend = (config.backend if config and config.backend else "<unknown>")
         editable_list = ", ".join(editable)
+        # Resolve the on-disk skills/<...> dir name (dash form). May be
+        # None if this DSL has no curated skills tree, in which case the
+        # whole skills section is dropped from the subagent prompt.
+        skill_dir = _skill_dir_for_dsl(dsl)
+
+        # Skills section is conditional — `skill_dir` is None when this DSL
+        # has no curated skills tree (ascendc / swft / torch / tilelang_npuir
+        # at time of writing). Without the conditional we'd hand the agent a
+        # Glob pattern that returns zero matches, and they'd silently skip
+        # the skill-reading step — defeating the whole point of the section.
+        if skill_dir:
+            skills_block = (
+                f"Read DSL skills (curated {dsl} knowledge — use it to "
+                f"ground fix directions in known-good patterns for this "
+                f"hardware):\n"
+                f"  - Glob skills/{skill_dir}/**/*.md, then Read 1-3 "
+                f"SKILL.md files whose frontmatter description / keywords "
+                f"match a candidate fix direction.\n"
+                f"  - Cite SKILL ids in the rationale of items you "
+                f"propose.\n\n"
+            )
+            scope_constraint = (
+                f"  - Glob / Grep ONLY under skills/{skill_dir}/. The 4 "
+                f"task files plus that skills subtree are the entire scope.\n"
+            )
+            cite_clause = " Cite SKILL ids where relevant."
+        else:
+            skills_block = ""
+            scope_constraint = (
+                "  - Do NOT Glob / Grep the wider codebase. The 4 task "
+                "files are the entire scope (no curated skills tree exists "
+                f"for dsl={dsl}).\n"
+            )
+            cite_clause = ""
 
         # Pre-baked subagent prompt. Parent passes this verbatim to the Agent
         # tool so the subagent doesn't improvise (an earlier open-ended brief
         # sent it grepping git log for 100+ tool calls before timing out).
-        # Skills under skills/<dsl>/ are now in scope — they're DSL-specific
-        # curated knowledge of what works on this hardware, exactly the
-        # input DIAGNOSE needs to propose structurally new directions.
         subagent_prompt = (
             f"Diagnose why the current optimization rounds are failing.\n\n"
             f"Target: dsl={dsl} backend={backend} arch={arch}{metric_line}\n\n"
@@ -251,26 +314,20 @@ def get_guidance(task_dir: str) -> str:
             f"  - {task_dir}/.ar_state/plan.md\n"
             f"  - {task_dir}/.ar_state/history.jsonl (focus on the last "
             f"~10 rounds; older entries are usually stale)\n\n"
-            f"Read DSL skills (curated {dsl} knowledge — use it to ground "
-            f"fix directions in known-good patterns for this hardware):\n"
-            f"  - Glob skills/{dsl}/**/*.md, then Read 1-3 SKILL.md files "
-            f"whose frontmatter description / keywords match a candidate "
-            f"fix direction.\n"
-            f"  - Cite SKILL ids in the rationale of items you propose.\n\n"
+            f"{skills_block}"
             f"Hard constraints:\n"
             f"  - Do NOT search git history (`git log` / `git show` / "
             f"`git grep`) — per-round commits carry no keyword signal and "
             f"burn tool calls.\n"
-            f"  - Glob / Grep ONLY under skills/{dsl}/. The 4 task files "
-            f"plus that skills subtree are the entire scope.\n"
+            f"{scope_constraint}"
             f"  - Stop after at most 12 tool uses; output what you have if "
             f"you can't fully conclude.\n\n"
             f"Produce a tight report (<300 words total) with three sections:\n"
             f"  1. Root cause: one paragraph on what's making rounds fail.\n"
             f"  2. Fix directions: at most 3 STRUCTURALLY different "
             f"approaches (algorithmic change / fusion / memory layout / "
-            f"data movement). One sentence each. NOT more parameter tuning. "
-            f"Cite SKILL ids where relevant.\n"
+            f"data movement). One sentence each. NOT more parameter "
+            f"tuning.{cite_clause}\n"
             f"  3. What to avoid: at most 3 patterns to NOT repeat. One "
             f"sentence each."
         )
