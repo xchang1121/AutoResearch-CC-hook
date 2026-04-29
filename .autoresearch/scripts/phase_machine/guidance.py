@@ -181,7 +181,10 @@ def get_guidance(task_dir: str) -> str:
                 f"TodoWrite: mark {item_id} in_progress, other pending items stay pending.")
 
     if phase == DIAGNOSE:
-        # Build failure summary for the diagnosis prompt
+        # Pre-bake the recent-rounds summary INTO the subagent prompt so the
+        # subagent has it without spending a tool call re-reading
+        # history.jsonl. The full file stays in the read list for deeper
+        # digs (full traces / older rounds).
         hpath = history_path(task_dir)
         fail_summary = ""
         if os.path.exists(hpath):
@@ -198,33 +201,61 @@ def get_guidance(task_dir: str) -> str:
                 _r = "?" if _r is None else _r
                 fail_summary += f"  R{_r}: {rec.get('decision','?')} — {rec.get('description','')[:60]}\n"
 
+        # Compact metric snapshot — saves the subagent from reading
+        # history.jsonl just to answer "how big a delta do we need?".
+        metric_line = ""
+        if progress:
+            seed = progress.get("seed_metric")
+            base = progress.get("baseline_metric")
+            best = progress.get("best_metric")
+            if any(v is not None for v in (seed, base, best)):
+                metric_line = (
+                    f"\nMetrics ({primary_metric}): "
+                    f"seed={seed} | ref_baseline={base} | current_best={best}"
+                )
+
+        arch = (config.arch if config and config.arch else "<unknown>")
+        backend = (config.backend if config and config.backend else "<unknown>")
         editable_list = ", ".join(editable)
-        # Pre-baked subagent prompt. The parent model passes this verbatim
-        # to the Agent tool so the subagent doesn't improvise its own
-        # research strategy (a previous open-ended brief sent it greppting
-        # git log for 100+ tool calls before timing out).
+
+        # Pre-baked subagent prompt. Parent passes this verbatim to the Agent
+        # tool so the subagent doesn't improvise (an earlier open-ended brief
+        # sent it grepping git log for 100+ tool calls before timing out).
+        # Skills under skills/<dsl>/ are now in scope — they're DSL-specific
+        # curated knowledge of what works on this hardware, exactly the
+        # input DIAGNOSE needs to propose structurally new directions.
         subagent_prompt = (
             f"Diagnose why the current optimization rounds are failing.\n\n"
-            f"Read these files AND ONLY these files (no other Read / Glob / Grep):\n"
+            f"Target: dsl={dsl} backend={backend} arch={arch}{metric_line}\n\n"
+            f"Recent rounds (pre-baked from history.jsonl — read the file "
+            f"itself only if you need full traces / older rounds):\n"
+            f"{fail_summary or '  (none settled yet)'}\n"
+            f"Read these task files for context:\n"
             f"  - {task_dir}/reference.py\n"
             f"  - {task_dir}/{editable_list}\n"
             f"  - {task_dir}/.ar_state/plan.md\n"
             f"  - {task_dir}/.ar_state/history.jsonl (focus on the last "
             f"~10 rounds; older entries are usually stale)\n\n"
+            f"Read DSL skills (curated {dsl} knowledge — use it to ground "
+            f"fix directions in known-good patterns for this hardware):\n"
+            f"  - Glob skills/{dsl}/**/*.md, then Read 1-3 SKILL.md files "
+            f"whose frontmatter description / keywords match a candidate "
+            f"fix direction.\n"
+            f"  - Cite SKILL ids in the rationale of items you propose.\n\n"
             f"Hard constraints:\n"
-            f"  - Do NOT run `git log`, `git show`, `git grep`, or any git "
-            f"history search — the task git history only contains generic "
-            f"per-round commits and grepping it for keywords ('vector', "
-            f"'Welford', etc.) returns nothing useful and burns tool calls.\n"
-            f"  - Do NOT Glob / Grep the wider codebase. Everything you need "
-            f"is in the files above.\n"
-            f"  - Stop after at most 8 tool uses total; if you can't fully "
-            f"conclude, output what you have.\n\n"
+            f"  - Do NOT search git history (`git log` / `git show` / "
+            f"`git grep`) — per-round commits carry no keyword signal and "
+            f"burn tool calls.\n"
+            f"  - Glob / Grep ONLY under skills/{dsl}/. The 4 task files "
+            f"plus that skills subtree are the entire scope.\n"
+            f"  - Stop after at most 12 tool uses; output what you have if "
+            f"you can't fully conclude.\n\n"
             f"Produce a tight report (<300 words total) with three sections:\n"
-            f"  1. Root cause: one paragraph on what's making rounds fail\n"
+            f"  1. Root cause: one paragraph on what's making rounds fail.\n"
             f"  2. Fix directions: at most 3 STRUCTURALLY different "
             f"approaches (algorithmic change / fusion / memory layout / "
-            f"data movement). One sentence each. NOT more parameter tuning.\n"
+            f"data movement). One sentence each. NOT more parameter tuning. "
+            f"Cite SKILL ids where relevant.\n"
             f"  3. What to avoid: at most 3 patterns to NOT repeat. One "
             f"sentence each."
         )
@@ -234,8 +265,6 @@ def get_guidance(task_dir: str) -> str:
                 f"---BEGIN SUBAGENT PROMPT---\n"
                 f"{subagent_prompt}\n"
                 f"---END SUBAGENT PROMPT---\n"
-                f"Recent failures (already in your context, no need to "
-                f"re-fetch):\n{fail_summary}\n"
                 f"After the subagent returns, create a NEW plan with >= 3 items.\n"
                 f"\n"
                 f"{_create_plan_instruction(task_dir)}"
