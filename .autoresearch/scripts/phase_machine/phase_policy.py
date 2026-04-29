@@ -210,10 +210,28 @@ def _segment_is_phase_agnostic(segment: str) -> bool:
 # `re.split(r'&&|\|\||;|\|')` over `grep 'a|b' foo` cuts the quoted `|`
 # and produces two nonsense segments that fail the rule, false-blocking
 # a perfectly legal command. _split_bash_chain walks the string with a
-# tiny quote/escape tracker; subshells (`$(...)`, backticks) are NOT
-# parsed — they're rare in agent commands and fall through to the
-# phase-rule substring match, where unknown content is rejected. That's
-# the safe direction for unhandled constructs.
+# tiny quote/escape tracker; that's all this routine claims to do.
+#
+# What this gate is NOT:
+# Subshells (`$(...)`, backticks) and process substitution (`<()`) are
+# NOT parsed — substitution bodies appear as opaque text inside a
+# single segment. The phase rules are substring heuristics, so:
+#   - In strict phases, a substitution body can ride along with a legal
+#     outer command. `python baseline.py $(python pipeline.py x)` is
+#     accepted in BASELINE because the segment contains the required
+#     substring "baseline.py". The pipeline.py invocation inside the
+#     `$(...)` is invisible to this gate.
+#   - In permissive phases, substring bans incidentally catch banned
+#     names anywhere in the segment, including inside `$()` — but that
+#     is coincidence, not enforcement.
+#
+# Threat model: this is an LLM-operations guardrail, not a security
+# sandbox. It prevents the routine drift modes we've actually observed
+# (chain-and-smuggle, wrong script name, off-phase command). It does
+# not defend against an adversarial command author trying to evade.
+# If `$()` / backtick smuggling shows up as an observed pattern in a
+# real run, add a dedicated guard then — don't pre-build half a bash
+# parser on the assumption.
 
 def _split_bash_chain(command: str) -> list:
     """Split `command` on `&&` / `||` / `;` / `|` outside quotes."""
