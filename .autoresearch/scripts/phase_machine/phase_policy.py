@@ -201,15 +201,83 @@ def _segment_is_phase_agnostic(segment: str) -> bool:
     return False
 
 
-# Bash separators used to chain commands. We split on these and require EVERY
-# segment to be phase-agnostic before taking the agnostic shortcut. The
-# previous regex only anchored to the start of the whole string, so
-# `ls && python pipeline.py` matched `^ls`, returned True, and bypassed the
-# phase rule that would have blocked pipeline.py in BASELINE phase.
-# Patterns to consider as separators: && || ; | (newline / `&` standalone
-# left out — the model rarely uses those in slash-issued commands and bash
-# treats `&` as backgrounding rather than chaining).
-_BASH_CHAIN_SEPARATOR_RE = re.compile(r'&&|\|\||;|\|')
+# Bash separators recognized as chain operators: && || ; | (newline and
+# bare `&` left out — bash treats `&` as backgrounding, and the model
+# rarely uses newlines in slash-issued commands). We split on these and
+# require EVERY segment to be phase-agnostic OR pass the per-phase rule.
+#
+# Splitting must respect shell quoting and backslash escapes — a naive
+# `re.split(r'&&|\|\||;|\|')` over `grep 'a|b' foo` cuts the quoted `|`
+# and produces two nonsense segments that fail the rule, false-blocking
+# a perfectly legal command. _split_bash_chain walks the string with a
+# tiny quote/escape tracker; subshells (`$(...)`, backticks) are NOT
+# parsed — they're rare in agent commands and fall through to the
+# phase-rule substring match, where unknown content is rejected. That's
+# the safe direction for unhandled constructs.
+
+def _split_bash_chain(command: str) -> list:
+    """Split `command` on `&&` / `||` / `;` / `|` outside quotes."""
+    segments = []
+    cur = []
+    i = 0
+    n = len(command)
+    in_single = False
+    in_double = False
+    while i < n:
+        c = command[i]
+
+        # Backslash escape: take the next char literally (only honored
+        # outside single quotes, like real bash). At end of string just
+        # emit the backslash.
+        if c == "\\" and not in_single and i + 1 < n:
+            cur.append(c)
+            cur.append(command[i + 1])
+            i += 2
+            continue
+
+        # Quote toggles: single quotes don't toggle inside double, and
+        # vice versa (matches bash semantics).
+        if c == "'" and not in_double:
+            in_single = not in_single
+            cur.append(c)
+            i += 1
+            continue
+        if c == '"' and not in_single:
+            in_double = not in_double
+            cur.append(c)
+            i += 1
+            continue
+
+        # Inside any quotes: literal byte, never a separator.
+        if in_single or in_double:
+            cur.append(c)
+            i += 1
+            continue
+
+        # Two-char separators first (`&&`, `||`).
+        if c == "&" and i + 1 < n and command[i + 1] == "&":
+            segments.append("".join(cur))
+            cur = []
+            i += 2
+            continue
+        if c == "|" and i + 1 < n and command[i + 1] == "|":
+            segments.append("".join(cur))
+            cur = []
+            i += 2
+            continue
+
+        # One-char separators (`;`, `|`).
+        if c == ";" or c == "|":
+            segments.append("".join(cur))
+            cur = []
+            i += 1
+            continue
+
+        cur.append(c)
+        i += 1
+
+    segments.append("".join(cur))
+    return segments
 
 
 def _segment_passes_phase_rule(segment: str, policy: "_BashPolicy") -> tuple:
@@ -271,7 +339,7 @@ def check_bash(phase: str, command: str) -> tuple:
     if policy is None:
         return False, f"unknown phase {phase!r}"
 
-    segments = _BASH_CHAIN_SEPARATOR_RE.split(command)
+    segments = _split_bash_chain(command)
     for seg in segments:
         ok, reason = _segment_passes_phase_rule(seg, policy)
         if not ok:
