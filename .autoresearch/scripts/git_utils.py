@@ -29,6 +29,7 @@ are idempotent.
 """
 import os
 import subprocess
+import sys
 
 _GIT_USER_NAME = "autoresearch"
 _GIT_USER_EMAIL = "auto@research"
@@ -89,3 +90,32 @@ def commit_in_task(task_dir: str, paths, message: str) -> tuple:
         return False, "git operation timed out (>10s) — check for index lock or fs contention"
     except Exception as e:
         return False, f"unexpected error: {e}"
+
+
+def auto_rollback(task_dir: str):
+    """Revert editable_files to HEAD via `git checkout HEAD --`.
+
+    Used by keep_or_discard (DISCARD/FAIL paths) and by the pipeline's
+    quick-check failure branch. Reads `task.yaml.editable_files` to know
+    which files to revert. Silent on git failures: rollback is a recovery
+    path, swallowing here is appropriate (caller has already decided to
+    abandon the round).
+    """
+    try:
+        _scripts_dir = os.path.dirname(os.path.abspath(__file__))
+        if _scripts_dir not in sys.path:
+            sys.path.insert(0, _scripts_dir)
+        from task_config import load_task_config
+        config = load_task_config(task_dir)
+        if config is None:
+            return
+        repo_root = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=task_dir, capture_output=True, text=True,
+        ).stdout.strip()
+        for f in config.editable_files:
+            fpath = os.path.relpath(os.path.join(task_dir, f), repo_root)
+            subprocess.run(["git", "checkout", "HEAD", "--", fpath],
+                           cwd=repo_root, capture_output=True)
+    except Exception as e:
+        print(f"[AR] Rollback failed: {e}", file=sys.stderr)
