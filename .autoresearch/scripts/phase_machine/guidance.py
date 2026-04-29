@@ -113,6 +113,24 @@ def _load_config_safe(task_dir: str):
         return None
 
 
+def _skills_hint(dsl) -> str:
+    """Recommend reading DSL skills when authoring plan items.
+
+    Used by PLAN and REPLAN (parent-voice — the parent agent reads skills
+    directly and writes the plan). DIAGNOSE has its own inline skills
+    section because the subagent's framing differs: it's diagnosing
+    failures, not opening a plan, and the prompt wording reflects that.
+    Returns "" when dsl is unset so callers can interpolate unconditionally.
+    """
+    if not dsl:
+        return ""
+    return (
+        f"\nDSL skills: Glob skills/{dsl}/**/*.md, then Read 1-3 SKILL.md "
+        f"files whose frontmatter description / keywords match a candidate "
+        f"plan-item direction. Cite SKILL ids in the item rationale."
+    )
+
+
 def get_guidance(task_dir: str) -> str:
     """Return a context-aware instruction for Claude based on current phase.
 
@@ -152,9 +170,6 @@ def get_guidance(task_dir: str) -> str:
                 f"python .autoresearch/scripts/baseline.py \"{task_dir}\"{worker_flag}")
 
     if phase == PLAN:
-        skills_hint = ""
-        if dsl:
-            skills_hint = f'\nSearch skills: Glob("skills/{dsl}/**/*.md") and Read relevant ones.'
         metric_hint = ""
         if progress:
             baseline = progress.get("baseline_metric")
@@ -162,7 +177,7 @@ def get_guidance(task_dir: str) -> str:
                 metric_hint = f" Baseline {primary_metric}: {baseline}."
 
         return (f"[AR Phase: PLAN] "
-                f"Read task.yaml, editable files ({editable}), and reference.py.{skills_hint}{metric_hint}\n"
+                f"Read task.yaml, editable files ({editable}), and reference.py.{_skills_hint(dsl)}{metric_hint}\n"
                 f"\n"
                 f"{_create_plan_instruction(task_dir)}"
                 f"\n"
@@ -290,7 +305,7 @@ def get_guidance(task_dir: str) -> str:
                 "(reference the prior pid in <desc> for audit context)."
             )
         return (f"[AR Phase: REPLAN] All items settled. Budget: {remaining} rounds left. "
-                f"Read .ar_state/history.jsonl. Analyze what worked/failed.\n"
+                f"Read .ar_state/history.jsonl. Analyze what worked/failed.{_skills_hint(dsl)}\n"
                 f"\n"
                 f"{_create_plan_instruction(task_dir)}"
                 f"{retry_hint}")
