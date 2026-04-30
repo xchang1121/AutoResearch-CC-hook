@@ -388,8 +388,11 @@ def get_guidance(task_dir: str) -> str:
             f"sentence each."
         )
         return (f"[AR Phase: DIAGNOSE] consecutive_failures >= 3.\n"
-                f"Spawn a SUBAGENT (Agent tool) with this EXACT prompt — "
-                f"do not paraphrase, do not add or remove constraints:\n"
+                f"Spawn the diagnosis SUBAGENT — call Agent with "
+                f"subagent_type='ar-diagnosis' (defined in "
+                f".claude/agents/ar-diagnosis.md, read-only tools only) "
+                f"and this EXACT prompt — do not paraphrase, do not add "
+                f"or remove constraints:\n"
                 f"---BEGIN SUBAGENT PROMPT---\n"
                 f"{subagent_prompt}\n"
                 f"---END SUBAGENT PROMPT---\n"
