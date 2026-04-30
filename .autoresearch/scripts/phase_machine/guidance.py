@@ -192,10 +192,66 @@ def get_guidance(task_dir: str) -> str:
                 f"This is the BASELINE implementation — no optimization, just correct.")
 
     if phase == GENERATE_KERNEL:
-        return (f"[AR Phase: GENERATE_KERNEL] Generate initial kernel from reference.\n"
-                f"Read {task_dir}/reference.py, then write an optimized version to {task_dir}/kernel.py.\n"
-                f"Must contain: class ModelNew (can inherit from Model).\n"
-                f"Start with a simple optimization — the autoresearch loop will iterate from here.")
+        # Retry detection: progress.json only exists once _baseline_init.py
+        # has run, and hook_post_bash only demotes back to GENERATE_KERNEL
+        # when seed_metric is None (compile/profile failed) or
+        # baseline_correctness is False (numerical mismatch). On the first
+        # entry progress is None, so this is a clean signal.
+        is_retry = bool(progress) and (
+            progress.get("seed_metric") is None
+            or progress.get("baseline_correctness") is False
+        )
+        if is_retry:
+            retry_reason = (
+                "seed kernel produced no timing (compile/profile failed)"
+                if progress.get("seed_metric") is None
+                else "seed kernel ran but failed correctness vs reference"
+            )
+            header = f"[AR Phase: GENERATE_KERNEL — retry, prior seed failed: {retry_reason}]"
+            verb = "Generate a corrected"
+        else:
+            header = "[AR Phase: GENERATE_KERNEL]"
+            verb = "Generate an initial"
+
+        description = config.description if config else "(no description)"
+        target_file = editable[0] if editable else "kernel.py"
+        editable_line = (
+            f"Editable files: {', '.join(editable)}\n" if editable else ""
+        )
+        constraints_part = ""
+        if config and getattr(config, "constraints", None):
+            # constraints is {metric: (op_str, threshold)} — render compactly
+            constraint_strs = [
+                f"{m}{op}{thr}" for m, (op, thr) in config.constraints.items()
+            ]
+            constraints_part = f" | constraints: {', '.join(constraint_strs)}"
+
+        retry_block = ""
+        if is_retry:
+            retry_block = (
+                "\nThis is a retry. baseline.py just printed structured failure "
+                "signals above (UB overflow / aivec trap / OOM / correctness "
+                f"mismatch / ...). Read that output, then read the current "
+                f"{task_dir}/{target_file} to see what failed. Use the skills "
+                "Glob above to find a SKILL.md whose description matches the "
+                "failure kind before rewriting. Do NOT rewrite from scratch "
+                "unless the failure is structural — incremental fixes converge "
+                "faster.\n"
+            )
+
+        return (
+            f"{header} {verb} kernel from reference.\n"
+            f"Task: {description}\n"
+            f"DSL: {dsl} | primary metric: {primary_metric}{constraints_part}\n"
+            f"{editable_line}"
+            f"\n"
+            f"Read {task_dir}/reference.py, then write to {task_dir}/{target_file}.\n"
+            f"Must contain: class ModelNew (can inherit from Model)."
+            f"{_skills_hint(dsl)}\n"
+            f"{retry_block}"
+            f"\n"
+            f"Start simple — the autoresearch loop will iterate from here."
+        )
 
     if phase == BASELINE:
         return (f"[AR Phase: BASELINE] Run: "
