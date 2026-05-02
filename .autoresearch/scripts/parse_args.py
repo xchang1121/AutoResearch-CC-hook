@@ -76,6 +76,11 @@ def _build_scaffold_command(args) -> str:
     parts.append("--run-baseline")
     if args.no_code_checker:
         parts.append("--no-code-checker")
+    # Always emit correctness tols so task.yaml carries an explicit value
+    # (defaults match the loader fallback; emitting them keeps the task.yaml
+    # self-describing instead of relying on a default that lives in code).
+    parts += ["--correctness-atol", repr(args.correctness_atol)]
+    parts += ["--correctness-rtol", repr(args.correctness_rtol)]
     return " ".join(parts)
 
 
@@ -193,6 +198,8 @@ def main():
         "output_dir": args.output_dir or "ar_tasks",
         "run_baseline": True,
         "no_code_checker": args.no_code_checker,
+        "correctness_atol": args.correctness_atol,
+        "correctness_rtol": args.correctness_rtol,
     }
 
     if missing:

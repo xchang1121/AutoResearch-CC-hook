@@ -186,44 +186,23 @@ try:
     elif not isinstance(out_new, (list, tuple)):
         out_new = [out_new]
 
-    # --- Compare ---
-    all_close = True
-    diagnostics = []
-    for i, (r, n) in enumerate(zip(out_ref, out_new)):
-        if not (isinstance(r, torch.Tensor) and isinstance(n, torch.Tensor)):
-            continue
-        rf = r.detach().cpu().float()
-        nf = n.detach().cpu().float()
-        if rf.shape != nf.shape:
-            all_close = False
-            diagnostics.append(f"out{{i}} shape {{tuple(rf.shape)}} != kernel {{tuple(nf.shape)}}")
-            continue
-        abs_diff = (rf - nf).abs()
-        max_abs = abs_diff.max().item()
-        # Element-wise allclose: |r - n| <= atol + rtol * |r|
-        if not torch.allclose(rf, nf, atol=ATOL, rtol=RTOL):
-            all_close = False
-            rel_denom = rf.abs().clamp_min(1e-12)
-            max_rel = (abs_diff / rel_denom).max().item()
-            n_bad = ((abs_diff > (ATOL + RTOL * rf.abs())).sum().item())
-            n_tot = rf.numel()
-            diagnostics.append(
-                f"out{{i}}: max_abs={{max_abs:.3e}} max_rel={{max_rel:.3e}} "
-                f"bad_elems={{n_bad}}/{{n_tot}} ({{100.0*n_bad/n_tot:.2f}}%)"
-            )
-        else:
-            diagnostics.append(f"out{{i}}: OK (max_abs={{max_abs:.3e}})")
+    # --- Compare (delegated to shared correctness module) ---
+    # `correctness.py` is bundled into the tarball at root by
+    # _build_package; both this generated script and the batch verifier
+    # call into the same `compare_outputs` so semantics can't drift.
+    from correctness import compare_outputs
+    cmp_result = compare_outputs(list(out_ref), list(out_new), ATOL, RTOL)
 
-    for d in diagnostics:
+    for d in cmp_result["diagnostics"]:
         print(d, file=sys.stderr)
 
     print(json.dumps({{
-        "correctness": all_close,
+        "correctness": cmp_result["correctness"],
         "ref_source": ref_source,
-        "atol": ATOL, "rtol": RTOL,
-        "diagnostics": diagnostics,
+        "atol": cmp_result["atol"], "rtol": cmp_result["rtol"],
+        "diagnostics": cmp_result["diagnostics"],
     }}))
-    sys.exit(0 if all_close else 1)
+    sys.exit(0 if cmp_result["correctness"] else 1)
 
 except Exception as e:
     traceback.print_exc()
@@ -480,6 +459,15 @@ def _build_package(task_dir: str, config: TaskConfig, device_id: int = 0) -> byt
             info = tarfile.TarInfo(name=name)
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
+
+        # Shared correctness module — imported by the generated verify
+        # script via `from correctness import compare_outputs`. Bundled at
+        # tarball root so the worker subprocess can resolve it from the
+        # same sys.path entry verify_{op}.py inserts.
+        script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        correctness_src = os.path.join(script_dir, "correctness.py")
+        if os.path.isfile(correctness_src):
+            tar.add(correctness_src, arcname="correctness.py")
 
         _add_script(f"verify_{op_name}.py",
                      _gen_verify_script(config, device_id,

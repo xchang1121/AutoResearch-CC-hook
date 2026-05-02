@@ -33,12 +33,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import manifest as mf
+# Reach up one level so we can import the shared correctness module the
+# eval-package verify script also uses. Single source of truth for the
+# allclose comparison — verify.py and autoresearch's eval can't drift.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from correctness import compare_outputs  # noqa: E402
 
 VERIFY_RESULTS = "verify_results.json"
 TIER1_TIMEOUT = 30
 TIER2_TIMEOUT = 300
-ATOL = 1e-2
-RTOL = 1e-2
+# Defaults match autoresearch's loader fallback (loader.py:49-50). They are
+# only used when neither the CLI flag nor the manifest provides a value.
+DEFAULT_ATOL = 1e-2
+DEFAULT_RTOL = 1e-2
 
 REF_REQUIRED = ("Model", "get_inputs", "get_init_inputs")
 KERNEL_REQUIRED = ("ModelNew",)
@@ -93,9 +100,12 @@ def _tier1_inspect(path: Path, required: tuple[str, ...]) -> dict:
     return out
 
 
-def _tier2_run(ref_path: Path, kernel_path: Path) -> dict:
-    """Run ref + kernel, compare outputs."""
-    out: dict = {"status": "skip", "msg": "", "max_abs_diff": None}
+def _tier2_run(ref_path: Path, kernel_path: Path,
+               atol: float, rtol: float) -> dict:
+    """Run ref + kernel, compare outputs via the shared correctness module
+    (autoresearch's eval calls into the same `compare_outputs`)."""
+    out: dict = {"status": "skip", "msg": "", "max_abs_diff": None,
+                 "atol": atol, "rtol": rtol}
 
     try:
         import torch  # type: ignore
@@ -154,38 +164,19 @@ def _tier2_run(ref_path: Path, kernel_path: Path) -> dict:
     ref_outs = _to_list(out_ref)
     new_outs = _to_list(out_new)
 
-    if len(ref_outs) != len(new_outs):
+    cmp = compare_outputs(ref_outs, new_outs, atol, rtol)
+    out["max_abs_diff"] = cmp["max_abs_diff"]
+    if cmp["correctness"]:
+        out["status"] = "PASS"
+        out["msg"] = "OK"
+    else:
         out["status"] = "FAIL"
-        out["msg"] = f"output count: ref={len(ref_outs)} new={len(new_outs)}"
-        return out
-
-    max_diff = 0.0
-    for i, (r, n) in enumerate(zip(ref_outs, new_outs)):
-        if not isinstance(r, torch.Tensor):
-            if r != n:
-                out["status"] = "FAIL"
-                out["msg"] = f"output[{i}] scalar mismatch: {r!r} vs {n!r}"
-                return out
-            continue
-        r32 = r.detach().cpu().to(torch.float32)
-        n32 = n.detach().cpu().to(torch.float32)
-        if tuple(r32.shape) != tuple(n32.shape):
-            out["status"] = "FAIL"
-            out["msg"] = f"output[{i}] shape: {tuple(r32.shape)} vs {tuple(n32.shape)}"
-            return out
-        if not torch.allclose(r32, n32, atol=ATOL, rtol=RTOL, equal_nan=True):
-            diff = (r32 - n32).abs()
-            n_bad = int((diff > (ATOL + RTOL * r32.abs())).sum().item())
-            out["status"] = "FAIL"
-            out["max_abs_diff"] = float(diff.max().item())
-            out["msg"] = (f"output[{i}] {n_bad}/{r32.numel()} outside tol; "
-                          f"max_abs_diff={diff.max().item():.4g}")
-            return out
-        max_diff = max(max_diff, float((r32 - n32).abs().max().item()))
-
-    out["status"] = "PASS"
-    out["max_abs_diff"] = max_diff
-    out["msg"] = "OK"
+        # Surface the first failing diagnostic — the full list goes into the
+        # JSON output for verify_results.json. Fall back to a generic note
+        # if compare_outputs returned no diagnostics (shouldn't happen).
+        bad = next((d for d in cmp["diagnostics"] if "OK" not in d), None)
+        out["msg"] = bad or "correctness mismatch (no diagnostics)"
+        out["diagnostics"] = cmp["diagnostics"]
     return out
 
 
@@ -196,6 +187,8 @@ def _worker_main() -> int:
     ap.add_argument("--ref", required=True)
     ap.add_argument("--kernel", default="")
     ap.add_argument("--sidecar", required=True)
+    ap.add_argument("--atol", type=float, default=DEFAULT_ATOL)
+    ap.add_argument("--rtol", type=float, default=DEFAULT_RTOL)
     args = ap.parse_args(sys.argv[2:])  # skip the --tier-worker sentinel
 
     ref_path = Path(args.ref)
@@ -213,7 +206,7 @@ def _worker_main() -> int:
         if kernel_path is None:
             result = {"status": "skip", "msg": "ref-only mode; no kernel to compare"}
         else:
-            result = _tier2_run(ref_path, kernel_path)
+            result = _tier2_run(ref_path, kernel_path, args.atol, args.rtol)
 
     Path(args.sidecar).write_text(json.dumps(result), encoding="utf-8")
     return 0
@@ -223,7 +216,8 @@ def _worker_main() -> int:
 # Driver
 # ---------------------------------------------------------------------------
 def _run_subprocess(*, tier: str, ref: Path, kernel: Path | None,
-                    timeout: int) -> dict:
+                    timeout: int, atol: float = DEFAULT_ATOL,
+                    rtol: float = DEFAULT_RTOL) -> dict:
     sidecar = Path(os.environ.get("TMP", "/tmp")) / f"_verify_{os.getpid()}_{tier}_{ref.stem}.json"
     if sidecar.exists():
         sidecar.unlink()
@@ -234,6 +228,8 @@ def _run_subprocess(*, tier: str, ref: Path, kernel: Path | None,
            "--sidecar", str(sidecar)]
     if kernel is not None:
         cmd += ["--kernel", str(kernel)]
+    if tier == "2":
+        cmd += ["--atol", repr(atol), "--rtol", repr(rtol)]
 
     env = os.environ.copy()
     # Default the Windows libomp/libiomp5md double-init workaround so users
@@ -269,7 +265,8 @@ def _run_subprocess(*, tier: str, ref: Path, kernel: Path | None,
     return result
 
 
-def _verify_one(case: dict, mode: str, full: bool) -> dict:
+def _verify_one(case: dict, mode: str, full: bool,
+                atol: float, rtol: float) -> dict:
     op = case["op_name"]
     ref = Path(case["ref"])
     kernel = Path(case["kernel"]) if case.get("kernel") else None
@@ -292,7 +289,8 @@ def _verify_one(case: dict, mode: str, full: bool) -> dict:
     if full and mode == "ref-kernel":
         if tier1_ok:
             out["tier2"] = _run_subprocess(tier="2", ref=ref, kernel=kernel,
-                                           timeout=TIER2_TIMEOUT)
+                                           timeout=TIER2_TIMEOUT,
+                                           atol=atol, rtol=rtol)
         else:
             out["tier2"] = {"status": "skip",
                             "msg": "tier1 failed; skipping tier2",
@@ -385,6 +383,15 @@ def main() -> int:
                          "needs the same hardware /autoresearch eval would use")
     ap.add_argument("--only", default="",
                     help="comma-separated op names")
+    ap.add_argument("--correctness-atol", type=float, default=None,
+                    help="Tier 2 absolute tolerance for torch.allclose. "
+                         "Precedence: CLI > manifest.correctness_atol > "
+                         f"default ({DEFAULT_ATOL}). Mirrors the value "
+                         "scaffold writes into task.yaml.metric.correctness_atol.")
+    ap.add_argument("--correctness-rtol", type=float, default=None,
+                    help="Tier 2 relative tolerance for torch.allclose. "
+                         "Precedence: CLI > manifest.correctness_rtol > "
+                         f"default ({DEFAULT_RTOL}).")
     args = ap.parse_args()
 
     workspace_dir = Path(args.workspace_dir).resolve()
@@ -403,6 +410,16 @@ def main() -> int:
     if mode not in mf.VALID_MODES:
         sys.exit(f"--mode must be one of {mf.VALID_MODES}, got {mode!r}")
 
+    # Resolve tolerances: CLI > manifest > default. Same defaults as
+    # autoresearch's loader, so a no-flag run agrees with /autoresearch's
+    # eval byte-for-byte.
+    atol = (args.correctness_atol
+            if args.correctness_atol is not None
+            else float(manifest_data.get("correctness_atol", DEFAULT_ATOL)))
+    rtol = (args.correctness_rtol
+            if args.correctness_rtol is not None
+            else float(manifest_data.get("correctness_rtol", DEFAULT_RTOL)))
+
     try:
         cases = mf.resolve_cases(workspace_dir, manifest_data, mode)
     except mf.ManifestError as e:
@@ -418,7 +435,8 @@ def main() -> int:
         print("note: --full has no effect in --mode ref (no kernel to compare)")
 
     print(f"verify  workspace={workspace_dir}  mode={mode}  "
-          f"tier={'1+2' if args.full else '1'}  ops={len(cases)}")
+          f"tier={'1+2' if args.full else '1'}  ops={len(cases)}  "
+          f"tols: atol={atol:g}  rtol={rtol:g}")
     print()
 
     results: dict = {}
@@ -427,7 +445,7 @@ def main() -> int:
         op = case["op_name"]
         sys.stdout.write(f"  [{i:>3}/{len(cases)}] {op} ... ")
         sys.stdout.flush()
-        rec = _verify_one(case, mode, full=args.full)
+        rec = _verify_one(case, mode, full=args.full, atol=atol, rtol=rtol)
         results[op] = rec
         ok = _summary_status(rec, mode, full=args.full)
         sys.stdout.write(f"{ok}\n")
@@ -437,6 +455,8 @@ def main() -> int:
     out_path.write_text(json.dumps({
         "mode": mode,
         "full": args.full,
+        "atol": atol,
+        "rtol": rtol,
         "results": results,
     }, indent=2), encoding="utf-8")
 

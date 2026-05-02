@@ -190,7 +190,7 @@ verify  workspace=<batch_dir>  mode=ref-kernel  tier=1  ops=10
 仅在 `--mode ref-kernel` 时有意义（`--mode ref` 没 kernel 可比）。每个 op 在独立 subprocess 里：
 1. 加载 ref + kernel
 2. 跑 `ref(*get_inputs())` 和 `kernel(*get_inputs())`
-3. `torch.allclose` 比对，atol=rtol=1e-2
+3. `torch.allclose` 比对（atol/rtol 默认 1e-2，与 autoresearch 实跑同款；可覆盖见下文「精度容差」）
 
 ```bash
 python .autoresearch/scripts/batch/verify.py <batch_dir> --full
@@ -218,6 +218,46 @@ python .autoresearch/scripts/batch/verify.py <batch_dir> --only layernorm --full
 
 每次跑都覆盖写 `<workspace>/verify_results.json`，包含每个 op 的所有 tier 结果（含 traceback 末段、`max_abs_diff`、`elapsed_s` 等）。CI 可解析这个 JSON。
 
+### 精度容差（与 autoresearch 实跑对齐）
+
+verify.py Tier 2 和 autoresearch 跑 `verify_<op>.py` 用的是同一个比较函数 [`.autoresearch/scripts/correctness.py`](.autoresearch/scripts/correctness.py)，所以 verify Tier 2 PASS = autoresearch 实跑也会 PASS（同 atol/rtol、同 dtype 处理、`equal_nan=False`）。
+
+容差解析顺序：
+
+| 来源 | 字段 | 优先级 |
+|---|---|---|
+| `verify.py --correctness-atol / --correctness-rtol` | CLI flag | 最高 |
+| `<workspace>/manifest.{yaml,json}` 顶层 `correctness_atol / correctness_rtol` | manifest | 中 |
+| 默认 `1e-2 / 1e-2` | hard-coded | 兜底（与 autoresearch loader 默认一致） |
+
+`/autoresearch` 这一侧也新增了 `--correctness-atol / --correctness-rtol`（默认 1e-2），scaffold 会把值写进 `task.yaml.metric.correctness_atol/rtol`，eval 包里的 `verify_<op>.py` 通过同一个 [`correctness.py`](.autoresearch/scripts/correctness.py) 消费。
+
+整批想跑严一点的最干净写法是写进 manifest（verify 和后续 batch run 都会读到）：
+
+```yaml
+# <workspace>/manifest.yaml
+mode: ref-kernel
+dsl: triton_ascend
+ref_dir: refs
+kernel_dir: kernels
+correctness_atol: 1.0e-3
+correctness_rtol: 1.0e-3
+ops:
+  - op1
+  - op2
+```
+
+> 注：当前 batch [run.py](.autoresearch/scripts/batch/run.py) 还没把 manifest 里的 atol/rtol 透传到 `/autoresearch` 命令里 —— 想让 autoresearch 实跑也用更严的容差，目前只能手动 `claude` 进交互模式 + 单独传 `--correctness-atol/--correctness-rtol` 给 `/autoresearch`。这是后续可以补的一步透传，不影响 verify 自身的对齐。
+
+仅临时调试 verify 时，CLI 覆盖更方便：
+
+```bash
+python .autoresearch/scripts/batch/verify.py <batch_dir> --full \
+    --correctness-atol 1e-3 --correctness-rtol 1e-3
+```
+
+verify.py 启动时会打印 `tols: atol=… rtol=…` 一行，把实际生效的值告诉你；同样写进 `verify_results.json` 顶层。
+
 ---
 
 ## 自动化边界 —— 哪些步骤被自动化了？
@@ -240,7 +280,7 @@ verify.py <workspace>                   ┌─ 每个 op subprocess 隔离
 
 verify.py <workspace> --full            ┌─ Tier 2: 加载 ref + kernel
 （可选 Tier 2）                         ├─ ref(*inputs) vs kernel(*inputs)
-                                        └─ torch.allclose atol/rtol=1e-2
+                                        └─ torch.allclose（atol/rtol 同 task.yaml；调 .autoresearch/scripts/correctness.py 公共模块）
 
 run.py <workspace_dir>                  ┌─ load + validate manifest
    --mode ref-kernel                    ├─ pre-flight 检查所有 ref/kernel 文件
