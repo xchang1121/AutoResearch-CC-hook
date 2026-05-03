@@ -11,19 +11,27 @@ What's NOT here:
     consumed by this module via `has_pending_items`.
 
 What IS here:
+  - The bash command shape layer (`Segment` / `ScriptInvocation` /
+    `BashCommandShape` / `analyze_bash_command` / etc.) — single
+    canonical bash parser. Char-level splitting and phase-level
+    semantics live in different functions; callers ask the shape
+    layer "what does this command DO?", they don't reparse.
   - Global bash bans (`_GLOBAL_BASH_BANS`).
   - Phase-agnostic command patterns (`_PHASE_AGNOSTIC_PATTERNS`).
   - Per-phase Bash policy table (`_BASH_RULES`).
   - Per-phase Edit allowance (`_EDIT_RULES`).
   - `check_bash` / `check_edit` — the two predicates hooks call.
   - `compute_next_phase` / `compute_resume_phase` — phase transition logic.
-  - Script-invocation parser (`parse_script_names` etc.) — used by
-    both hook_guard_bash (PreToolUse) and hook_post_bash (PostToolUse).
+  - Script-invocation parser (`parse_script_names` /
+    `parse_invoked_ar_script`) — thin wrappers over the shape layer.
+  - Recovery-path predicate (`is_single_foreground_ar_invocation`) —
+    used by hook_guard_bash's EDIT pending-settle gate.
 """
 import os
 import re
 import shlex
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import List, NamedTuple, Optional
 
 from .state_store import (
     INIT, GENERATE_REF, GENERATE_KERNEL, BASELINE, PLAN, EDIT,
@@ -37,8 +45,64 @@ from .validators import (
 
 
 # ---------------------------------------------------------------------------
-# Script invocation parser (single source for hook_guard_bash + hook_post_bash)
+# Bash command shape layer
 # ---------------------------------------------------------------------------
+#
+# Char-level splitting and phase-level semantics are intentionally
+# separated. The parser walks the command once, returns a structured
+# `BashCommandShape`, and every other module asks that shape questions
+# instead of re-parsing the command string. This keeps the bash-quirk
+# knowledge (which `&` is backgrounding vs FD-redirection, which `python`
+# is a real launch vs `printf python ...`, etc.) in exactly one place.
+#
+# Layers:
+#   1. _split_bash_chain → list[Segment]     (char-level, redirection-aware)
+#   2. _scan_segment      → ScriptInvocation? (per-segment argv walker)
+#   3. analyze_bash_command → BashCommandShape (composition + flags)
+#
+# Public predicates (`parse_script_names`, `parse_invoked_ar_script`,
+# `is_single_foreground_ar_invocation`) are thin views over the shape.
+
+class Segment(NamedTuple):
+    """One bash chain segment plus the operator that came AFTER it.
+
+    `op_after` is one of '&&', '||', ';', '|', '&', or None for the
+    final segment. Knowing the trailing operator is what lets the
+    shape layer distinguish a phase-advancing AR script that runs
+    foreground (op_after != '&') from the same script smuggled into
+    the background (op_after == '&').
+    """
+    text: str
+    op_after: Optional[str]
+
+
+@dataclass
+class ScriptInvocation:
+    """One real interpreter-runs-script invocation found inside a
+    Segment. `path` is forward-slash-normalized; `is_ar_script` checks
+    whether it lives under `.autoresearch/scripts/`; `is_backgrounded`
+    reflects the segment's trailing `&` operator (NOT a property of
+    the script itself, but always traveled with it because the gate
+    rules need both)."""
+    segment_index: int
+    path: str
+    basename: str
+    is_ar_script: bool
+    is_backgrounded: bool
+
+
+@dataclass
+class BashCommandShape:
+    """Structured view of a Bash command. Single source of truth for
+    every `what does this command DO?` question downstream gates ask."""
+    segments: List[Segment]
+    scripts: List[ScriptInvocation]
+    first_ar_script: Optional[str]
+    has_background: bool
+    has_pipe: bool
+    has_control_chain: bool   # &&, ||, ;
+    nontrivial_segments: int  # count of segments with non-empty text
+
 
 # Detects an "interpreter" token (python, py, bash, sh, with optional
 # version suffix). Anchored — must match the WHOLE token, not just a
@@ -135,52 +199,109 @@ def _scan_segment_for_invocation(tokens: list) -> Optional[int]:
     return _find_script_position(tokens, j + 1)
 
 
-def parse_script_names(command: str) -> list:
-    """Return [(script_path_forward_slashes, basename), ...] for EVERY
-    real python/bash interpreter-runs-script invocation in `command`,
-    in order.
+def analyze_bash_command(command: str) -> BashCommandShape:
+    """Single canonical bash analysis. Walks `_split_bash_chain` once,
+    runs the per-segment argv walker, and returns a `BashCommandShape`.
 
-    Splits the command into bash chain segments (`&&` / `||` / `;` /
-    `|`), tokenizes each via shlex (POSIX mode), then asks
-    _scan_segment_for_invocation whether the SEGMENT HEAD looks like
-    a real launch. Interpreter detection is anchored at the
-    command-head position (after optional env-var assignments) — the
-    parser does NOT scan deeper into the segment for stray `python`
-    tokens. Subshell launches like `$(python script.py)` are
-    deliberately not detected here; the global ban list (substring
-    match over the whole command) already catches subprocess-only
-    scripts smuggled into subshells.
+    All downstream gate code (parse_script_names, parse_invoked_ar_script,
+    check_bash global rules, recovery predicate, hook routing) reads
+    from this shape rather than reparsing — keeping char-level bash
+    quirks in exactly one place.
 
-    Windows backslash separators are normalized to forward slashes
-    PER SEGMENT (after _split_bash_chain has finished its quote/escape
-    walk). shlex(posix=True) treats `\\` as an escape character, so
-    `python .autoresearch\\scripts\\create_plan.py` would tokenize to
-    `.autoresearchscriptscreate_plan.py` and miss the `.py` suffix
-    entirely (false-blocking real Windows invocations in strict-bash
-    phases). Forward slashes are valid path separators on Windows
-    from Python's perspective and have no shell-escape semantics, so
-    the rewrite is safe. Per-segment (rather than whole-command)
-    normalization means escape sequences like `\\&` outside quotes
-    don't accidentally become a `/&` that the splitter has already
-    walked past — the splitter sees the raw `\\&` and applies its
-    backslash-escape rule, which is what we want.
+    Per-segment normalizations:
+      - Windows backslash → forward slash AFTER `_split_bash_chain`
+        finished its quote/escape walk. shlex(posix=True) would
+        otherwise treat `\\` as an escape and turn
+        `.autoresearch\\scripts\\create_plan.py` into
+        `.autoresearchscriptscreate_plan.py`.
+      - shlex.split(posix=True) tokenization. If a segment has
+        unbalanced quotes, treat it as having no invocation rather
+        than raising — downstream gates will default to "no script
+        recognized", which is the safe verdict for the input class
+        we'd refuse to parse.
     """
-    out = []
-    for raw_segment in _split_bash_chain(command):
-        segment = raw_segment.replace("\\", "/")
+    segments = _split_bash_chain(command)
+    scripts: List[ScriptInvocation] = []
+    first_ar = None
+    for idx, seg in enumerate(segments):
+        normalized = seg.text.replace("\\", "/")
         try:
-            tokens = shlex.split(segment, comments=False, posix=True)
+            tokens = shlex.split(normalized, comments=False, posix=True)
         except ValueError:
-            # Unbalanced quotes etc. — skip the segment rather than
-            # raise. The downstream gate's default of "no recognized
-            # invocation" is the safe outcome here.
             continue
         pos = _scan_segment_for_invocation(tokens)
         if pos is None:
             continue
         path = tokens[pos]
-        out.append((path, os.path.basename(path)))
-    return out
+        basename = os.path.basename(path)
+        is_ar = ".autoresearch/scripts/" in path
+        is_bg = (seg.op_after == "&")
+        scripts.append(ScriptInvocation(
+            segment_index=idx, path=path, basename=basename,
+            is_ar_script=is_ar, is_backgrounded=is_bg,
+        ))
+        if is_ar and first_ar is None:
+            first_ar = basename
+    return BashCommandShape(
+        segments=segments,
+        scripts=scripts,
+        first_ar_script=first_ar,
+        has_background=any(s.op_after == "&" for s in segments),
+        has_pipe=any(s.op_after == "|" for s in segments),
+        has_control_chain=any(s.op_after in ("&&", "||", ";") for s in segments),
+        nontrivial_segments=sum(1 for s in segments if s.text.strip()),
+    )
+
+
+def parse_script_names(command: str) -> list:
+    """Return [(script_path_forward_slashes, basename), ...] for every
+    real interpreter-runs-script invocation in `command`. Thin wrapper
+    over `analyze_bash_command` so the bash parser is single-sourced;
+    callers that need the structural information (backgrounded? in
+    which segment? AR vs other) should call `analyze_bash_command`
+    directly."""
+    return [(s.path, s.basename) for s in analyze_bash_command(command).scripts]
+
+
+def is_single_foreground_ar_invocation(command: str, *, script: str) -> tuple:
+    """Recovery-gate predicate: is `command` exactly one synchronous
+    invocation of `<.autoresearch/scripts/script>`, with no chains?
+
+    Returns (True, "") on pass; (False, reason) on fail.
+
+    Allowed:
+      - python .autoresearch/scripts/<script>.py task
+      - py -3 .autoresearch/scripts/<script>.py task
+      - AR_X=1 python .autoresearch/scripts/<script>.py task
+      - python .autoresearch/scripts/<script>.py task > out.log 2>&1
+
+    Rejected:
+      - <script>.py task & echo done           (background)
+      - <script>.py task ; python -c "..."     (sequence chain)
+      - <script>.py task && echo done          (control chain)
+      - <script>.py task | tee log             (pipe)
+      - python <other>.py task                  (wrong script)
+
+    The recovery contract (see hook_guard_bash) intentionally
+    refuses leading `export VAR=val && ...` chains — agents in EDIT
+    phase already have AR_TASK_DIR set, so this restriction holds
+    in practice and removes one ambiguity surface.
+    """
+    shape = analyze_bash_command(command)
+    if shape.nontrivial_segments != 1:
+        return False, ("expected exactly one substantive segment; "
+                       "chains (`&&`, `;`, `|`, `&`) are not allowed")
+    if len(shape.scripts) != 1:
+        return False, (f"expected exactly one .py invocation; got "
+                       f"{len(shape.scripts)}")
+    inv = shape.scripts[0]
+    if not inv.is_ar_script:
+        return False, "script must be under .autoresearch/scripts/"
+    if inv.basename != script:
+        return False, f"expected {script!r}, got {inv.basename!r}"
+    if inv.is_backgrounded:
+        return False, "the AR script must not be backgrounded with `&`"
+    return True, ""
 
 
 def parse_script_name(command: str) -> Optional[tuple]:
@@ -325,12 +446,15 @@ def _segment_is_phase_agnostic(segment: str) -> bool:
 # argument that the model rarely uses it; in practice it's a free
 # smuggle channel — `python create_plan.py & python pipeline.py` ran
 # both invocations while strict-bash and EDIT-recovery gates only saw
-# the first one. We now split on it. Redirection forms like `2>&1`
-# do split (`'... 2>'` + `'1'`), but the second segment carries no
-# interpreter and yields no script invocation, so the gate result
-# is unchanged for legitimate redirects. We split on these and
-# require EVERY segment to be phase-agnostic OR pass the per-phase
-# rule.
+# the first one. We split on it, but EXCLUDE `&` that is part of a
+# file-descriptor redirection so legitimate forms continue to work
+# in one segment:
+#   - `>&` / `<&`  — FD duplication (`2>&1`, `1>&2`, `<&-`)
+#   - `&>` / `&>>` — bash combined stdout+stderr redirect
+# The splitter inspects the previous non-space char and the next char
+# at each `&`; only an isolated `&` (not adjacent to `>`/`<`) is
+# treated as a chain separator. Quoted `&` and backslash-escaped
+# `\&` were already preserved by the existing quote/escape logic.
 #
 # Splitting must respect shell quoting and backslash escapes — a naive
 # `re.split(r'&&|\|\||;|\|')` over `grep 'a|b' foo` cuts the quoted `|`
@@ -359,28 +483,46 @@ def _segment_is_phase_agnostic(segment: str) -> bool:
 # real run, add a dedicated guard then — don't pre-build half a bash
 # parser on the assumption.
 
-def _split_bash_chain(command: str) -> list:
-    """Split `command` on `&&` / `||` / `;` / `|` / `&` outside quotes."""
-    segments = []
-    cur = []
+def _split_bash_chain(command: str) -> List[Segment]:
+    """Split `command` on `&&` / `||` / `;` / `|` / `&` (outside quotes)
+    into a list of `Segment(text, op_after)`. The trailing operator is
+    captured so downstream gates can ask `was this segment backgrounded?`
+    without re-parsing.
+
+    Bare `&` is a separator (backgrounding) UNLESS it's part of a
+    file-descriptor redirection. The disambiguator looks at the
+    previous non-space char and the next char:
+
+      - prev `>` or `<`  → FD duplication (`2>&1`, `1>&2`, `<&-`)
+      - next `>`         → bash combined redirect (`&> log`, `&>> log`)
+
+    Either case keeps `&` literal inside the segment text. Quoted `&`
+    and backslash-escaped `\\&` are preserved by the existing
+    quote/escape logic (they never reach the separator branch).
+    """
+    segments: List[Segment] = []
+    cur: List[str] = []
     i = 0
     n = len(command)
     in_single = False
     in_double = False
+
+    def flush(op):
+        segments.append(Segment(text="".join(cur), op_after=op))
+        cur.clear()
+
     while i < n:
         c = command[i]
 
-        # Backslash escape: take the next char literally (only honored
-        # outside single quotes, like real bash). At end of string just
-        # emit the backslash.
+        # Backslash escape: take the next char literally (outside
+        # single quotes, like real bash). End-of-string: emit `\`.
         if c == "\\" and not in_single and i + 1 < n:
             cur.append(c)
             cur.append(command[i + 1])
             i += 2
             continue
 
-        # Quote toggles: single quotes don't toggle inside double, and
-        # vice versa (matches bash semantics).
+        # Quote toggles
         if c == "'" and not in_double:
             in_single = not in_single
             cur.append(c)
@@ -400,30 +542,37 @@ def _split_bash_chain(command: str) -> list:
 
         # Two-char separators first (`&&`, `||`).
         if c == "&" and i + 1 < n and command[i + 1] == "&":
-            segments.append("".join(cur))
-            cur = []
-            i += 2
+            flush("&&"); i += 2
             continue
         if c == "|" and i + 1 < n and command[i + 1] == "|":
-            segments.append("".join(cur))
-            cur = []
-            i += 2
+            flush("||"); i += 2
             continue
 
-        # One-char separators (`;`, `|`, `&`). The `&&` / `||` two-char
-        # forms are handled above and consume both chars first, so the
-        # single-char branch only fires for true backgrounding `&` /
-        # sequence `;` / pipe `|`.
-        if c == ";" or c == "|" or c == "&":
-            segments.append("".join(cur))
-            cur = []
-            i += 1
+        # One-char separators (`;`, `|`).
+        if c == ";":
+            flush(";"); i += 1
+            continue
+        if c == "|":
+            flush("|"); i += 1
+            continue
+
+        # Bare `&` — backgrounding UNLESS adjacent to redirection (see
+        # function docstring).
+        if c == "&":
+            prev = next((ch for ch in reversed(cur) if not ch.isspace()), None)
+            next_c = command[i + 1] if i + 1 < n else None
+            if prev in (">", "<") or next_c == ">":
+                cur.append(c)
+                i += 1
+                continue
+            flush("&"); i += 1
             continue
 
         cur.append(c)
         i += 1
 
-    segments.append("".join(cur))
+    # Final segment has no trailing operator
+    segments.append(Segment(text="".join(cur), op_after=None))
     return segments
 
 
@@ -473,18 +622,18 @@ def check_bash(phase: str, command: str) -> tuple:
 
     Decision order:
       1. Global bans (subprocess-only scripts, `git commit`) — checked
-         against the full command first; a chain that smuggles a banned
-         substring anywhere is rejected.
-      2. Per-chain-segment phase rules: split on bash chain separators,
-         every
-         segment must independently pass either the agnostic-shortcut
-         (read-only + lifecycle), the activation special case, or the
-         per-phase strict/permissive rule. The previous implementation
-         applied phase rules to the whole command, so a strict phase
-         like BASELINE accepted `python baseline.py && python pipeline.py`
-         (the "baseline.py" required substring matched the WHOLE chain
-         and let pipeline.py ride along). Per-segment evaluation closes
-         that hole.
+         against the full command first.
+      2. Global ban on backgrounding any AR-script invocation — phase-
+         advancing scripts under `.autoresearch/scripts/` must run
+         synchronously. Backgrounding lets hook_post_bash advance phase
+         / clear pending_settle before the script has finished writing
+         its outputs (plan.md, history.jsonl, progress.json).
+      3. Per-chain-segment phase rules: every segment must independently
+         pass either the agnostic-shortcut (read-only + lifecycle), the
+         activation special case, or the per-phase strict/permissive
+         rule. Per-segment closes the hole where strict phases used to
+         accept `python baseline.py && python pipeline.py` because the
+         whole-command substring contained the strict-required name.
     """
     for ban, why in _GLOBAL_BASH_BANS.items():
         if ban in command:
@@ -493,13 +642,22 @@ def check_bash(phase: str, command: str) -> tuple:
         return False, ("manual 'git commit' forbidden — commits are produced "
                        "by pipeline.py via keep_or_discard")
 
+    shape = analyze_bash_command(command)
+    for inv in shape.scripts:
+        if inv.is_ar_script and inv.is_backgrounded:
+            return False, (
+                f"backgrounding '{inv.basename}' with `&` is forbidden — "
+                f"phase-advancing AR scripts under .autoresearch/scripts/ "
+                f"must run synchronously. Drop the `&` (run foreground) "
+                f"or break the command into separate Bash invocations."
+            )
+
     policy = _BASH_RULES.get(phase)
     if policy is None:
         return False, f"unknown phase {phase!r}"
 
-    segments = _split_bash_chain(command)
-    for seg in segments:
-        ok, reason = _segment_passes_phase_rule(seg, policy)
+    for seg in shape.segments:
+        ok, reason = _segment_passes_phase_rule(seg.text, policy)
         if not ok:
             return False, f"phase {phase}: {reason}"
     return True, ""

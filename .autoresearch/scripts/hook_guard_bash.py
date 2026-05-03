@@ -17,6 +17,7 @@ from phase_machine import (
     DIAGNOSE, DIAGNOSE_ATTEMPTS_CAP, EDIT, REPLAN, read_phase, get_guidance,
     get_task_dir, touch_heartbeat, check_bash, parse_script_names,
     diagnose_state, parse_invoked_ar_script, pending_settle_path,
+    is_single_foreground_ar_invocation,
 )
 from settings import hallucinated_scripts
 
@@ -120,28 +121,27 @@ def main():
     # broken plan_version. hook_post_bash clears pending_settle.json on
     # successful create_plan validation.
     #
-    # Two safety constraints on the recovery:
-    #   - The command must contain EXACTLY ONE .py invocation, and it
-    #     must be create_plan.py. Chains like
-    #     `create_plan.py && pipeline.py` would let pipeline.py run with
-    #     no real PostToolUse handling (it only routes by the first
-    #     script) and would re-enter the eval loop with pending_settle
-    #     just cleared — corrupted state.
-    #   - The command must still pass the normal bash check using REPLAN's
-    #     policy (permissive, no per-phase bans) so global bans
-    #     (eval_wrapper.py / keep_or_discard.py / quick_check.py /
-    #     settle.py / `git commit`) and per-segment chain validation
-    #     still apply. Without this, the previous `sys.exit(0)` early-out
-    #     skipped global bans entirely.
+    # The recovery contract is enforced in two layers:
+    #   1. is_single_foreground_ar_invocation: the command MUST be
+    #      exactly one synchronous create_plan.py invocation, no chains,
+    #      no backgrounding. (Predicate lives in phase_policy so the
+    #      bash-shape knowledge stays single-sourced; this hook only
+    #      decides when to apply it.) Legitimate FD redirects (`2>&1`,
+    #      `&>log`, `> log`) all stay in one segment because the
+    #      splitter is redirection-aware.
+    #   2. check_bash(REPLAN) on top of (1), so global bans
+    #      (eval_wrapper.py / keep_or_discard.py / quick_check.py /
+    #      settle.py / `git commit`) still apply.
     if phase == EDIT and invoked == "create_plan.py" \
             and os.path.exists(pending_settle_path(task_dir)):
-        invocations = parse_script_names(command)
-        if len(invocations) != 1 or invocations[0][1] != "create_plan.py":
+        ok, reason = is_single_foreground_ar_invocation(
+            command, script="create_plan.py")
+        if not ok:
             block_decision(
-                "[AR] Recovery path allows ONLY a single create_plan.py "
-                "invocation in EDIT phase while .pending_settle.json "
-                "exists. Run create_plan.py alone first; pipeline.py / "
-                "other scripts may not be chained with it during recovery."
+                f"[AR] Recovery path requires a single foreground "
+                f"create_plan.py invocation while .pending_settle.json "
+                f"exists: {reason}. Re-issue without chaining; FD "
+                f"redirects (`2>&1`, `> log.txt`) are fine."
             )
         ok, reason = check_bash(REPLAN, command)
         if not ok:

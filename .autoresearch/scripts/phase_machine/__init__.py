@@ -66,6 +66,10 @@ from .phase_policy import (
     parse_script_name, parse_script_names, parse_invoked_ar_script,
     check_bash, check_edit,
     compute_next_phase, compute_resume_phase,
+    # Bash command shape layer — single canonical bash parser; new
+    # callers should prefer these over re-implementing.
+    Segment, ScriptInvocation, BashCommandShape,
+    analyze_bash_command, is_single_foreground_ar_invocation,
     # Policy tables — public-ish because tests / dashboards reference
     # them. Underscore-prefixed for a "do not mutate at runtime" hint
     # rather than for true privacy.
