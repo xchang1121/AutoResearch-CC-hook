@@ -139,9 +139,16 @@ is relaxed.
 3. Run `python .autoresearch/scripts/create_plan.py "$AR_TASK_DIR"`. Only
    create_plan.py's structural validation applies. Phase advances to EDIT.
 
-In DIAGNOSE: do not Edit kernel.py, do not Stop. The only path forward
-is `Task → artifact → create_plan` (preferred) or `manual plan_items.xml
-→ create_plan` (fallback after cap).
+In DIAGNOSE: do not Edit kernel.py, do not Stop. Bash is locked to
+read-only / lifecycle ops + `create_plan.py` (gated on artifact). The
+only path forward is `Task → artifact → create_plan` (preferred) or
+`manual plan_items.xml → create_plan` (fallback after cap).
+
+Provenance note: the host can't tell main-agent Write from subagent
+Write, so the artifact contract is enforced by content (sections +
+marker + R<n> citations), not by who wrote it. The subagent path is
+preferred because its prompt + read-only tool isolation produce a more
+reliable diagnosis, not because the host can prove subagent provenance.
 
 ## Rules
 

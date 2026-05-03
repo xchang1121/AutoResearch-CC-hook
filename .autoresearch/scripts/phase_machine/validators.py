@@ -412,7 +412,16 @@ def validate_diagnose(task_dir: str, plan_version: int) -> tuple:
             if r is None:
                 continue
             tok = f"R{r}"
-            if tok not in body:
+            # Boundary-match the round token: a bare `tok in body`
+            # substring check would let R1 false-match inside R10/R11/...
+            # — so an artifact citing only the higher-numbered rounds
+            # would silently appear to cover the lower one. The lookbehind
+            # excludes alnum/underscore prefixes (so R1 doesn't match
+            # AR1 / _R1) and the trailing `(?!\d)` excludes a digit
+            # suffix (so R1 still matches "R1:"/"(R1)"/"R1 caused" but
+            # not R10/R11/R100).
+            pattern = re.compile(rf"(?<![A-Za-z0-9_])R{r}(?!\d)")
+            if not pattern.search(body):
                 missing_refs.append(tok)
         if missing_refs:
             return False, (f"artifact does not reference all of the last 3 "

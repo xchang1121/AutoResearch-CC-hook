@@ -78,21 +78,28 @@ The following invariants are non-negotiable:
    with a TodoWrite payload, call TodoWrite with it verbatim next turn.
 9. **DIAGNOSE phase ends with a new plan.** Two paths to that end:
    - **Preferred (subagent route).** Call `Task(subagent_type='ar-diagnosis')`;
-     the subagent Writes a valid artifact at
-     `<task_dir>/.ar_state/diagnose_v<plan_version>.md` (three sections
-     `Root cause` / `Fix directions` / `What to avoid`, citations of the
-     last 3 FAIL rounds by `R<n>`, marker line
-     `[AR DIAGNOSE COMPLETE marker_v<plan_version>]`). Then write
+     the subagent's prompt asks it to Write a structured artifact at
+     `<task_dir>/.ar_state/diagnose_v<plan_version>.md` containing three
+     sections (`Root cause` / `Fix directions` / `What to avoid`),
+     citations of the last 3 FAIL rounds by `R<n>`, and the marker line
+     `[AR DIAGNOSE COMPLETE marker_v<plan_version>]`. Then write
      `plan_items.xml` and run `create_plan.py`.
    - **Fallback (manual planning).** After 5 failed Task attempts on the
      same `plan_version`, the artifact gate is relaxed: write
      `plan_items.xml` yourself using `history.jsonl` + `plan.md`, then
      run `create_plan.py`. Further Task calls are blocked at this point.
 
-   Stop is blocked the entire time DIAGNOSE is active — only
-   `create_plan.py` advancing phase to EDIT releases the lock. The host
-   validates the artifact contract; it never synthesizes the artifact or
-   the plan for the agent.
+   While the artifact is invalid AND attempts < cap, Bash is locked to
+   read-only / lifecycle ops (no AR scripts beyond `create_plan.py`,
+   which is itself gated on artifact validity). Stop is blocked the
+   entire time DIAGNOSE is active — only `create_plan.py` advancing
+   phase to EDIT releases the lock.
+
+   Provenance note: hook payloads do NOT distinguish main agent from
+   subagent, so the host validates the artifact's CONTENT only — not who
+   wrote it. The subagent path is preferred because the prompt and
+   read-only-by-default tool isolation produce a more reliable diagnosis,
+   not because the host can prove the subagent wrote the file.
 
 ## Dependencies
 

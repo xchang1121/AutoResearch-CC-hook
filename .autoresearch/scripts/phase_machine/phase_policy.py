@@ -171,7 +171,13 @@ _BASH_RULES = {
     GENERATE_REF:    _BashPolicy("strict", required=set()),
     GENERATE_KERNEL: _BashPolicy("strict", required=set()),
     PLAN:            _BashPolicy("permissive", banned=set()),
-    DIAGNOSE:        _BashPolicy("permissive", banned=set()),
+    # DIAGNOSE: only create_plan.py is a legal AR-script invocation. The
+    # phase's contract is "produce a new plan via Task -> artifact ->
+    # create_plan" (or manual-planning fallback after the cap). Read-only
+    # ops and AR_TASK_DIR export still pass via the phase-agnostic /
+    # activation special cases. hook_guard_bash adds the artifact gate on
+    # create_plan.py itself.
+    DIAGNOSE:        _BashPolicy("strict", required={"create_plan.py"}),
     REPLAN:          _BashPolicy("permissive", banned=set()),
     # EDIT is permissive for ad-hoc shell, but blocks create_plan.py —
     # Claude must finish the current plan item via pipeline before replanning.
@@ -379,10 +385,12 @@ def check_edit(phase: str, rel_path: str, editable_files) -> tuple:
       - .ar_state/plan_items.xml: the XML input file /autoresearch hands to
         create_plan.py (see .claude/commands/autoresearch.md).
       - .ar_state/ranking.md: the FINISH-phase summary (phase-gated).
-      - .ar_state/diagnose_v<N>.md: the DIAGNOSE-phase artifact written by
-        the ar-diagnosis subagent (and validated by hook_post_task). Only
-        writable while phase=DIAGNOSE — outside the phase, no agent should
-        be touching it.
+      - .ar_state/diagnose_v<N>.md: the DIAGNOSE-phase artifact. The
+        ar-diagnosis subagent is the intended writer (per the prompt
+        contract), but hook payloads do NOT distinguish main agent from
+        subagent — provenance is not enforced. Only the artifact's
+        CONTENT (sections, marker, R<n> citations) is validated, and only
+        writable while phase=DIAGNOSE.
     """
     if rel_path.startswith(".ar_state/"):
         if rel_path == f".ar_state/{PLAN_ITEMS_FILE}":

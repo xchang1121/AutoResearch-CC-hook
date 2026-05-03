@@ -1,6 +1,6 @@
 ---
 name: ar-diagnosis
-description: Read-only diagnostician for autoresearch optimization failures. Spawn from the DIAGNOSE phase (consecutive_failures >= 3). Output is a structured markdown report Written to a fixed path; no kernel edits, no shell, no nested subagents.
+description: Read-only diagnostician for autoresearch optimization failures. Spawn from the DIAGNOSE phase (consecutive_failures >= 3). Output is a structured markdown report Written to a fixed path; no kernel edits, no shell, no nested subagents. The host validates the artifact's content but not its provenance — the value of running this subagent is its tool isolation (read-only-by-default) and dedicated prompt, not host-enforced authorship.
 tools: Read, Glob, Grep, Write
 ---
 
