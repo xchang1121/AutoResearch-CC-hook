@@ -47,6 +47,18 @@ _INTERPRETER_RE = re.compile(
     r'^(?:python(?:\d+(?:\.\d+)?)?|py|bash|sh)$'
 )
 
+# Pre-interpreter command-line prefixes the parser is willing to skip
+# past while still treating the segment as a real interpreter
+# invocation. Currently only POSIX-style env-var assignments
+# (`KMP_DUPLICATE_LIB_OK=TRUE python script.py`). Anything else as a
+# prefix means this isn't a real launch — `printf python script.py`,
+# `time python script.py`, `nohup python script.py` etc. all fail
+# (printf prints; time/nohup are wrappers we don't bless). If a real
+# wrapper becomes common in our flow, add it here explicitly rather
+# than letting the parser scan anywhere in the segment for `python`
+# (the old behavior conflated `printf python ...` with a real call).
+_ENV_ASSIGNMENT_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*=')
+
 # Python flags that take their value as the NEXT separate argv token.
 # Real python CLI: -X opt, -W setting, --check-hash-based-pycs mode.
 # When we see one of these, advance past BOTH the flag and its value.
@@ -88,34 +100,69 @@ def _find_script_position(tokens: list, start: int) -> Optional[int]:
     return None
 
 
+def _scan_segment_for_invocation(tokens: list) -> Optional[int]:
+    """Return the index of the script token if `tokens` (one bash
+    chain segment) is a real interpreter-runs-script invocation, else
+    None.
+
+    Interpreter detection is COMMAND-HEAD-ANCHORED. The parser:
+      1. Skips zero or more env-var assignment tokens
+         (`KEY=VALUE`-shaped) at the head.
+      2. Requires the next token to match `_INTERPRETER_RE`. Anything
+         else (printf, time, nohup, sudo, the result of a subshell,
+         an arbitrary command) means this segment is NOT a real
+         Python/bash launch — return None.
+      3. Walks flag tokens after the interpreter via the rules in
+         _find_script_position (`-c`/`-m` short-circuit; `-X`/`-W`
+         consume value tokens; other flags skipped) and returns the
+         script index iff we land on a non-flag positional `.py`
+         token.
+
+    This is the fix for the false positive
+        printf python .autoresearch/scripts/create_plan.py
+    which the old "scan anywhere for `python`" loop treated as a
+    real create_plan.py call — the actual command runs printf, not
+    Python, but strict-bash and recovery gates were both fooled into
+    thinking create_plan.py had been launched.
+    """
+    if not tokens:
+        return None
+    j = 0
+    while j < len(tokens) and _ENV_ASSIGNMENT_RE.match(tokens[j]):
+        j += 1
+    if j >= len(tokens) or not _INTERPRETER_RE.match(tokens[j]):
+        return None
+    return _find_script_position(tokens, j + 1)
+
+
 def parse_script_names(command: str) -> list:
     """Return [(script_path_forward_slashes, basename), ...] for EVERY
     real python/bash interpreter-runs-script invocation in `command`,
     in order.
 
     Splits the command into bash chain segments (`&&` / `||` / `;` /
-    `|`), tokenizes each via shlex (POSIX mode), and walks tokens
-    using real Python-flag semantics:
-      - interpreter detection requires an exact-token match
-        (`python`, `python3.10`, `py`, `bash`, `sh`)
-      - `-c CODE` / `-m MODULE` cause the segment to be reported as
-        having NO script invocation — anything after is argv to the
-        inline program, never a script run by the interpreter
-      - `-X DEV` / `-W IGNORE` consume both flag and the next token
-      - other `-flag` tokens are skipped
-      - the first positional token that follows must end in `.py`
+    `|`), tokenizes each via shlex (POSIX mode), then asks
+    _scan_segment_for_invocation whether the SEGMENT HEAD looks like
+    a real launch. Interpreter detection is anchored at the
+    command-head position (after optional env-var assignments) — the
+    parser does NOT scan deeper into the segment for stray `python`
+    tokens. Subshell launches like `$(python script.py)` are
+    deliberately not detected here; the global ban list (substring
+    match over the whole command) already catches subprocess-only
+    scripts smuggled into subshells.
 
-    This replaces a regex-only parser that conflated `python -c pass
-    create_plan.py` with a real `create_plan.py` invocation — letting
-    that string pass strict-bash gates and recovery gates while the
-    interpreter actually ran inline `pass` code and ignored the .py
-    path. Subshell launches like `$(python script.py)` are not
-    detected here on purpose; the global ban list (substring match
-    over the whole command) already catches subprocess-only scripts
-    smuggled into subshells.
+    Windows backslash separators are normalized to forward slashes
+    BEFORE shlex tokenization. shlex(posix=True) treats `\\` as an
+    escape, so `python .autoresearch\\scripts\\create_plan.py` would
+    tokenize to `.autoresearchscriptscreate_plan.py` and miss the
+    `.py` suffix entirely (false-blocking real Windows invocations
+    in strict-bash phases). Forward slashes are valid path
+    separators on Windows from Python's perspective and have no
+    shell-escape semantics, so the normalization is safe.
     """
     out = []
-    for segment in _split_bash_chain(command):
+    normalized = command.replace("\\", "/")
+    for segment in _split_bash_chain(normalized):
         try:
             tokens = shlex.split(segment, comments=False, posix=True)
         except ValueError:
@@ -123,23 +170,11 @@ def parse_script_names(command: str) -> list:
             # raise. The downstream gate's default of "no recognized
             # invocation" is the safe outcome here.
             continue
-        i = 0
-        while i < len(tokens):
-            if not _INTERPRETER_RE.match(tokens[i]):
-                i += 1
-                continue
-            pos = _find_script_position(tokens, i + 1)
-            if pos is None:
-                # No script: bail this interpreter and keep scanning
-                # in case the segment contains another invocation
-                # (rare: `python ...; python ...` — but `;` would
-                # have split into segments already, so the only way
-                # this fires is `python ... & python ...` etc.).
-                i += 1
-                continue
-            path = tokens[pos].replace("\\", "/")
-            out.append((path, os.path.basename(path)))
-            i = pos + 1
+        pos = _scan_segment_for_invocation(tokens)
+        if pos is None:
+            continue
+        path = tokens[pos]
+        out.append((path, os.path.basename(path)))
     return out
 
 
