@@ -36,7 +36,6 @@ Output (last line of stdout):
 """
 
 import argparse
-import ast
 import json
 import os
 import subprocess
@@ -48,25 +47,12 @@ import yaml
 
 
 # ---------------------------------------------------------------------------
-# Reference validation
+# Reference validation — delegated to the standalone library module so
+# phase_machine.validators can call the same rule without importing this
+# CLI script. The local re-export keeps callers that imported
+# `scaffold.validate_ref` working.
 # ---------------------------------------------------------------------------
-
-def validate_ref(code: str, source: str = "reference"):
-    """AST-level validation: must have class Model, get_inputs, get_init_inputs."""
-    try:
-        tree = ast.parse(code)
-    except SyntaxError as e:
-        raise ValueError(f"Reference from {source} has syntax error: {e}")
-
-    names = {
-        node.name for node in tree.body
-        if isinstance(node, (ast.ClassDef, ast.FunctionDef))
-    }
-    required = {"Model": "class Model", "get_inputs": "get_inputs()",
-                "get_init_inputs": "get_init_inputs()"}
-    missing = [label for name, label in required.items() if name not in names]
-    if missing:
-        raise ValueError(f"Reference from {source} missing: {', '.join(missing)}")
+from ref_ast import validate_ref  # noqa: E402, F401  (re-export)
 
 
 # ---------------------------------------------------------------------------

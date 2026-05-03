@@ -27,13 +27,15 @@ from task_config import load_task_config
 from code_checker import CodeChecker
 
 
-def _check_editable_files(task_dir: str, config) -> list:
+def check_editable_files(task_dir: str, config) -> list:
     """Static-check every editable .py via the ported CodeChecker.
 
     Honors `config.code_checker_enabled` — when off, only the file-existence
     check fires; the AST/import/DSL/autotune pipeline is skipped. This is
     the single gate consulted by both the runtime quick check and
-    `phase_machine.validate_kernel`.
+    `phase_machine.validate_kernel`. Public lib API (no leading
+    underscore): both the CLI `main()` below and `validators.validate_kernel`
+    call this directly; do not duplicate the body.
     """
     issues = []
     use_checker = config.code_checker_enabled
@@ -92,7 +94,7 @@ def main():
         print("[quick_check] CodeChecker disabled in task.yaml — only "
               "file-existence and smoke test will run.", file=sys.stderr)
 
-    file_issues = _check_editable_files(task_dir, config)
+    file_issues = check_editable_files(task_dir, config)
     smoke_errors = _run_smoke_test(task_dir, config)
 
     if not file_issues and not smoke_errors:

@@ -144,15 +144,14 @@ def validate_reference(task_dir: str) -> tuple:
     except OSError as e:
         return False, f"cannot read reference.py: {e}"
 
-    # Stage 1: AST symbols.
+    # Stage 1: AST symbols. ref_ast.py is a pure-stdlib lib module that
+    # both this validator and scaffold.py consume — phase_machine no
+    # longer reaches into the scaffold CLI script.
     try:
-        # scaffold lives one level up (in scripts/ root, alongside the
-        # phase_machine/ package). Insert the package's parent into
-        # sys.path so the import resolves regardless of who's calling us.
         _scripts_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         if _scripts_dir not in sys.path:
             sys.path.insert(0, _scripts_dir)
-        from scaffold import validate_ref as _validate_ref_ast
+        from ref_ast import validate_ref as _validate_ref_ast
         _validate_ref_ast(ref_code, ref_path)
     except ValueError as e:
         return False, str(e)
@@ -199,8 +198,9 @@ def validate_kernel(task_dir: str) -> tuple:
     """Static check on every editable file (typically kernel.py).
 
     Rejects the TODO placeholder up front, then delegates to
-    quick_check._check_editable_files (which runs the CodeChecker pipeline:
-    syntax → compile → imports → stray-text → DSL → autotune).
+    quick_check.check_editable_files (the public lib API — same call the
+    quick_check CLI makes). The CodeChecker pipeline runs syntax →
+    compile → imports → stray-text → DSL → autotune.
 
     Never raises. Returns (True, "") on success, (False, reason) otherwise.
     """
@@ -231,12 +231,12 @@ def validate_kernel(task_dir: str) -> tuple:
                            f"write the seed kernel (must define class ModelNew)")
 
     try:
-        from quick_check import _check_editable_files
+        from quick_check import check_editable_files
     except Exception as e:
         return False, f"cannot import quick_check: {e}"
 
     try:
-        issues = _check_editable_files(task_dir, config)
+        issues = check_editable_files(task_dir, config)
     except Exception as e:
         return False, f"CodeChecker pipeline crashed: {e}"
 

@@ -97,61 +97,15 @@ Follow the phase guidance. Never stop between phases.
      second argument — the script reads the canonical path).
   See the hook guidance for the XML schema. When the hook emits a
   TodoWrite payload, call TodoWrite with it verbatim.
-- **DIAGNOSE** — three steps with a hard artifact contract (see below).
+- **DIAGNOSE** — follow the hook's `[AR Phase: DIAGNOSE]` message
+  (verbatim subagent prompt + artifact path + retry semantics). The full
+  contract — required sections, marker, R\<n\> citations, 5-attempt cap,
+  manual-planning fallback — lives in [CLAUDE.md](../../CLAUDE.md)
+  invariant #9 and the runtime hook guidance; no need to reproduce it
+  here.
 - **EDIT** — Edit `kernel.py` (multiple Edit calls OK). When done:
   `python .autoresearch/scripts/pipeline.py "$AR_TASK_DIR"`.
 - **FINISH** — Write `.ar_state/ranking.md`, summarize, stop.
-
-### DIAGNOSE flow
-
-The phase exists to produce a new plan. Two paths to that end — preferred
-(subagent) and fallback (manual). Stop is blocked the entire time.
-
-**Preferred path (subagent):**
-
-1. Call `Task(subagent_type='ar-diagnosis', ...)` with the prompt the hook
-   printed inside `---BEGIN SUBAGENT PROMPT---` / `---END SUBAGENT PROMPT---`
-   — verbatim, no paraphrasing. While the artifact is missing/invalid,
-   Bash is locked to read-only / lifecycle ops, `create_plan.py` is
-   gated on the artifact, Edit is restricted by `check_edit`, and Stop
-   is blocked. PreToolUse on Task itself only enforces
-   `subagent_type='ar-diagnosis'`.
-2. PostToolUse checks `$AR_TASK_DIR/.ar_state/diagnose_v<plan_version>.md`
-   for: marker `[AR DIAGNOSE COMPLETE marker_v<plan_version>]`, sections
-   `Root cause` / `Fix directions` / `What to avoid`, citations of the
-   last 3 FAIL rounds (`R<n>`).
-   - Pass → `[AR] DIAGNOSE artifact validated …` → go to step 3.
-   - Fail → `additionalContext` says what's missing; re-issue the same
-     Task call.
-3. Create the new plan: write `plan_items.xml`, run `create_plan.py`
-   (same two-step flow as PLAN / REPLAN). Phase advances to EDIT.
-
-**Fallback path (manual planning, after 5 failed Task attempts):**
-
-The subagent path is exhausted but the phase still requires a new plan.
-Further `Task` calls are blocked; the artifact gate on `create_plan.py`
-is relaxed.
-
-1. Read `.ar_state/history.jsonl` (focus on recent FAIL rows — their
-   `description` fields are the raw failure signal) and `.ar_state/plan.md`
-   (what's already been tried).
-2. Write `<items>...</items>` to `$AR_TASK_DIR/.ar_state/plan_items.xml`.
-   Plan must contain ≥3 items, ≥2 structurally different from the prior
-   plan (algorithmic / fusion / memory layout / data movement, NOT
-   parameter tuning).
-3. Run `python .autoresearch/scripts/create_plan.py "$AR_TASK_DIR"`. Only
-   create_plan.py's structural validation applies. Phase advances to EDIT.
-
-In DIAGNOSE: do not Edit kernel.py, do not Stop. Bash is locked to
-read-only / lifecycle ops + `create_plan.py` (gated on artifact). The
-only path forward is `Task → artifact → create_plan` (preferred) or
-`manual plan_items.xml → create_plan` (fallback after cap).
-
-Provenance note: the host can't tell main-agent Write from subagent
-Write, so the artifact contract is enforced by content (sections +
-marker + R<n> citations), not by who wrote it. The subagent path is
-preferred because its prompt + read-only tool isolation produce a more
-reliable diagnosis, not because the host can prove subagent provenance.
 
 ## Rules
 
