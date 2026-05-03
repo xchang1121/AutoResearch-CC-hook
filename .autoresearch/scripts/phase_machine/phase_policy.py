@@ -321,8 +321,19 @@ def _segment_passes_phase_rule(segment: str, policy: "_BashPolicy") -> tuple:
         return True, ""
 
     if policy.mode == "strict":
+        # AR-script required entries (`.py`) are matched against the
+        # actual python invocation via parse_invoked_ar_script — NOT via
+        # raw substring. A naive `req in s` would let smuggling like
+        # `python -c "print('create_plan.py')"` pass: the string
+        # 'create_plan.py' appears in the command yet no AR script runs.
+        # Non-script entries (e.g. "export AR_TASK_DIR=" for INIT) are
+        # not python files; keep substring match for those.
+        invoked = parse_invoked_ar_script(s)
         for req in policy.required:
-            if req in s:
+            if req.endswith(".py"):
+                if invoked == req:
+                    return True, ""
+            elif req in s:
                 return True, ""
         required_txt = sorted(policy.required) or "(no user bash legal here; only file edits)"
         return False, f"segment {s!r}: allowed = {required_txt}"

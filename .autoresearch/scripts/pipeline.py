@@ -140,11 +140,20 @@ def main():
     if settle.returncode != 0:
         tail_out = (settle.stdout or "").strip()[-400:]
         tail_err = (settle.stderr or "").strip()[-400:]
+        # plan.md is machine-maintained (CLAUDE.md invariant #1); never
+        # hand-edit it. Read the settle stderr below for the real cause
+        # (typically: no (ACTIVE) item, malformed plan.md, or a script
+        # error). Once that's resolved, re-run pipeline.py — the next
+        # invocation re-runs settle on the same kd_json. If settle keeps
+        # failing on the same plan.md, REPLAN via create_plan.py
+        # (preferred) or DIAGNOSE if consecutive_failures triggered it.
         print(f"[PIPELINE] SETTLE FAILED (rc={settle.returncode}). "
               f"plan.md was NOT updated even though progress.json + "
-              f"history.jsonl already moved. Phase NOT advanced — fix "
-              f"plan.md by hand or rerun pipeline once the underlying "
-              f"issue is resolved.\nstdout tail: {tail_out}\n"
+              f"history.jsonl already moved. Phase NOT advanced. "
+              f"DO NOT hand-edit plan.md — read the settle stderr below "
+              f"for the underlying cause, then re-run pipeline.py. If "
+              f"settle keeps failing, REPLAN via create_plan.py.\n"
+              f"stdout tail: {tail_out}\n"
               f"stderr tail: {tail_err}", file=sys.stderr)
         sys.exit(1)
 

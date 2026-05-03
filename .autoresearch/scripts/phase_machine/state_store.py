@@ -57,11 +57,14 @@ EDIT_MARKER_FILE = ".edit_started"
 HEARTBEAT_FILE = ".heartbeat"
 ACTIVE_TASK_FILE = ".active_task"  # under .autoresearch/, not .ar_state/
 
-# DIAGNOSE artifact contract — see CLAUDE.md "DIAGNOSE artifact contract".
-# The diagnosis subagent MUST Write its report to this exact path; main agent
-# is then gated on the artifact's presence + structure before any further
-# action (create_plan.py, Stop, etc.). The marker is plan-version-aware so a
-# stale prior diagnose can't be replayed across REPLAN boundaries.
+# DIAGNOSE artifact contract — see CLAUDE.md invariant #9.
+# The DIAGNOSE phase is gated on a structured report at this path before
+# create_plan.py / Stop become legal. The ar-diagnosis subagent is the
+# intended writer (per its prompt + read-only tool isolation), but hook
+# payloads do NOT distinguish main agent from subagent — provenance is
+# not enforced. Only the artifact's CONTENT is validated. The marker is
+# plan-version-aware so a stale prior diagnose can't be replayed across
+# REPLAN boundaries.
 DIAGNOSE_ARTIFACT_TEMPLATE = "diagnose_v{}.md"
 DIAGNOSE_MARKER_TEMPLATE = "[AR DIAGNOSE COMPLETE marker_v{}]"
 DIAGNOSE_ATTEMPTS_CAP = 5
