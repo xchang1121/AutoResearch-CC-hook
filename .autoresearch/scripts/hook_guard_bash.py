@@ -14,7 +14,7 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from hook_utils import read_hook_input, block_decision
 from phase_machine import (
-    DIAGNOSE, DIAGNOSE_ATTEMPTS_CAP, EDIT, read_phase, get_guidance,
+    DIAGNOSE, DIAGNOSE_ATTEMPTS_CAP, EDIT, REPLAN, read_phase, get_guidance,
     get_task_dir, touch_heartbeat, check_bash, parse_script_names,
     diagnose_state, parse_invoked_ar_script, pending_settle_path,
 )
@@ -115,14 +115,38 @@ def main():
     # EDIT-phase recovery gate: when settle.py keeps failing on a malformed
     # plan.md, the agent has no legal action under the normal EDIT rules
     # (kernel.py edits don't help; create_plan.py is normally banned in
-    # EDIT; pipeline.py just keeps replaying the same broken settle).
-    # If `.pending_settle.json` exists, allow ONE recovery path:
-    # create_plan.py to write a fresh plan.md, which retires the broken
-    # plan_version. hook_post_bash will clear pending_settle.json on
+    # EDIT). If `.pending_settle.json` exists, allow ONE recovery path:
+    # invoke create_plan.py to write a fresh plan.md, which retires the
+    # broken plan_version. hook_post_bash clears pending_settle.json on
     # successful create_plan validation.
+    #
+    # Two safety constraints on the recovery:
+    #   - The command must contain EXACTLY ONE .py invocation, and it
+    #     must be create_plan.py. Chains like
+    #     `create_plan.py && pipeline.py` would let pipeline.py run with
+    #     no real PostToolUse handling (it only routes by the first
+    #     script) and would re-enter the eval loop with pending_settle
+    #     just cleared — corrupted state.
+    #   - The command must still pass the normal bash check using REPLAN's
+    #     policy (permissive, no per-phase bans) so global bans
+    #     (eval_wrapper.py / keep_or_discard.py / quick_check.py /
+    #     settle.py / `git commit`) and per-segment chain validation
+    #     still apply. Without this, the previous `sys.exit(0)` early-out
+    #     skipped global bans entirely.
     if phase == EDIT and invoked == "create_plan.py" \
             and os.path.exists(pending_settle_path(task_dir)):
-        sys.exit(0)  # bypass check_bash's EDIT ban on create_plan.py
+        invocations = parse_script_names(command)
+        if len(invocations) != 1 or invocations[0][1] != "create_plan.py":
+            block_decision(
+                "[AR] Recovery path allows ONLY a single create_plan.py "
+                "invocation in EDIT phase while .pending_settle.json "
+                "exists. Run create_plan.py alone first; pipeline.py / "
+                "other scripts may not be chained with it during recovery."
+            )
+        ok, reason = check_bash(REPLAN, command)
+        if not ok:
+            block_decision(f"[AR] {reason}. {get_guidance(task_dir)}")
+        sys.exit(0)
 
     ok, reason = check_bash(phase, command)
     if not ok:
