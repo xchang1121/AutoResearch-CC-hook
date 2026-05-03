@@ -17,12 +17,12 @@ What IS here:
   - Per-phase Edit allowance (`_EDIT_RULES`).
   - `check_bash` / `check_edit` — the two predicates hooks call.
   - `compute_next_phase` / `compute_resume_phase` — phase transition logic.
-  - Script-invocation parser (`INVOKED_SCRIPT_RE`,
-    `parse_script_name`, `parse_invoked_ar_script`) — used by both
-    hook_guard_bash (PreToolUse) and hook_post_bash (PostToolUse).
+  - Script-invocation parser (`parse_script_names` etc.) — used by
+    both hook_guard_bash (PreToolUse) and hook_post_bash (PostToolUse).
 """
 import os
 import re
+import shlex
 from typing import Optional
 
 from .state_store import (
@@ -40,44 +40,106 @@ from .validators import (
 # Script invocation parser (single source for hook_guard_bash + hook_post_bash)
 # ---------------------------------------------------------------------------
 
-# Matches `python <flags> <script>.py`, `python3.10 ...`, `py -3 ...`,
-# `py -3.10 ...`, `python -X dev ...`, `bash something.py`, etc. The
-# two-step form (interpreter, optional flag/value tokens, then the .py
-# argument) is what guards both hooks against false positives like
-# `cat baseline.py` or `git log -- baseline.py`. Earlier each hook had
-# its own regex; hook_guard_bash's was the simpler/laggard one and
-# silently disagreed with hook_post_bash on `python3 ...` and
-# `bash ...py`. Single definition here keeps them in lockstep.
-#
-# Token group accepts both `-flag` tokens (`-3`, `-3.10`, `-O`, `-u`,
-# `-OO`, `-X`, ...) AND the value tokens that follow them (`-X dev`,
-# `-W ignore`, ...) lazily; quoted strings (`-c "code"`) are still
-# unmatchable as tokens because the `[^\s"\']` charset excludes both
-# quote kinds, so `python -c "create_plan.py"` smuggling is still
-# blocked. Earlier `[A-Za-z]`-only flags rejected `py -3` (digit) and
-# `python -X dev` (separated value), false-blocking legitimate Windows
-# launcher / dev-mode invocations under strict-bash phases.
-INVOKED_SCRIPT_RE = re.compile(
-    r'\b(?:python(?:\d+(?:\.\d+)?)?|py|bash|sh)\b'
-    r'(?:\s+[^"\'\s]+)*?'
-    r'\s+["\']?([^"\'\s]+\.py)'
+# Detects an "interpreter" token (python, py, bash, sh, with optional
+# version suffix). Anchored — must match the WHOLE token, not just a
+# prefix; otherwise `pythoneer` would falsely register as `python`.
+_INTERPRETER_RE = re.compile(
+    r'^(?:python(?:\d+(?:\.\d+)?)?|py|bash|sh)$'
 )
+
+# Python flags that take their value as the NEXT separate argv token.
+# Real python CLI: -X opt, -W setting, --check-hash-based-pycs mode.
+# When we see one of these, advance past BOTH the flag and its value.
+# (Combined forms like `-Xdev` (no space) appear as a single token —
+# handled by the generic "starts with -" skip below.)
+_FLAGS_WITH_SEPARATE_VALUE = frozenset({
+    "-X", "-W", "--check-hash-based-pycs",
+})
+
+# Flags that REPLACE a script invocation. `python -c CODE` runs inline
+# code; `python -m MODULE` runs a module; in both cases anything that
+# follows is argv to the inline program, NOT a separate script. Same
+# for `bash -c CODE`. When we hit one of these, the segment has no
+# real script invocation regardless of what tokens come later — this
+# is the fix for the smuggle pattern
+# `python -c pass .autoresearch/scripts/create_plan.py` which the
+# old regex parser misclassified as a real create_plan.py call.
+_FLAGS_REPLACE_SCRIPT = frozenset({"-c", "-m"})
+
+
+def _find_script_position(tokens: list, start: int) -> Optional[int]:
+    """Walk `tokens` starting at `start` (just past an interpreter token).
+    Return the index of the first non-flag token if it ends in `.py`,
+    else None (no real script invocation in this run)."""
+    j = start
+    while j < len(tokens):
+        t = tokens[j]
+        if t in _FLAGS_REPLACE_SCRIPT:
+            # `-c CODE` / `-m MODULE` — the rest is inline-program argv.
+            return None
+        if t in _FLAGS_WITH_SEPARATE_VALUE:
+            j += 2  # skip flag AND its value token
+            continue
+        if t.startswith("-"):
+            j += 1  # standalone flag like -O / -u / -3 / -3.10 / -Xdev
+            continue
+        # First non-flag positional token must be the script.
+        return j if t.endswith(".py") else None
+    return None
 
 
 def parse_script_names(command: str) -> list:
     """Return [(script_path_forward_slashes, basename), ...] for EVERY
-    python/bash invocation of a .py file in `command`, in order.
+    real python/bash interpreter-runs-script invocation in `command`,
+    in order.
 
-    `findall` instead of `search` because chains like
-    `python a.py && python b.py` carry two invocations and the guard
-    must inspect both — otherwise an unknown / banned script tucked
-    after a known-good one rides through. Returns empty list if no
-    interpreter+script pattern matches.
+    Splits the command into bash chain segments (`&&` / `||` / `;` /
+    `|`), tokenizes each via shlex (POSIX mode), and walks tokens
+    using real Python-flag semantics:
+      - interpreter detection requires an exact-token match
+        (`python`, `python3.10`, `py`, `bash`, `sh`)
+      - `-c CODE` / `-m MODULE` cause the segment to be reported as
+        having NO script invocation — anything after is argv to the
+        inline program, never a script run by the interpreter
+      - `-X DEV` / `-W IGNORE` consume both flag and the next token
+      - other `-flag` tokens are skipped
+      - the first positional token that follows must end in `.py`
+
+    This replaces a regex-only parser that conflated `python -c pass
+    create_plan.py` with a real `create_plan.py` invocation — letting
+    that string pass strict-bash gates and recovery gates while the
+    interpreter actually ran inline `pass` code and ignored the .py
+    path. Subshell launches like `$(python script.py)` are not
+    detected here on purpose; the global ban list (substring match
+    over the whole command) already catches subprocess-only scripts
+    smuggled into subshells.
     """
     out = []
-    for raw in INVOKED_SCRIPT_RE.findall(command):
-        script_path = raw.replace("\\", "/")
-        out.append((script_path, os.path.basename(script_path)))
+    for segment in _split_bash_chain(command):
+        try:
+            tokens = shlex.split(segment, comments=False, posix=True)
+        except ValueError:
+            # Unbalanced quotes etc. — skip the segment rather than
+            # raise. The downstream gate's default of "no recognized
+            # invocation" is the safe outcome here.
+            continue
+        i = 0
+        while i < len(tokens):
+            if not _INTERPRETER_RE.match(tokens[i]):
+                i += 1
+                continue
+            pos = _find_script_position(tokens, i + 1)
+            if pos is None:
+                # No script: bail this interpreter and keep scanning
+                # in case the segment contains another invocation
+                # (rare: `python ...; python ...` — but `;` would
+                # have split into segments already, so the only way
+                # this fires is `python ... & python ...` etc.).
+                i += 1
+                continue
+            path = tokens[pos].replace("\\", "/")
+            out.append((path, os.path.basename(path)))
+            i = pos + 1
     return out
 
 

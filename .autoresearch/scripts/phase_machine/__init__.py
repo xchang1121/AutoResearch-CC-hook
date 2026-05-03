@@ -63,7 +63,6 @@ from .validators import (
     _PLAN_ITEM_RE, _PLAN_TAG_RE, _REF_RUNCHECK_SCRIPT,
 )
 from .phase_policy import (
-    INVOKED_SCRIPT_RE,
     parse_script_name, parse_script_names, parse_invoked_ar_script,
     check_bash, check_edit,
     compute_next_phase, compute_resume_phase,
