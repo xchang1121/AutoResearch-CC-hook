@@ -326,9 +326,15 @@ _EDIT_RULES = {
 }
 ```
 
-`strict` 为白名单子串匹配，`permissive` 为黑名单子串匹配。PLAN / EDIT /
-DIAGNOSE / REPLAN 需要 `git log`、读文件等 ad-hoc 操作，使用 permissive；
-BASELINE / INIT 只允许单一命令，使用 strict。
+`strict` 为白名单匹配，`permissive` 为黑名单子串匹配。strict 模式下
+`.py` required 项通过 `parse_invoked_ar_script()` 校验真实 python 调用
+（不是子串扫描）—— 避免 `python -c "print('create_plan.py')"` 这种把脚本
+名混进字面量绕过 gate。非 `.py` required 项（如 INIT 的
+`export AR_TASK_DIR=`）仍走子串匹配。PLAN / EDIT / REPLAN 需要 `git log`、
+读文件等 ad-hoc 操作，使用 permissive；INIT / BASELINE / GENERATE_*
+/ DIAGNOSE 收紧到 strict。DIAGNOSE 在 strict 下只放行 `create_plan.py`
+（hook_guard_bash 还会按 artifact 状态再加一道 gate；详见 CLAUDE.md
+不变量 #9）。
 
 **查询函数**（[phase_policy.py](.autoresearch/scripts/phase_machine/phase_policy.py)）：
 `check_bash` 和 `check_edit`，输入 phase 名 + 命令 / 文件名，返回

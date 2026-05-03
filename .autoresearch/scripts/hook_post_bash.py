@@ -206,21 +206,43 @@ def main():
         emit_status(f"[AR] Pipeline complete. Phase -> {new_phase}. {get_guidance(task_dir)}")
         emit_todowrite_context(task_dir, f"[AR] Round settled. Phase -> {new_phase}.")
 
-    elif invoked == "create_plan.py" and phase in (PLAN, DIAGNOSE, REPLAN):
-        from phase_machine import validate_plan
+    elif invoked == "create_plan.py" and phase in (PLAN, DIAGNOSE, REPLAN, EDIT):
+        from phase_machine import validate_plan, pending_settle_path
+        # PLAN/DIAGNOSE/REPLAN: normal plan-creation flow.
+        # EDIT: only legal as a recovery path when settle.py kept failing
+        # on a malformed plan.md (gated in hook_guard_bash by the
+        # presence of .pending_settle.json). The new plan retires the
+        # broken plan_version, so the orphan kd_json is no longer
+        # actionable; clear the sidecar.
+        #
         # NOTE: do NOT re-validate the diagnose artifact here. PreToolUse
         # (hook_guard_bash) already enforced the artifact gate against the
         # plan_version that existed BEFORE create_plan.py ran. By the time
         # this PostToolUse fires, create_plan.py has bumped plan_version
         # from N to N+1 — re-running diagnose_state would look for
-        # diagnose_v(N+1).md (not yet created) and falsely reject the
-        # advancement. The PreToolUse gate is sufficient; here we only
-        # validate the new plan's structure.
+        # diagnose_v(N+1).md (not yet created) and falsely reject.
+        if phase == EDIT and not os.path.exists(pending_settle_path(task_dir)):
+            # Defense-in-depth: hook_guard_bash should have blocked this,
+            # but if it slipped through somehow, refuse to advance state.
+            emit_status("[AR] create_plan.py in EDIT phase requires a "
+                        "pending settle recovery state; nothing to do.")
+            sys.exit(0)
         ok, err = validate_plan(task_dir)
         if ok:
             _progress_update_for_plan(task_dir, phase)
             write_phase(task_dir, EDIT)
-            emit_status(f"[AR] Plan validated. Phase -> EDIT. {get_guidance(task_dir)}")
+            if phase == EDIT:
+                # Recovery completed: discard the orphan kd_json. The new
+                # plan_version starts fresh; the round whose decision was
+                # waiting in pending_settle is recorded in history.jsonl
+                # but no longer corresponds to any plan item.
+                ps = pending_settle_path(task_dir)
+                if os.path.exists(ps):
+                    os.remove(ps)
+                emit_status(f"[AR] Pending settle abandoned; new plan "
+                            f"installed. Phase -> EDIT. {get_guidance(task_dir)}")
+            else:
+                emit_status(f"[AR] Plan validated. Phase -> EDIT. {get_guidance(task_dir)}")
             emit_todowrite_context(task_dir, "[AR] Plan validated. Phase -> EDIT.")
         else:
             emit_status(f"[AR] Plan not valid yet: {err}")

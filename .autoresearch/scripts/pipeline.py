@@ -33,16 +33,30 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def _run_settle(task_dir: str, kd_json: dict) -> tuple:
-    """Invoke settle.py with the given kd_json. Returns (rc, stdout_tail, stderr_tail)."""
+    """Invoke settle.py with the given kd_json.
+
+    Returns (rc, stdout_tail, stderr_tail, settle_json):
+      - rc:           settle.py exit code
+      - stdout_tail:  last 400 chars of stdout (for error reports)
+      - stderr_tail:  last 400 chars of stderr
+      - settle_json:  parsed last-JSON-line from stdout, or None on
+                      parse failure / non-zero rc. Carries the
+                      `settled_item` id, which the caller needs for the
+                      status report — `get_active_item()` AFTER settle
+                      points at the NEXT ACTIVE item, not the one we
+                      just settled.
+    """
     settle = subprocess.run(
         [sys.executable, os.path.join(SCRIPT_DIR, "settle.py"),
          task_dir, json.dumps(kd_json)],
         capture_output=True, text=True, timeout=10,
     )
+    settle_json = parse_last_json_line(settle.stdout) if settle.returncode == 0 else None
     return (
         settle.returncode,
         (settle.stdout or "").strip()[-400:],
         (settle.stderr or "").strip()[-400:],
+        settle_json,
     )
 
 
@@ -64,11 +78,22 @@ def _emit_settle_failure(task_dir: str, rc: int, tail_out: str,
     print(f"[PIPELINE] SETTLE FAILED (rc={rc}). plan.md was NOT updated. "
           f"progress.json + history.jsonl already moved during this round; "
           f"re-running this script will RETRY SETTLE ONLY (kd_json was "
-          f"persisted to .ar_state/.pending_settle.json), it will NOT "
-          f"re-run quick_check/eval/keep_or_discard. Fix the underlying "
-          f"cause (read stderr below), then re-run pipeline.py. Do NOT "
-          f"hand-edit plan.md; if settle keeps failing on the same "
-          f"plan.md, REPLAN via create_plan.py.\n"
+          f"persisted to .ar_state/.pending_settle.json) — it will NOT "
+          f"re-run quick_check/eval/keep_or_discard.\n"
+          f"\n"
+          f"Recovery options (do NOT hand-edit plan.md):\n"
+          f"  1. Fix the underlying cause from the stderr tail below, "
+          f"then re-run pipeline.py — the replay-only path will retry "
+          f"settle on the same kd_json.\n"
+          f"  2. If the failure is structural (plan.md malformed, no "
+          f"(ACTIVE) item, etc.) and settle cannot recover, run "
+          f"create_plan.py to write a fresh plan.md. While "
+          f"pending_settle.json exists, hook_guard_bash allows "
+          f"create_plan.py in EDIT phase as a recovery path; on "
+          f"successful create_plan validation hook_post_bash clears "
+          f"pending_settle.json. The orphan history.jsonl row stays "
+          f"(audit trail) but no longer corresponds to any plan item.\n"
+          f"\n"
           f"stdout tail: {tail_out}\n"
           f"stderr tail: {tail_err}", file=sys.stderr)
 
@@ -138,13 +163,14 @@ def main():
             sys.exit(1)
         print(f"[PIPELINE] Retrying settle from {os.path.basename(pending_path)} "
               f"(skipping quick_check/eval/keep_or_discard).", flush=True)
-        rc, tail_out, tail_err = _run_settle(task_dir, kd_json)
+        rc, tail_out, tail_err, settle_json = _run_settle(task_dir, kd_json)
         if rc != 0:
             _emit_settle_failure(task_dir, rc, tail_out, tail_err)
             sys.exit(1)
         _clear_pending_settle(task_dir)
-        active = get_active_item(task_dir)
-        settled_id = active["id"] if active else "?"
+        # Use settle.py's reported settled_item, not get_active_item — by
+        # this point ACTIVE has already advanced to the NEXT pending item.
+        settled_id = (settle_json or {}).get("settled_item") or "?"
         _post_settle(task_dir, kd_json.get("decision", "?"), settled_id)
         return
 
@@ -241,7 +267,7 @@ def main():
     # kd_json is persisted to .pending_settle.json so the NEXT invocation
     # of pipeline.py retries settle alone (no second eval, no duplicate
     # history row). The advance-phase block is gated on settle success.
-    rc, tail_out, tail_err = _run_settle(task_dir, kd_json)
+    rc, tail_out, tail_err, _settle_json = _run_settle(task_dir, kd_json)
     if rc != 0:
         _persist_pending_settle(task_dir, kd_json)
         _emit_settle_failure(task_dir, rc, tail_out, tail_err)

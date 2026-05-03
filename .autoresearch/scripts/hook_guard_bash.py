@@ -14,9 +14,9 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from hook_utils import read_hook_input, block_decision
 from phase_machine import (
-    DIAGNOSE, DIAGNOSE_ATTEMPTS_CAP, read_phase, get_guidance, get_task_dir,
-    touch_heartbeat, check_bash, parse_script_names, diagnose_state,
-    parse_invoked_ar_script,
+    DIAGNOSE, DIAGNOSE_ATTEMPTS_CAP, EDIT, read_phase, get_guidance,
+    get_task_dir, touch_heartbeat, check_bash, parse_script_names,
+    diagnose_state, parse_invoked_ar_script, pending_settle_path,
 )
 from settings import hallucinated_scripts
 
@@ -93,12 +93,13 @@ def main():
     _script_name_check(command)
 
     phase = read_phase(task_dir)
+    invoked = parse_invoked_ar_script(command)
 
     # DIAGNOSE-specific Bash gate: create_plan.py must come AFTER the
     # subagent artifact validates — UNLESS the subagent attempts cap has
     # been reached, in which case the manual-planning fallback applies and
     # the artifact gate is dropped.
-    if phase == DIAGNOSE and parse_invoked_ar_script(command) == "create_plan.py":
+    if phase == DIAGNOSE and invoked == "create_plan.py":
         state = diagnose_state(task_dir)
         if not state.exhausted and not state.artifact_ok:
             block_decision(
@@ -110,6 +111,18 @@ def main():
                 f"{DIAGNOSE_ATTEMPTS_CAP}; at the cap the gate is "
                 f"relaxed and you may write the plan directly.)"
             )
+
+    # EDIT-phase recovery gate: when settle.py keeps failing on a malformed
+    # plan.md, the agent has no legal action under the normal EDIT rules
+    # (kernel.py edits don't help; create_plan.py is normally banned in
+    # EDIT; pipeline.py just keeps replaying the same broken settle).
+    # If `.pending_settle.json` exists, allow ONE recovery path:
+    # create_plan.py to write a fresh plan.md, which retires the broken
+    # plan_version. hook_post_bash will clear pending_settle.json on
+    # successful create_plan validation.
+    if phase == EDIT and invoked == "create_plan.py" \
+            and os.path.exists(pending_settle_path(task_dir)):
+        sys.exit(0)  # bypass check_bash's EDIT ban on create_plan.py
 
     ok, reason = check_bash(phase, command)
     if not ok:
