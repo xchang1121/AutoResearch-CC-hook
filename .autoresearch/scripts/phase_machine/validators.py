@@ -17,17 +17,20 @@ is bundled here because `validate_plan` is the primary consumer and the
 parsing rules are validation-shaped (not just I/O). Other modules that
 read plan items go through `get_plan_items`.
 """
+import json
 import os
 import re
 import subprocess
 import sys
-from typing import Optional
+from typing import NamedTuple, Optional
 
 # Sibling-module imports inside the package: state_store gives us paths,
 # phase constants, and the JSON-tail parser used to interpret the
 # subprocess output of validate_reference.
 from .state_store import (
     plan_path, parse_last_json_line,
+    diagnose_artifact_path, diagnose_marker, history_path,
+    load_progress, DIAGNOSE_ATTEMPTS_CAP,
 )
 
 
@@ -319,6 +322,147 @@ def get_active_item(task_dir: str) -> Optional[dict]:
         if it["active"] and not it["done"]:
             return {"id": it["id"], "description": it["description"]}
     return None
+
+
+_DIAGNOSE_REQUIRED_SECTIONS = ("Root cause", "Fix directions", "What to avoid")
+
+
+def _last_n_fail_rounds(task_dir: str, n: int = 3) -> list:
+    """Read history.jsonl, return the last N records whose decision is FAIL.
+
+    Used by validate_diagnose to require that the artifact references each
+    failing round it was supposed to analyze. Tolerant of missing/corrupt
+    history lines (they're skipped); returns at most N entries, fewer if
+    history doesn't have enough FAILs yet (validator is lenient in that case).
+    """
+    hpath = history_path(task_dir)
+    if not os.path.exists(hpath):
+        return []
+    fails = []
+    try:
+        with open(hpath, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if rec.get("decision") == "FAIL":
+                    fails.append(rec)
+    except OSError:
+        return []
+    return fails[-n:]
+
+
+def validate_diagnose(task_dir: str, plan_version: int) -> tuple:
+    """Validate the DIAGNOSE artifact for `plan_version`.
+
+    Contract (in lockstep with `.claude/agents/ar-diagnosis.md` and the
+    DIAGNOSE guidance in `phase_machine/guidance.py`):
+      1. File `<task_dir>/.ar_state/diagnose_v<plan_version>.md` exists and
+         is non-empty.
+      2. Contains the magic marker `[AR DIAGNOSE COMPLETE marker_v<N>]`.
+      3. Contains the three required sections: "Root cause",
+         "Fix directions", "What to avoid". Match is substring (so either
+         "## Root cause" or "Root cause:" passes — generous on heading style,
+         strict on content presence).
+      4. References each of the last 3 FAIL rounds by `R<round>` token.
+         Substring match is sufficient (`R29` matches `R29:` / `(R29)` / etc.)
+         If history doesn't have 3 FAILs yet (early DIAGNOSE during
+         GENERATE_KERNEL retries), this check is skipped.
+
+    Returns (ok, reason). On failure, `reason` is a short user-facing
+    string suitable for an `[AR Phase: DIAGNOSE retry]` message.
+    """
+    if plan_version is None or plan_version < 0:
+        return False, f"invalid plan_version {plan_version!r}"
+
+    path = diagnose_artifact_path(task_dir, plan_version)
+    if not os.path.exists(path):
+        return False, (
+            f"missing artifact {os.path.basename(path)} — the ar-diagnosis "
+            f"subagent must Write its report to that exact path")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            body = f.read()
+    except OSError as e:
+        return False, f"cannot read {os.path.basename(path)}: {e}"
+
+    if not body.strip():
+        return False, f"{os.path.basename(path)} is empty"
+
+    marker = diagnose_marker(plan_version)
+    if marker not in body:
+        return False, (f"missing required marker line {marker!r} — the "
+                       f"subagent must end the file with this exact string")
+
+    missing_sections = [s for s in _DIAGNOSE_REQUIRED_SECTIONS if s not in body]
+    if missing_sections:
+        return False, (f"missing required section(s): "
+                       f"{', '.join(missing_sections)}. Required headings: "
+                       f"{', '.join(_DIAGNOSE_REQUIRED_SECTIONS)}.")
+
+    last_fails = _last_n_fail_rounds(task_dir, n=3)
+    if len(last_fails) >= 3:
+        missing_refs = []
+        for rec in last_fails:
+            r = rec.get("round")
+            if r is None:
+                continue
+            tok = f"R{r}"
+            if tok not in body:
+                missing_refs.append(tok)
+        if missing_refs:
+            return False, (f"artifact does not reference all of the last 3 "
+                           f"FAIL rounds (missing: {', '.join(missing_refs)}). "
+                           f"Cite each by its R<n> identifier.")
+
+    return True, ""
+
+
+class DiagnoseState(NamedTuple):
+    """Snapshot of DIAGNOSE-phase state for the hook callers.
+
+    `attempts` is the per-plan_version Task-failure count. The accessor
+    folds the "did this counter belong to a different plan_version?"
+    cross-check so callers don't reimplement it. `exhausted` is the
+    cap-comparison; `artifact_ok` / `artifact_reason` come from
+    `validate_diagnose`.
+    """
+    plan_version: int
+    attempts: int
+    exhausted: bool
+    artifact_ok: bool
+    artifact_reason: str
+
+
+def diagnose_state(task_dir: str,
+                   progress: Optional[dict] = None) -> DiagnoseState:
+    """Single read of all DIAGNOSE-relevant state needed by hooks.
+
+    Replaces a 6-line copy-paste that used to live in five hook files.
+    Pass `progress` if you've already loaded it; otherwise this loads
+    it. The artifact validation is always run because hook decisions
+    branch on (exhausted) AND (artifact_ok) and the cost is one file
+    read + a few regex/substring checks.
+    """
+    if progress is None:
+        progress = load_progress(task_dir) or {}
+    pv = progress.get("plan_version", 0) or 0
+    if progress.get("diagnose_attempts_for_version") == pv:
+        attempts = progress.get("diagnose_attempts", 0) or 0
+    else:
+        attempts = 0
+    artifact_ok, artifact_reason = validate_diagnose(task_dir, pv)
+    return DiagnoseState(
+        plan_version=pv,
+        attempts=attempts,
+        exhausted=attempts >= DIAGNOSE_ATTEMPTS_CAP,
+        artifact_ok=artifact_ok,
+        artifact_reason=artifact_reason,
+    )
 
 
 def validate_plan(task_dir: str) -> tuple:

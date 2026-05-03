@@ -39,6 +39,15 @@
             "command": "cd \"$CLAUDE_PROJECT_DIR\" 2>/dev/null || cd \"$(git rev-parse --show-toplevel 2>/dev/null)\" 2>/dev/null; python .autoresearch/scripts/hook_guard_bash.py"
           }
         ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" 2>/dev/null || cd \"$(git rev-parse --show-toplevel 2>/dev/null)\" 2>/dev/null; [ ! -f .autoresearch/.active_task ] && exit 0; python .autoresearch/scripts/hook_guard_task.py"
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -57,6 +66,15 @@
           {
             "type": "command",
             "command": "cd \"$CLAUDE_PROJECT_DIR\" 2>/dev/null || cd \"$(git rev-parse --show-toplevel 2>/dev/null)\" 2>/dev/null; [ ! -f .autoresearch/.active_task ] && exit 0; python .autoresearch/scripts/hook_post_edit.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" 2>/dev/null || cd \"$(git rev-parse --show-toplevel 2>/dev/null)\" 2>/dev/null; [ ! -f .autoresearch/.active_task ] && exit 0; python .autoresearch/scripts/hook_post_task.py"
           }
         ]
       }

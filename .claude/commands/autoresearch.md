@@ -1,7 +1,8 @@
 # AutoResearch — Init / Resume / Run Optimization Loop
 
-Single entry point for the whole loop: initialize a new task, resume an existing
-one, or kick off the optimization. The hook machine takes it from there.
+Single entry point: initialize a new task, resume an existing one, or kick
+off the optimization. Hooks drive every transition after activation —
+follow the latest `[AR Phase: ...]` message and never stop between phases.
 
 ## Arguments
 
@@ -11,33 +12,24 @@ one, or kick off the optimization. The hook machine takes it from there.
   (or the specified one).
 - **Task dir** — resume that specific task: `ar_tasks/my_task_123456_abc`.
 - **Init flags** — new task from an existing reference file:
-  `--ref <file> --op-name <name>
-   --dsl ascendc|cpp|cuda_c|pypto|swft|tilelang_cuda|tilelang_npuir|torch|triton_ascend|triton_cuda
-   [--framework torch|mindspore|numpy]
-   (--devices <N[,M,...]> | --worker-url <host:port>)
-   [--kernel <file>] [--max-rounds <N>]`
+  ```
+  --ref <file> --op-name <name>
+  --dsl ascendc|cpp|cuda_c|pypto|swft|tilelang_cuda|tilelang_npuir|torch|triton_ascend|triton_cuda
+  [--framework torch|mindspore|numpy]
+  (--devices <N[,M,...]> | --worker-url <host:port>)
+  [--kernel <file>] [--max-rounds <N>]
+  ```
+  Hardware spec is exactly one of `--devices` (local) or `--worker-url`
+  (remote). `--backend` and `--arch` are auto-derived from `--dsl` +
+  hardware probe; never typed by the user.
 
-  <!-- DSL list above must stay in lockstep with hw_detect._DSL_BACKEND.
-       parse_args.py and scaffold.py derive their copies from
-       hw_detect.list_supported_dsls(); this prose copy is the only manual one. -->
+  Convention: source files live in `workspace/<op_name>_ref.py` and
+  `workspace/<op_name>_kernel.py`.
 
-
-  **Hardware spec is exactly one of `--devices` (local eval) or
-  `--worker-url` (remote).**
-
-  - `--devices 5` → scaffold queries `npu-smi info -i 5` (or `nvidia-smi`,
-    `uname -m`) to derive arch. task.yaml gets `devices: [5]`, arch derived.
-  - `--worker-url 127.0.0.1:9070` → scaffold GETs `/api/v1/status` on that
-    worker, uses its reported backend + arch + devices.
-  - `--dsl` is the primary classifier. backend is a pure function of DSL
-    (triton_ascend → ascend; cuda_c → cuda; ...). **`--backend` and `--arch`
-    are not user flags** — they're auto-derived, never typed.
-
-  Convention: source `--ref` / `--kernel` files live in `workspace/`, named
-  `workspace/<op_name>_ref.py` and `workspace/<op_name>_kernel.py`. Put new
-  candidates there before invoking `/autoresearch`.
 - **Desc mode** — new task from a natural-language description:
-  `--desc "fused ReLU + LayerNorm, (32,1024), fp16" --dsl triton_cuda --worker-url ...`
+  ```
+  --desc "fused ReLU + LayerNorm, (32,1024), fp16" --dsl triton_cuda --worker-url ...
+  ```
 
 `--output-dir` defaults to `ar_tasks`.
 
@@ -46,21 +38,17 @@ one, or kick off the optimization. The hook machine takes it from there.
 | mode | flags | initial phase |
 |------|-------|---------------|
 | 1 | `--ref X.py --kernel Y.py` (both source files ready) | `PLAN` (baseline runs first) |
-| 2 | `--ref X.py` (reference only, let agent author kernel) | `GENERATE_KERNEL` |
+| 2 | `--ref X.py` (reference only, agent authors kernel) | `GENERATE_KERNEL` |
 | 3 | `--desc "..."` (prose only) | `GENERATE_REF` → `GENERATE_KERNEL` |
-| 4 | `--desc "..." --kernel Y.py` (prose + seed kernel) | `GENERATE_REF` |
+| 4 | `--desc "..." --kernel Y.py` (prose + seed) | `GENERATE_REF` |
 
-`--dsl` applies to all four modes; it controls what adapter drives the
-generated verify/profile scripts and which DSL-specific code_checker rules
-quick_check enforces.
-
-## Step 1: Parse `$ARGUMENTS` deterministically — DO NOT skip this
+## Step 1 — Parse `$ARGUMENTS`
 
 ```bash
 python .autoresearch/scripts/parse_args.py $ARGUMENTS
 ```
 
-The script prints a single-line JSON dispatch record. Read it carefully:
+Returns a single-line JSON dispatch record:
 
 ```json
 {
@@ -71,57 +59,22 @@ The script prints a single-line JSON dispatch record. Read it carefully:
 }
 ```
 
-**The values in this JSON are the SINGLE SOURCE OF TRUTH for every flag.**
-You MUST NOT:
+**`values` is the single source of truth for every flag.** Do not modify,
+do not pull defaults from elsewhere, do not substitute. If a value is
+missing, dispatch via `mode: "ask"`.
 
-- Modify any flag value before re-emitting it (e.g. don't turn `"devices": "6"`
-  into `--devices 0` because a docstring or earlier example used 0).
-- Pull "default" values from `.autoresearch/scripts/scaffold.py`'s docstring,
-  CLAUDE.md, or memory of past tasks — if a value isn't in `values`, it isn't
-  set, and you must use `mode: "ask"` to get it from the user.
-- Substitute one device id, dsl, or path for another to "match" a prior task.
+## Step 2 — Dispatch by mode
 
-This step exists because earlier versions of /autoresearch let the LLM
-construct the scaffold bash directly from `$ARGUMENTS`, and the LLM
-silently rewrote flag values on retries (e.g. `--devices 6` → `--devices 0`
-on a hook-blocked retry, sourced from scaffold's docstring example). The
-parser closes that drift.
+- **`ask`** — show `missing` to the user; re-invoke `/autoresearch` with
+  the complete flag set. Don't guess.
+- **`resume`** / **`scaffold`** — run `command` verbatim. Last line of
+  stdout is the resolved task_dir. Non-zero exit → stop and report.
 
-## Step 2: Dispatch by mode
+For mode 1 (both `--ref` and `--kernel`), scaffold's `--run-baseline`
+runs the seed and writes `.phase = PLAN` on success — the next activation
+drops straight into PLAN. Modes 2-4 start in GENERATE_REF / GENERATE_KERNEL.
 
-### `mode == "ask"`
-
-Show the user the `missing` list and ask them to provide the fields. Then
-re-invoke `/autoresearch` with the complete flag set. Do not guess values.
-
-### `mode == "resume"`
-
-Run `command` verbatim:
-
-```bash
-<paste command field exactly as printed>
-```
-
-The last line of stdout is the resolved task_dir. Non-zero exit ⇒ stop and
-report (likely an incompatible on-disk version).
-
-### `mode == "scaffold"`
-
-Run `command` verbatim:
-
-```bash
-<paste command field exactly as printed>
-```
-
-Read the `task_dir` from the JSON output. **Before re-emitting any flag, sanity-check it against `values` in the parser's output**: if your bash command's `--devices` differs from `values.devices`, you have introduced drift — re-issue using the parser's `command` field directly.
-
-`--run-baseline` runs the baseline eval immediately AND writes
-`.ar_state/.phase = PLAN` on success, so when **both `--ref` and `--kernel`
-are provided** there are no user-visible init/baseline steps: the next
-activation drops you straight into PLAN. (`--desc` mode and `--ref` without
-`--kernel` will instead start in GENERATE_REF / GENERATE_KERNEL.)
-
-## Step 3: Activate
+## Step 3 — Activate
 
 ```bash
 export AR_TASK_DIR="<task_dir from step 2>"
@@ -129,58 +82,72 @@ export AR_TASK_DIR="<task_dir from step 2>"
 
 The activation hook prints `[AR Phase: ...]` guidance on stderr. Follow it.
 
-**Do not** chain anything else onto this command to "also fetch guidance" —
-in particular, do not write `export AR_TASK_DIR=... && python .../phase_machine.py get_guidance ...`.
-`phase_machine.py` is a library, not a CLI; `hook_guard_bash` will reject
-the invocation. The hook emits guidance automatically — read its output
-on stderr and proceed.
-
-## Step 4: Loop
+## Step 4 — Loop
 
 Follow the phase guidance. Never stop between phases.
 
-- **GENERATE_REF / GENERATE_KERNEL** — Write `reference.py` / `kernel.py` with
-  the Edit tool (only needed for `--desc` mode or when you skipped `--kernel`).
+- **GENERATE_REF / GENERATE_KERNEL** — Write `reference.py` / `kernel.py`
+  with the Edit tool.
 - **BASELINE** — `python .autoresearch/scripts/baseline.py "$AR_TASK_DIR"`
-  (append `--worker-url` if configured). If scaffold already ran baseline,
-  this phase is skipped automatically.
-- **PLAN / DIAGNOSE / REPLAN** — two-step flow, no path transcription:
-
-  1. Use the **Write tool** to write your `<items>...</items>` XML to:
-     ```
-     $AR_TASK_DIR/.ar_state/plan_items.xml
-     ```
-     This path is **fixed**. Do not invent a different one (no `/tmp/...`,
-     no shell expansion games). The hook's PLAN/DIAGNOSE/REPLAN guidance
-     also prints this exact path — copy it from there.
-
-  2. Run:
-     ```bash
-     python .autoresearch/scripts/create_plan.py "$AR_TASK_DIR"
-     ```
-     **No second argument.** `create_plan.py` reads from
-     `.ar_state/plan_items.xml` automatically. Adding `@/some/path` or an
-     inline XML string reintroduces the path-drift class of bugs this
-     two-step form exists to prevent (LLM Writes to one path, then passes
-     a different path to the script).
-
-  See the hook guidance for the exact XML schema — XML is used instead
-  of JSON to reduce structural hallucinations.
-
-  Alternatives (only when the canonical-path form is genuinely unsuitable,
-  e.g. an out-of-tree audit script):
-  - `create_plan.py "$AR_TASK_DIR" @<path>` reads from `<path>`.
-  - `create_plan.py "$AR_TASK_DIR" -` reads XML from stdin.
-
-  When the hook's `additionalContext` gives you a TodoWrite payload, call
-  TodoWrite with it verbatim.
+  (append `--worker-url` if configured). Skipped automatically if scaffold
+  already ran it.
+- **PLAN / REPLAN** — two-step plan creation:
+  1. Write `<items>...</items>` XML to `$AR_TASK_DIR/.ar_state/plan_items.xml`.
+  2. Run `python .autoresearch/scripts/create_plan.py "$AR_TASK_DIR"` (no
+     second argument — the script reads the canonical path).
+  See the hook guidance for the XML schema. When the hook emits a
+  TodoWrite payload, call TodoWrite with it verbatim.
+- **DIAGNOSE** — three steps with a hard artifact contract (see below).
 - **EDIT** — Edit `kernel.py` (multiple Edit calls OK). When done:
   `python .autoresearch/scripts/pipeline.py "$AR_TASK_DIR"`.
 - **FINISH** — Write `.ar_state/ranking.md`, summarize, stop.
 
+### DIAGNOSE flow
+
+The phase exists to produce a new plan. Two paths to that end — preferred
+(subagent) and fallback (manual). Stop is blocked the entire time.
+
+**Preferred path (subagent):**
+
+1. Call `Task(subagent_type='ar-diagnosis', ...)` with the prompt the hook
+   printed inside `---BEGIN SUBAGENT PROMPT---` / `---END SUBAGENT PROMPT---`
+   — verbatim, no paraphrasing. PreToolUse blocks any other tool until
+   the artifact validates.
+2. PostToolUse checks `$AR_TASK_DIR/.ar_state/diagnose_v<plan_version>.md`
+   for: marker `[AR DIAGNOSE COMPLETE marker_v<plan_version>]`, sections
+   `Root cause` / `Fix directions` / `What to avoid`, citations of the
+   last 3 FAIL rounds (`R<n>`).
+   - Pass → `[AR] DIAGNOSE artifact validated …` → go to step 3.
+   - Fail → `additionalContext` says what's missing; re-issue the same
+     Task call.
+3. Create the new plan: write `plan_items.xml`, run `create_plan.py`
+   (same two-step flow as PLAN / REPLAN). Phase advances to EDIT.
+
+**Fallback path (manual planning, after 5 failed Task attempts):**
+
+The subagent path is exhausted but the phase still requires a new plan.
+Further `Task` calls are blocked; the artifact gate on `create_plan.py`
+is relaxed.
+
+1. Read `.ar_state/history.jsonl` (focus on recent FAIL rows — their
+   `description` fields are the raw failure signal) and `.ar_state/plan.md`
+   (what's already been tried).
+2. Write `<items>...</items>` to `$AR_TASK_DIR/.ar_state/plan_items.xml`.
+   Plan must contain ≥3 items, ≥2 structurally different from the prior
+   plan (algorithmic / fusion / memory layout / data movement, NOT
+   parameter tuning).
+3. Run `python .autoresearch/scripts/create_plan.py "$AR_TASK_DIR"`. Only
+   create_plan.py's structural validation applies. Phase advances to EDIT.
+
+In DIAGNOSE: do not Edit kernel.py, do not Stop. The only path forward
+is `Task → artifact → create_plan` (preferred) or `manual plan_items.xml
+→ create_plan` (fallback after cap).
+
 ## Rules
 
 - Keep going between phases.
-- Hooks block wrong actions and tell you what to do next — read their messages.
-- Never hand-edit `plan.md` or `.ar_state/.phase`; always go through the scripts.
-- **Never** invent flag values not produced by `parse_args.py` in step 1.
+- Hooks block wrong actions and tell you what to do next — read their
+  messages.
+- Never hand-edit `plan.md` or `.ar_state/.phase`; always go through
+  the scripts.
+- Never invent flag values not produced by `parse_args.py`.

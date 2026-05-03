@@ -57,6 +57,15 @@ EDIT_MARKER_FILE = ".edit_started"
 HEARTBEAT_FILE = ".heartbeat"
 ACTIVE_TASK_FILE = ".active_task"  # under .autoresearch/, not .ar_state/
 
+# DIAGNOSE artifact contract — see CLAUDE.md "DIAGNOSE artifact contract".
+# The diagnosis subagent MUST Write its report to this exact path; main agent
+# is then gated on the artifact's presence + structure before any further
+# action (create_plan.py, Stop, etc.). The marker is plan-version-aware so a
+# stale prior diagnose can't be replayed across REPLAN boundaries.
+DIAGNOSE_ARTIFACT_TEMPLATE = "diagnose_v{}.md"
+DIAGNOSE_MARKER_TEMPLATE = "[AR DIAGNOSE COMPLETE marker_v{}]"
+DIAGNOSE_ATTEMPTS_CAP = 5
+
 
 # ---------------------------------------------------------------------------
 # Project root resolution + active-task pointer
@@ -141,6 +150,17 @@ def history_path(task_dir: str) -> str:
 
 def edit_marker_path(task_dir: str) -> str:
     return state_path(task_dir, EDIT_MARKER_FILE)
+
+
+def diagnose_artifact_path(task_dir: str, plan_version: int) -> str:
+    """Path to the DIAGNOSE artifact for a given plan_version. The subagent
+    Writes to this exact path; the validator reads from it. Plan-version
+    suffix prevents stale artifacts from satisfying a later DIAGNOSE round."""
+    return state_path(task_dir, DIAGNOSE_ARTIFACT_TEMPLATE.format(plan_version))
+
+
+def diagnose_marker(plan_version: int) -> str:
+    return DIAGNOSE_MARKER_TEMPLATE.format(plan_version)
 
 
 # ---------------------------------------------------------------------------

@@ -14,8 +14,9 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from hook_utils import read_hook_input, block_decision
 from phase_machine import (
-    read_phase, get_guidance, get_task_dir, touch_heartbeat, check_bash,
-    parse_script_names,
+    DIAGNOSE, DIAGNOSE_ATTEMPTS_CAP, read_phase, get_guidance, get_task_dir,
+    touch_heartbeat, check_bash, parse_script_names, diagnose_state,
+    parse_invoked_ar_script,
 )
 from settings import hallucinated_scripts
 
@@ -92,6 +93,24 @@ def main():
     _script_name_check(command)
 
     phase = read_phase(task_dir)
+
+    # DIAGNOSE-specific Bash gate: create_plan.py must come AFTER the
+    # subagent artifact validates — UNLESS the subagent attempts cap has
+    # been reached, in which case the manual-planning fallback applies and
+    # the artifact gate is dropped.
+    if phase == DIAGNOSE and parse_invoked_ar_script(command) == "create_plan.py":
+        state = diagnose_state(task_dir)
+        if not state.exhausted and not state.artifact_ok:
+            block_decision(
+                f"[AR] create_plan.py blocked in DIAGNOSE: artifact "
+                f"check failed ({state.artifact_reason}). Issue Task "
+                f"with subagent_type='ar-diagnosis' first; only after "
+                f"the artifact validates may you run create_plan.py. "
+                f"(Subagent attempts so far: {state.attempts}/"
+                f"{DIAGNOSE_ATTEMPTS_CAP}; at the cap the gate is "
+                f"relaxed and you may write the plan directly.)"
+            )
+
     ok, reason = check_bash(phase, command)
     if not ok:
         block_decision(f"[AR] {reason}. {get_guidance(task_dir)}")

@@ -38,8 +38,10 @@ from .state_store import (
     # File constants
     PHASE_FILE, PROGRESS_FILE, HISTORY_FILE, PLAN_FILE, PLAN_ITEMS_FILE,
     EDIT_MARKER_FILE, HEARTBEAT_FILE, ACTIVE_TASK_FILE,
+    DIAGNOSE_ARTIFACT_TEMPLATE, DIAGNOSE_MARKER_TEMPLATE, DIAGNOSE_ATTEMPTS_CAP,
     # Path builders
     state_path, plan_path, progress_path, history_path, edit_marker_path,
+    diagnose_artifact_path, diagnose_marker,
     # Phase I/O
     read_phase, write_phase,
     # Progress + history I/O
@@ -52,7 +54,8 @@ from .state_store import (
 from .validators import (
     KERNEL_PLACEHOLDER, REFERENCE_PLACEHOLDER_PREFIX,
     is_placeholder_file,
-    validate_reference, validate_kernel, validate_plan,
+    validate_reference, validate_kernel, validate_plan, validate_diagnose,
+    DiagnoseState, diagnose_state,
     get_plan_items, has_pending_items, get_active_item,
     # Internal — re-exported so debug / extension scripts that previously
     # reached into phase_machine can still find them at the old name.

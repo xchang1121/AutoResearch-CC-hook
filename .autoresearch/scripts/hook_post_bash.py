@@ -207,7 +207,22 @@ def main():
         emit_todowrite_context(task_dir, f"[AR] Round settled. Phase -> {new_phase}.")
 
     elif invoked == "create_plan.py" and phase in (PLAN, DIAGNOSE, REPLAN):
-        from phase_machine import validate_plan
+        from phase_machine import validate_plan, diagnose_state
+        # In DIAGNOSE we require the diagnose artifact to be valid before
+        # advancing the new plan to EDIT — UNLESS the subagent attempts
+        # cap has been reached, in which case the manual-planning fallback
+        # applies. PreToolUse on Bash (hook_guard_bash) enforces the same
+        # rule before create_plan.py runs; this is the post-execution
+        # backstop.
+        if phase == DIAGNOSE:
+            state = diagnose_state(task_dir)
+            if not state.exhausted and not state.artifact_ok:
+                emit_status(
+                    f"[AR] create_plan rejected in DIAGNOSE: artifact "
+                    f"check failed ({state.artifact_reason}). Re-issue "
+                    f"Task with subagent_type='ar-diagnosis' first."
+                )
+                sys.exit(0)
         ok, err = validate_plan(task_dir)
         if ok:
             _progress_update_for_plan(task_dir, phase)

@@ -1,12 +1,8 @@
 # Claude AutoResearch
 
-An iterative optimization framework powered by Claude Code.
-
-## What this is
-
-Claude Code acts as the LLM agent, executing a plan → edit → eval → keep/discard loop
-to optimize code against a measurable metric. Fully standalone with zero external
-dependencies beyond Python + PyYAML.
+An iterative optimization framework powered by Claude Code: plan → edit →
+eval → keep/discard, looping against a measurable metric. Standalone, no
+external deps beyond Python + PyYAML.
 
 ## Quick Start
 
@@ -15,33 +11,27 @@ dependencies beyond Python + PyYAML.
 cd claude-autoresearch
 claude
 
-# 2. Start a task (init + run is one command).
-#    Drop the source ref/kernel files into workspace/ first, named
-#    workspace/<op_name>_ref.py and workspace/<op_name>_kernel.py.
-#    --dsl is required; pick --devices N (local) XOR --worker-url (remote).
-#    --backend / --arch are auto-derived; never typed.
+# 2. Drop sources into workspace/<op_name>_ref.py (and optional _kernel.py),
+#    then start a task. --dsl required; pick --devices N XOR --worker-url.
 /autoresearch --ref workspace/<op_name>_ref.py --op-name <op_name> --dsl triton_cuda --devices 0
 
 # 3. Resume later
 /autoresearch --resume
 
-# 4. Monitor (in a separate terminal)
+# 4. Monitor in a separate terminal
 python .autoresearch/scripts/dashboard.py <task_dir> --watch
 ```
 
-## Slash Commands
+`/autoresearch` is the only slash command — full operational details in
+[.claude/commands/autoresearch.md](.claude/commands/autoresearch.md).
 
-| Command | Purpose |
-|---------|---------|
-| `/autoresearch` | The only slash command — scaffold, resume, or run the loop. Single entry point. |
-
-Failure diagnosis runs as the `DIAGNOSE` phase (triggered automatically by the hook machine after 3 consecutive FAIL rounds). Progress reporting lives in the `dashboard.py` script, run in a separate terminal.
-
-For long unattended runs, wrap in `/loop` self-paced mode: `/loop /autoresearch --resume`. Fixed-interval loops aren't useful here because phase duration varies wildly (PLAN seconds vs EDIT+eval minutes).
+For unattended long runs, wrap in self-paced loop: `/loop /autoresearch --resume`.
 
 ## Remote Worker
 
-For eval on remote hardware (e.g. Ascend NPU), add to task.yaml:
+For eval on remote hardware (e.g. Ascend NPU), pass
+`--worker-url 127.0.0.1:9111` to `/autoresearch` on init, or set in
+`task.yaml`:
 
 ```yaml
 worker:
@@ -49,82 +39,60 @@ worker:
     - 127.0.0.1:9111
 ```
 
-Or pass `--worker-url 127.0.0.1:9111` directly to `/autoresearch` on init.
-
 ## Skills Library
 
-`skills/` contains optimization knowledge organized by DSL/backend, plus
-several cross-cutting workflow skills. Use `Glob("skills/**/*.md")` to
-enumerate the current set; do not rely on a hand-maintained count here.
-
-DSL / backend skills:
-```
-skills/
-  triton-ascend/   — Triton on Ascend NPU (guides + cases)
-  triton-cuda/     — Triton on CUDA GPU (guides + cases)
-  cuda-c/          — CUDA C kernels
-  cpp/             — CPU C++ optimization
-  tilelang-cuda/   — TileLang DSL
-  pypto/           — PyTorch operator patterns (cases)
-```
-
-Workflow skills (cross-DSL):
-```
-skills/
-  designer/             — kernel design / decomposition guides
-  kernel-agent/         — agent flow for kernel generation
-  kernel-workflow/      — overall workflow orchestration
-  performance-summary/  — perf report templates
-  task-constructor/     — task spec authoring
-```
-
-During the PLAN phase, use Glob to find relevant skills by DSL/backend:
-```
-Glob("skills/triton-ascend/**/*.md")
-```
-Then Read the SKILL.md files that match your optimization direction. Each SKILL.md has YAML frontmatter with category, description, and keywords.
+`skills/` holds optimization knowledge organized by DSL/backend
+(`skills/triton-ascend/`, `skills/triton-cuda/`, `skills/cuda-c/`, ...) plus
+cross-cutting workflow guides (`skills/designer/`, `skills/kernel-workflow/`,
+...). During PLAN, `Glob("skills/<dsl>/**/*.md")` and Read SKILL.md files
+whose frontmatter matches your direction; cite SKILL ids in plan rationales.
 
 ## Invariants (hook-driven flow)
 
-Step-by-step actions are injected by hooks as `[AR Phase: ...]` messages.
-The text is generated INTERNALLY by hooks and emitted on stderr; you only
-consume those messages. Do not try to fetch guidance yourself — there is
-no CLI for it, `phase_machine.py` is a library and invoking it as a script
-is rejected by `hook_guard_bash`. If you have not seen a fresh
-`[AR Phase: ...]` message, wait for one (run the next legal command and
-the hook will emit guidance), don't try to "refresh" it manually.
+Hooks emit `[AR Phase: ...]` messages on stderr after every state-changing
+event. Follow the latest one. Don't try to fetch guidance manually —
+`phase_machine.py` is a library, not a CLI; `hook_guard_bash` rejects
+direct invocation.
 
-Do not try to memorize the flow — follow the latest hook message. The
-following invariants are non-negotiable:
+The following invariants are non-negotiable:
 
-1. **`.ar_state/plan.md` is the source of truth.** Only `create_plan.py` and
-   `settle.py` / `pipeline.py` may write to it. Never hand-edit `plan.md`.
-   TodoWrite is a UI mirror projected from `plan.md` by hooks — not a
-   substitute.
-2. **Plan item IDs are globally monotonic.** `p1, p2, p3, ...` allocated from
-   a single counter in `progress.json.next_pid`. Never reuse IDs, never skip.
-3. **Every `pN` either settles (KEEP / DISCARD / FAIL in `history.jsonl`) or
-   gets dropped at a REPLAN/DIAGNOSE boundary.** `create_plan.py` does NOT
-   write a synthetic DISCARD row for pending items it supersedes — they're
-   silently dropped. The audit chain is `progress.json.plan_version` plus
-   the absence of a `history.jsonl` record for that pid; the pid counter
-   stays consumed (no reuse). A pid that exists only in plan_version N's
-   plan.md and has no history.jsonl entry was abandoned at the N→N+1
-   transition.
-4. **Phase transitions are hook-controlled.** Never write `.ar_state/.phase`
-   manually and never "guess the next step" — wait for the hook's guidance.
+1. **`.ar_state/plan.md` is the source of truth.** Only `create_plan.py` /
+   `settle.py` / `pipeline.py` write it. Never hand-edit. TodoWrite is a
+   UI mirror, not a substitute.
+2. **Plan IDs are globally monotonic.** `p1, p2, ...` from
+   `progress.json.next_pid`. Never reuse, never skip.
+3. **Every `pN` either settles (KEEP / DISCARD / FAIL in `history.jsonl`)
+   or is dropped at a REPLAN/DIAGNOSE boundary.** `create_plan.py` does
+   not synthesize DISCARD rows for superseded items — they're silently
+   dropped; the pid counter still advances.
+4. **Phase transitions are hook-controlled.** Never write
+   `.ar_state/.phase` manually. Wait for the hook's guidance.
 5. **Editable files are scoped by `task.yaml.editable_files`.** Editing
    anything else is rejected by `hook_guard_edit.py`.
-6. **After a session break, resume with `/autoresearch --resume`.** Do not
-   patch state files to recover.
-7. **`create_plan.py` rejects mean the plan has a real problem** (diversity,
-   repeated failure keywords, short rationale). Read the stderr reason and
-   rewrite — do not retry the same XML payload. The script consumes an
-   `<items>` XML document (chosen over JSON because LLMs hallucinate fewer
-   structural errors in tag-delimited text).
+6. **After a session break, resume with `/autoresearch --resume`.** Do
+   not patch state files to recover.
+7. **`create_plan.py` rejects mean the plan has a real problem**
+   (diversity, repeated failure keywords, short rationale). Read stderr
+   and rewrite — don't retry the same XML payload.
 8. **TodoWrite sync is mandatory.** When a hook emits `additionalContext`
-   with a `TodoWrite payload`, call TodoWrite with that payload verbatim on
-   the next turn.
+   with a TodoWrite payload, call TodoWrite with it verbatim next turn.
+9. **DIAGNOSE phase ends with a new plan.** Two paths to that end:
+   - **Preferred (subagent route).** Call `Task(subagent_type='ar-diagnosis')`;
+     the subagent Writes a valid artifact at
+     `<task_dir>/.ar_state/diagnose_v<plan_version>.md` (three sections
+     `Root cause` / `Fix directions` / `What to avoid`, citations of the
+     last 3 FAIL rounds by `R<n>`, marker line
+     `[AR DIAGNOSE COMPLETE marker_v<plan_version>]`). Then write
+     `plan_items.xml` and run `create_plan.py`.
+   - **Fallback (manual planning).** After 5 failed Task attempts on the
+     same `plan_version`, the artifact gate is relaxed: write
+     `plan_items.xml` yourself using `history.jsonl` + `plan.md`, then
+     run `create_plan.py`. Further Task calls are blocked at this point.
+
+   Stop is blocked the entire time DIAGNOSE is active — only
+   `create_plan.py` advancing phase to EDIT releases the lock. The host
+   validates the artifact contract; it never synthesizes the artifact or
+   the plan for the agent.
 
 ## Dependencies
 

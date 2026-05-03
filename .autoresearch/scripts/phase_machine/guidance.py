@@ -16,11 +16,12 @@ from typing import Optional
 from .state_store import (
     INIT, GENERATE_REF, GENERATE_KERNEL, BASELINE, PLAN, EDIT,
     DIAGNOSE, REPLAN, FINISH,
-    PLAN_ITEMS_FILE,
+    PLAN_ITEMS_FILE, DIAGNOSE_ATTEMPTS_CAP,
+    diagnose_artifact_path, diagnose_marker,
     history_path, load_progress, read_phase, state_path,
     _PROJECT_ROOT,
 )
-from .validators import get_active_item
+from .validators import get_active_item, diagnose_state
 
 
 # Shared plan-item scaffolding shown in PLAN / DIAGNOSE / REPLAN guidance.
@@ -290,6 +291,7 @@ def get_guidance(task_dir: str) -> str:
         # digs (full traces / older rounds).
         hpath = history_path(task_dir)
         fail_summary = ""
+        last_3_fail_rounds = []
         if os.path.exists(hpath):
             with open(hpath, "r") as f:
                 lines = [l.strip() for l in f if l.strip()]
@@ -303,6 +305,19 @@ def get_guidance(task_dir: str) -> str:
                 _r = rec.get("round")
                 _r = "?" if _r is None else _r
                 fail_summary += f"  R{_r}: {rec.get('decision','?')} — {rec.get('description','')[:60]}\n"
+            # Pull last 3 FAILs across the WHOLE history (not just last 5
+            # records) — these are the rounds the subagent must reference
+            # by R<n> token.
+            all_recs = []
+            for l in lines:
+                try:
+                    all_recs.append(json.loads(l))
+                except Exception:
+                    pass
+            last_3_fail_rounds = [
+                r.get("round") for r in all_recs
+                if r.get("decision") == "FAIL" and r.get("round") is not None
+            ][-3:]
 
         # Compact metric snapshot — saves the subagent from reading
         # history.jsonl just to answer "how big a delta do we need?".
@@ -316,6 +331,12 @@ def get_guidance(task_dir: str) -> str:
                     f"\nMetrics ({primary_metric}): "
                     f"seed={seed} | ref_baseline={base} | current_best={best}"
                 )
+        # Single source of plan_version + per-pv attempt counter (also
+        # validates the artifact, but the result is unused here — accepting
+        # the small extra read so all callers go through the same helper).
+        ds = diagnose_state(task_dir, progress=progress) if progress else None
+        plan_version = ds.plan_version if ds else 0
+        attempts = ds.attempts if ds else 0
 
         arch = (config.arch if config and config.arch else "<unknown>")
         backend = (config.backend if config and config.backend else "<unknown>")
@@ -355,12 +376,23 @@ def get_guidance(task_dir: str) -> str:
             )
             cite_clause = ""
 
+        # Artifact contract — the host validates these literals after the
+        # Task call returns. See validators.validate_diagnose.
+        artifact_path = diagnose_artifact_path(task_dir, plan_version)
+        marker = diagnose_marker(plan_version)
+        last_3_str = (
+            ", ".join(f"R{r}" for r in last_3_fail_rounds)
+            if last_3_fail_rounds else "(no FAIL rounds yet — cite the FAILs you find in history.jsonl)"
+        )
+
         # Pre-baked subagent prompt. Parent passes this verbatim to the Agent
         # tool so the subagent doesn't improvise (an earlier open-ended brief
         # sent it grepping git log for 100+ tool calls before timing out).
         subagent_prompt = (
-            f"Diagnose why the current optimization rounds are failing.\n\n"
-            f"Target: dsl={dsl} backend={backend} arch={arch}{metric_line}\n\n"
+            f"Diagnose why the current optimization rounds are failing, then "
+            f"Write a structured report to a fixed path.\n\n"
+            f"Target: dsl={dsl} backend={backend} arch={arch}{metric_line}\n"
+            f"plan_version={plan_version}\n\n"
             f"Recent rounds (pre-baked from history.jsonl — read the file "
             f"itself only if you need full traces / older rounds):\n"
             f"{fail_summary or '  (none settled yet)'}\n"
@@ -376,32 +408,62 @@ def get_guidance(task_dir: str) -> str:
             f"`git grep`) — per-round commits carry no keyword signal and "
             f"burn tool calls.\n"
             f"{scope_constraint}"
-            f"  - Stop after at most 12 tool uses; output what you have if "
-            f"you can't fully conclude.\n\n"
-            f"Produce a tight report (<300 words total) with three sections:\n"
-            f"  1. Root cause: one paragraph on what's making rounds fail.\n"
-            f"  2. Fix directions: at most 3 STRUCTURALLY different "
-            f"approaches (algorithmic change / fusion / memory layout / "
-            f"data movement). One sentence each. NOT more parameter "
-            f"tuning.{cite_clause}\n"
-            f"  3. What to avoid: at most 3 patterns to NOT repeat. One "
-            f"sentence each."
+            f"  - Stop after at most 12 tool uses.\n"
+            f"  - Write tool may ONLY target the artifact path below. Do "
+            f"NOT Write kernel.py, plan.md, or anywhere else.\n\n"
+            f"REQUIRED OUTPUT — your final action MUST be a Write call to "
+            f"this exact path:\n"
+            f"  {artifact_path}\n\n"
+            f"The file body must contain ALL of:\n"
+            f"  - heading section 'Root cause' (one paragraph; cite each "
+            f"of {last_3_str} by its R<n> token)\n"
+            f"  - heading section 'Fix directions' (≤3 STRUCTURALLY "
+            f"different approaches: algorithmic / fusion / memory layout "
+            f"/ data movement; NOT parameter tuning.{cite_clause})\n"
+            f"  - heading section 'What to avoid' (≤3 patterns to NOT "
+            f"repeat)\n"
+            f"  - the magic marker line on its own line at the end:\n"
+            f"      {marker}\n"
+            f"Total ≤ 300 words across the three sections. The host "
+            f"validates path + marker + sections + R<n> citations after "
+            f"this Task call returns; missing any element will force a "
+            f"retry."
         )
+        retry_note = ""
+        if attempts > 0:
+            retry_note = (
+                f"\nThis is DIAGNOSE attempt {attempts + 1}/"
+                f"{DIAGNOSE_ATTEMPTS_CAP}. The previous artifact was "
+                f"missing or malformed — re-issue Task and ensure the "
+                f"subagent ends its work with a Write of the marker line."
+            )
         return (f"[AR Phase: DIAGNOSE] consecutive_failures >= 3.\n"
-                f"Spawn the diagnosis SUBAGENT — call Agent with "
-                f"subagent_type='ar-diagnosis' (defined in "
-                f".claude/agents/ar-diagnosis.md, read-only tools only) "
-                f"and this EXACT prompt — do not paraphrase, do not add "
-                f"or remove constraints:\n"
+                f"Step 1 (mandatory, only legal action right now): call the "
+                f"Task tool with subagent_type='ar-diagnosis' and this "
+                f"EXACT prompt. Do not paraphrase. Do not add or remove "
+                f"constraints. Do not Edit, Write, or Bash before this "
+                f"Task call.\n"
                 f"---BEGIN SUBAGENT PROMPT---\n"
                 f"{subagent_prompt}\n"
                 f"---END SUBAGENT PROMPT---\n"
-                f"After the subagent returns, create a NEW plan with >= 3 items.\n"
+                f"\n"
+                f"Step 2 (after Task returns AND the host confirms the "
+                f"artifact validated): create a NEW plan with >= 3 items "
+                f"using {artifact_path} as input.\n"
                 f"\n"
                 f"{_create_plan_instruction(task_dir)}"
                 f"\n"
                 f"Items must be diverse: max 1 parameter-tuning item, rest "
-                f"must be structural changes. Then sync TodoWrite.")
+                f"must be structural changes. Then sync TodoWrite.\n"
+                f"\n"
+                f"Artifact contract: the host gates Step 2 on a valid "
+                f"{os.path.basename(artifact_path)} (path + marker + 3 "
+                f"sections + R<n> citations). Up to "
+                f"{DIAGNOSE_ATTEMPTS_CAP} Task attempts are allowed; after "
+                f"that the gate is relaxed and you must write "
+                f"plan_items.xml directly (manual-planning fallback) "
+                f"before running create_plan.py — the DIAGNOSE phase "
+                f"still requires a new plan, just without subagent help.{retry_note}")
 
     if phase == REPLAN:
         remaining = "?"

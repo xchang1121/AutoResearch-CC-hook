@@ -365,6 +365,9 @@ def check_bash(phase: str, command: str) -> tuple:
     return True, ""
 
 
+_DIAGNOSE_ARTIFACT_RE = re.compile(r"^\.ar_state/diagnose_v\d+\.md$")
+
+
 def check_edit(phase: str, rel_path: str, editable_files) -> tuple:
     """Return (allowed: bool, reason: str) for an Edit/Write on `rel_path`
     (task-dir-relative, forward-slash form) at `phase`.
@@ -372,11 +375,14 @@ def check_edit(phase: str, rel_path: str, editable_files) -> tuple:
     Writes under .ar_state/ are restricted to a precise allowlist. Phase,
     progress, history, plan.md, heartbeat, and markers are all machine-
     maintained — letting Claude Edit them would let the model skip phases,
-    rewrite counters, or forge history. Only two paths are writable by the
-    agent:
+    rewrite counters, or forge history. Three paths are agent-writable:
       - .ar_state/plan_items.xml: the XML input file /autoresearch hands to
         create_plan.py (see .claude/commands/autoresearch.md).
       - .ar_state/ranking.md: the FINISH-phase summary (phase-gated).
+      - .ar_state/diagnose_v<N>.md: the DIAGNOSE-phase artifact written by
+        the ar-diagnosis subagent (and validated by hook_post_task). Only
+        writable while phase=DIAGNOSE — outside the phase, no agent should
+        be touching it.
     """
     if rel_path.startswith(".ar_state/"):
         if rel_path == f".ar_state/{PLAN_ITEMS_FILE}":
@@ -388,6 +394,13 @@ def check_edit(phase: str, rel_path: str, editable_files) -> tuple:
                 "ranking.md is only writable in the FINISH phase — "
                 "finish the optimization loop first."
             )
+        if _DIAGNOSE_ARTIFACT_RE.match(rel_path):
+            if phase == DIAGNOSE:
+                return True, ""
+            return False, (
+                f"{rel_path!r} is the DIAGNOSE artifact and is only "
+                f"writable while phase=DIAGNOSE."
+            )
         if rel_path == f".ar_state/{PLAN_FILE}":
             return False, (
                 f"plan.md is machine-generated — never hand-edit it. Write "
@@ -397,9 +410,10 @@ def check_edit(phase: str, rel_path: str, editable_files) -> tuple:
             )
         return False, (
             f"{rel_path!r} is machine-maintained state. Only "
-            f".ar_state/{PLAN_ITEMS_FILE} (plan input) and .ar_state/ranking.md "
-            f"(FINISH summary) are writable under .ar_state/; everything else "
-            f"is owned by hooks and scripts."
+            f".ar_state/{PLAN_ITEMS_FILE} (plan input), .ar_state/ranking.md "
+            f"(FINISH summary), and .ar_state/diagnose_v<N>.md (DIAGNOSE "
+            f"artifact) are writable under .ar_state/; everything else is "
+            f"owned by hooks and scripts."
         )
 
     allowed_classes = _EDIT_RULES.get(phase, set())
