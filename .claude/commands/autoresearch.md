@@ -111,8 +111,11 @@ The phase exists to produce a new plan. Two paths to that end — preferred
 
 1. Call `Task(subagent_type='ar-diagnosis', ...)` with the prompt the hook
    printed inside `---BEGIN SUBAGENT PROMPT---` / `---END SUBAGENT PROMPT---`
-   — verbatim, no paraphrasing. PreToolUse blocks any other tool until
-   the artifact validates.
+   — verbatim, no paraphrasing. While the artifact is missing/invalid,
+   Bash is locked to read-only / lifecycle ops, `create_plan.py` is
+   gated on the artifact, Edit is restricted by `check_edit`, and Stop
+   is blocked. PreToolUse on Task itself only enforces
+   `subagent_type='ar-diagnosis'`.
 2. PostToolUse checks `$AR_TASK_DIR/.ar_state/diagnose_v<plan_version>.md`
    for: marker `[AR DIAGNOSE COMPLETE marker_v<plan_version>]`, sections
    `Root cause` / `Fix directions` / `What to avoid`, citations of the
