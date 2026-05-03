@@ -309,7 +309,10 @@ _BASH_RULES = {
     GENERATE_REF:    _BashPolicy("strict",     required=set()),
     GENERATE_KERNEL: _BashPolicy("strict",     required=set()),
     PLAN:            _BashPolicy("permissive", banned=set()),
-    DIAGNOSE:        _BashPolicy("permissive", banned=set()),
+    # DIAGNOSE: only create_plan.py is a legal AR-script invocation;
+    # the phase exists to produce a new plan via Task -> artifact ->
+    # create_plan (or manual-planning fallback after the cap).
+    DIAGNOSE:        _BashPolicy("strict",     required={"create_plan.py"}),
     REPLAN:          _BashPolicy("permissive", banned=set()),
     EDIT:            _BashPolicy("permissive", banned={"create_plan.py"}),
     FINISH:          _BashPolicy("permissive", banned=set()),

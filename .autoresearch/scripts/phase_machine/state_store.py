@@ -54,6 +54,7 @@ HISTORY_FILE = "history.jsonl"
 PLAN_FILE = "plan.md"
 PLAN_ITEMS_FILE = "plan_items.xml"  # canonical XML payload path under .ar_state/
 EDIT_MARKER_FILE = ".edit_started"
+PENDING_SETTLE_FILE = ".pending_settle.json"  # kd_json saved when settle.py fails
 HEARTBEAT_FILE = ".heartbeat"
 ACTIVE_TASK_FILE = ".active_task"  # under .autoresearch/, not .ar_state/
 
@@ -153,6 +154,21 @@ def history_path(task_dir: str) -> str:
 
 def edit_marker_path(task_dir: str) -> str:
     return state_path(task_dir, EDIT_MARKER_FILE)
+
+
+def pending_settle_path(task_dir: str) -> str:
+    """Sidecar holding the kd_json from a settle.py invocation that failed.
+
+    pipeline.py persists the kd_json here when settle returns non-zero, then
+    its NEXT invocation detects this file and retries settle ONLY (skipping
+    quick_check/eval/keep_or_discard). Without this replay-only path, a
+    re-run of pipeline.py would double-mutate progress.json (eval_rounds++)
+    and history.jsonl (duplicate row) before the original settle even gets
+    a second chance.
+
+    Removed by pipeline.py on successful settle.
+    """
+    return state_path(task_dir, PENDING_SETTLE_FILE)
 
 
 def diagnose_artifact_path(task_dir: str, plan_version: int) -> str:

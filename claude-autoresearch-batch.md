@@ -822,7 +822,7 @@ hook_post_edit (Write/Edit kernel.py 后)
   └→ gate: [ -f .autoresearch/.active_task ] || exit 0  ⚠️
   └→ phase_machine.validate_kernel(task_dir)
        ├→ 1. is_placeholder_file? 是 → reject
-       └→ 2. quick_check._check_editable_files → CodeChecker
+       └→ 2. quick_check.check_editable_files → CodeChecker
               (syntax → compile → imports → stray-text → DSL → autotune)
        └→ 都过 → write_phase(task_dir, BASELINE)
        └→ 任何一步挂 → emit "[AR] kernel.py invalid" + 原因；phase 不动

@@ -26,10 +26,87 @@ from failure_extractor import format_for_stdout
 from phase_machine import (
     write_phase, compute_next_phase, get_active_item,
     get_guidance, auto_rollback, load_progress, edit_marker_path,
-    parse_last_json_line,
+    pending_settle_path, parse_last_json_line,
 )
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _run_settle(task_dir: str, kd_json: dict) -> tuple:
+    """Invoke settle.py with the given kd_json. Returns (rc, stdout_tail, stderr_tail)."""
+    settle = subprocess.run(
+        [sys.executable, os.path.join(SCRIPT_DIR, "settle.py"),
+         task_dir, json.dumps(kd_json)],
+        capture_output=True, text=True, timeout=10,
+    )
+    return (
+        settle.returncode,
+        (settle.stdout or "").strip()[-400:],
+        (settle.stderr or "").strip()[-400:],
+    )
+
+
+def _persist_pending_settle(task_dir: str, kd_json: dict) -> None:
+    path = pending_settle_path(task_dir)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(kd_json, f)
+
+
+def _clear_pending_settle(task_dir: str) -> None:
+    path = pending_settle_path(task_dir)
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def _emit_settle_failure(task_dir: str, rc: int, tail_out: str,
+                         tail_err: str) -> None:
+    print(f"[PIPELINE] SETTLE FAILED (rc={rc}). plan.md was NOT updated. "
+          f"progress.json + history.jsonl already moved during this round; "
+          f"re-running this script will RETRY SETTLE ONLY (kd_json was "
+          f"persisted to .ar_state/.pending_settle.json), it will NOT "
+          f"re-run quick_check/eval/keep_or_discard. Fix the underlying "
+          f"cause (read stderr below), then re-run pipeline.py. Do NOT "
+          f"hand-edit plan.md; if settle keeps failing on the same "
+          f"plan.md, REPLAN via create_plan.py.\n"
+          f"stdout tail: {tail_out}\n"
+          f"stderr tail: {tail_err}", file=sys.stderr)
+
+
+def _post_settle(task_dir: str, decision: str, settled_id: str) -> None:
+    """Common path after a successful settle: advance phase, clear edit
+    marker, print status. Runs whether settle succeeded the first time or
+    on the replay-only retry."""
+    next_phase = compute_next_phase(task_dir)
+    write_phase(task_dir, next_phase)
+    marker = edit_marker_path(task_dir)
+    if os.path.exists(marker):
+        os.remove(marker)
+
+    progress = load_progress(task_dir) or {}
+    rounds = progress.get("eval_rounds", 0)
+    max_rounds = progress.get("max_rounds", "?")
+    best = progress.get("best_metric")
+    baseline = progress.get("baseline_metric")
+    failures = progress.get("consecutive_failures", 0)
+
+    improv = ""
+    if (
+        best is not None and baseline is not None
+        and isinstance(best, (int, float))
+        and isinstance(baseline, (int, float))
+        and baseline != 0 and best != 0
+    ):
+        pct = (baseline - best) / abs(baseline) * 100
+        speedup = baseline / best
+        improv = f" ({speedup:.2f}x vs ref, {pct:+.1f}%)"
+
+    print(f"\n{'=' * 50}")
+    print(f"[{decision}] {settled_id} | Round {rounds}/{max_rounds} | "
+          f"Best: {best}{improv} | Failures: {failures}")
+    print(f"Phase -> {next_phase}")
+    print(f"{'=' * 50}")
+    print(get_guidance(task_dir))
 
 
 def main():
@@ -38,6 +115,39 @@ def main():
         sys.exit(1)
 
     task_dir = os.path.abspath(sys.argv[1])
+
+    # === Replay-only settle ===
+    # If a previous pipeline.py invocation got past keep_or_discard but
+    # settle.py failed, the kd_json was persisted to .pending_settle.json.
+    # Re-running pipeline.py from scratch would re-eval and double-write
+    # progress/history; instead, we ONLY retry settle here. Fix the
+    # underlying cause (the agent saw the failure reason in stderr), then
+    # invoke pipeline.py — same command, no flags — and this branch handles
+    # the retry deterministically. Lives BEFORE task.yaml load so retry
+    # works even if task config has drifted (settle only touches .ar_state).
+    pending_path = pending_settle_path(task_dir)
+    if os.path.exists(pending_path):
+        try:
+            with open(pending_path, "r", encoding="utf-8") as f:
+                kd_json = json.load(f)
+        except Exception as e:
+            print(f"[PIPELINE] pending settle file unreadable ({e}). "
+                  f"Removing it and bailing — please re-run pipeline.py "
+                  f"to start a fresh round.", file=sys.stderr)
+            _clear_pending_settle(task_dir)
+            sys.exit(1)
+        print(f"[PIPELINE] Retrying settle from {os.path.basename(pending_path)} "
+              f"(skipping quick_check/eval/keep_or_discard).", flush=True)
+        rc, tail_out, tail_err = _run_settle(task_dir, kd_json)
+        if rc != 0:
+            _emit_settle_failure(task_dir, rc, tail_out, tail_err)
+            sys.exit(1)
+        _clear_pending_settle(task_dir)
+        active = get_active_item(task_dir)
+        settled_id = active["id"] if active else "?"
+        _post_settle(task_dir, kd_json.get("decision", "?"), settled_id)
+        return
+
     config = load_task_config(task_dir)
     if config is None:
         print("[PIPELINE] ERROR: task.yaml not found")
@@ -127,73 +237,20 @@ def main():
 
     # === Step 4: Settle (update plan.md) ===
     # progress.json + history.jsonl were already mutated by keep_or_discard;
-    # plan.md is the only state piece settle.py owns. If settle fails (no
-    # ACTIVE item, malformed plan.md, etc.) and we still advance phase, the
-    # next round sees inconsistent state — same ACTIVE item, advanced
-    # eval_rounds, and pipeline will keep dispatching the same plan_item
-    # forever. Surface the failure loud and abort phase advance instead.
-    settle = subprocess.run(
-        [sys.executable, os.path.join(SCRIPT_DIR, "settle.py"),
-         task_dir, json.dumps(kd_json)],
-        capture_output=True, text=True, timeout=10,
-    )
-    if settle.returncode != 0:
-        tail_out = (settle.stdout or "").strip()[-400:]
-        tail_err = (settle.stderr or "").strip()[-400:]
-        # plan.md is machine-maintained (CLAUDE.md invariant #1); never
-        # hand-edit it. Read the settle stderr below for the real cause
-        # (typically: no (ACTIVE) item, malformed plan.md, or a script
-        # error). Once that's resolved, re-run pipeline.py — the next
-        # invocation re-runs settle on the same kd_json. If settle keeps
-        # failing on the same plan.md, REPLAN via create_plan.py
-        # (preferred) or DIAGNOSE if consecutive_failures triggered it.
-        print(f"[PIPELINE] SETTLE FAILED (rc={settle.returncode}). "
-              f"plan.md was NOT updated even though progress.json + "
-              f"history.jsonl already moved. Phase NOT advanced. "
-              f"DO NOT hand-edit plan.md — read the settle stderr below "
-              f"for the underlying cause, then re-run pipeline.py. If "
-              f"settle keeps failing, REPLAN via create_plan.py.\n"
-              f"stdout tail: {tail_out}\n"
-              f"stderr tail: {tail_err}", file=sys.stderr)
+    # plan.md is the only state piece settle.py owns. If settle fails, the
+    # kd_json is persisted to .pending_settle.json so the NEXT invocation
+    # of pipeline.py retries settle alone (no second eval, no duplicate
+    # history row). The advance-phase block is gated on settle success.
+    rc, tail_out, tail_err = _run_settle(task_dir, kd_json)
+    if rc != 0:
+        _persist_pending_settle(task_dir, kd_json)
+        _emit_settle_failure(task_dir, rc, tail_out, tail_err)
         sys.exit(1)
+    _clear_pending_settle(task_dir)
 
-    # === Step 5: Compute next phase + clear edit marker ===
-    next_phase = compute_next_phase(task_dir)
-    write_phase(task_dir, next_phase)
-
-    # Clear edit-started marker (round is complete)
-    marker = edit_marker_path(task_dir)
-    if os.path.exists(marker):
-        os.remove(marker)
-
-    # === Step 6: Status report ===
-    progress = load_progress(task_dir) or {}
-    rounds = progress.get("eval_rounds", 0)
-    max_rounds = progress.get("max_rounds", "?")
-    best = progress.get("best_metric")
-    baseline = progress.get("baseline_metric")
-    failures = progress.get("consecutive_failures", 0)
-
-    improv = ""
-    if (
-        best is not None
-        and baseline is not None
-        and isinstance(best, (int, float))
-        and isinstance(baseline, (int, float))
-        and baseline != 0
-        and best != 0
-    ):
-        pct = (baseline - best) / abs(baseline) * 100
-        speedup = baseline / best
-        improv = f" ({speedup:.2f}x vs ref, {pct:+.1f}%)"
-
+    # === Step 5+6: Advance phase + status report ===
     settled_id = active["id"] if active else "?"
-
-    print(f"\n{'=' * 50}")
-    print(f"[{decision}] {settled_id} | Round {rounds}/{max_rounds} | Best: {best}{improv} | Failures: {failures}")
-    print(f"Phase -> {next_phase}")
-    print(f"{'=' * 50}")
-    print(get_guidance(task_dir))
+    _post_settle(task_dir, decision, settled_id)
 
 
 if __name__ == "__main__":

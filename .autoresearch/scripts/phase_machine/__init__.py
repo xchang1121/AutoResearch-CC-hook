@@ -37,10 +37,11 @@ from .state_store import (
     DIAGNOSE, REPLAN, FINISH, ALL_PHASES,
     # File constants
     PHASE_FILE, PROGRESS_FILE, HISTORY_FILE, PLAN_FILE, PLAN_ITEMS_FILE,
-    EDIT_MARKER_FILE, HEARTBEAT_FILE, ACTIVE_TASK_FILE,
+    EDIT_MARKER_FILE, PENDING_SETTLE_FILE, HEARTBEAT_FILE, ACTIVE_TASK_FILE,
     DIAGNOSE_ARTIFACT_TEMPLATE, DIAGNOSE_MARKER_TEMPLATE, DIAGNOSE_ATTEMPTS_CAP,
     # Path builders
     state_path, plan_path, progress_path, history_path, edit_marker_path,
+    pending_settle_path,
     diagnose_artifact_path, diagnose_marker,
     # Phase I/O
     read_phase, write_phase,

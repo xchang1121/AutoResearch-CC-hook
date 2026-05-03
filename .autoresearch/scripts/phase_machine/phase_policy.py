@@ -40,16 +40,27 @@ from .validators import (
 # Script invocation parser (single source for hook_guard_bash + hook_post_bash)
 # ---------------------------------------------------------------------------
 
-# Matches `python <flags> <script>.py`, `python3.10 ...`, `py -3 ...`, `bash
-# something.py`, etc. The two-step form (interpreter, optional flags, then
-# the .py argument) is what guards both hooks against false positives like
-# `cat baseline.py` or `git log -- baseline.py`. Earlier each hook had its
-# own regex; hook_guard_bash's was the simpler/laggard one and silently
-# disagreed with hook_post_bash on `python3 ...` and `bash ...py`. Single
+# Matches `python <flags> <script>.py`, `python3.10 ...`, `py -3 ...`,
+# `py -3.10 ...`, `bash something.py`, etc. The two-step form
+# (interpreter, optional flags, then the .py argument) is what guards
+# both hooks against false positives like `cat baseline.py` or
+# `git log -- baseline.py`. Earlier each hook had its own regex;
+# hook_guard_bash's was the simpler/laggard one and silently disagreed
+# with hook_post_bash on `python3 ...` and `bash ...py`. Single
 # definition here keeps them in lockstep.
+#
+# Flag charset notes:
+#   - First char of a flag accepts \w (letters + digits + underscore) so
+#     Windows launcher's `py -3` / `py -3.10` and standard `python -O` /
+#     `python -u` all match. Earlier `[A-Za-z]` rejected the digit form
+#     and silently false-blocked legitimate Windows invocations under
+#     strict-bash phases (BASELINE / DIAGNOSE / GENERATE_*).
+#   - `[^\s"\']*` after the first char already accepts dots / digits /
+#     letters, so flag tails like `-3.10`, `-OO`, `-X dev` (the "dev"
+#     part is a separate token, allowed by the next \s+) are fine.
 INVOKED_SCRIPT_RE = re.compile(
     r'\b(?:python(?:\d+(?:\.\d+)?)?|py|bash|sh)\b'
-    r'(?:\s+-[A-Za-z][^\s"\']*)*'
+    r'(?:\s+-\w[^\s"\']*)*'
     r'\s+["\']?([^\s"\']+\.py)'
 )
 
