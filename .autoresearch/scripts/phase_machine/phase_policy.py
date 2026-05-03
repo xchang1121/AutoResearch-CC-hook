@@ -152,17 +152,22 @@ def parse_script_names(command: str) -> list:
     scripts smuggled into subshells.
 
     Windows backslash separators are normalized to forward slashes
-    BEFORE shlex tokenization. shlex(posix=True) treats `\\` as an
-    escape, so `python .autoresearch\\scripts\\create_plan.py` would
-    tokenize to `.autoresearchscriptscreate_plan.py` and miss the
-    `.py` suffix entirely (false-blocking real Windows invocations
-    in strict-bash phases). Forward slashes are valid path
-    separators on Windows from Python's perspective and have no
-    shell-escape semantics, so the normalization is safe.
+    PER SEGMENT (after _split_bash_chain has finished its quote/escape
+    walk). shlex(posix=True) treats `\\` as an escape character, so
+    `python .autoresearch\\scripts\\create_plan.py` would tokenize to
+    `.autoresearchscriptscreate_plan.py` and miss the `.py` suffix
+    entirely (false-blocking real Windows invocations in strict-bash
+    phases). Forward slashes are valid path separators on Windows
+    from Python's perspective and have no shell-escape semantics, so
+    the rewrite is safe. Per-segment (rather than whole-command)
+    normalization means escape sequences like `\\&` outside quotes
+    don't accidentally become a `/&` that the splitter has already
+    walked past — the splitter sees the raw `\\&` and applies its
+    backslash-escape rule, which is what we want.
     """
     out = []
-    normalized = command.replace("\\", "/")
-    for segment in _split_bash_chain(normalized):
+    for raw_segment in _split_bash_chain(command):
+        segment = raw_segment.replace("\\", "/")
         try:
             tokens = shlex.split(segment, comments=False, posix=True)
         except ValueError:
@@ -314,10 +319,18 @@ def _segment_is_phase_agnostic(segment: str) -> bool:
     return False
 
 
-# Bash separators recognized as chain operators: && || ; | (newline and
-# bare `&` left out — bash treats `&` as backgrounding, and the model
-# rarely uses newlines in slash-issued commands). We split on these and
-# require EVERY segment to be phase-agnostic OR pass the per-phase rule.
+# Bash separators recognized as chain operators: && || ; | & (newline
+# left out — the model rarely uses literal newlines in slash-issued
+# commands). Bare `&` (backgrounding) was earlier omitted on the
+# argument that the model rarely uses it; in practice it's a free
+# smuggle channel — `python create_plan.py & python pipeline.py` ran
+# both invocations while strict-bash and EDIT-recovery gates only saw
+# the first one. We now split on it. Redirection forms like `2>&1`
+# do split (`'... 2>'` + `'1'`), but the second segment carries no
+# interpreter and yields no script invocation, so the gate result
+# is unchanged for legitimate redirects. We split on these and
+# require EVERY segment to be phase-agnostic OR pass the per-phase
+# rule.
 #
 # Splitting must respect shell quoting and backslash escapes — a naive
 # `re.split(r'&&|\|\||;|\|')` over `grep 'a|b' foo` cuts the quoted `|`
@@ -347,7 +360,7 @@ def _segment_is_phase_agnostic(segment: str) -> bool:
 # parser on the assumption.
 
 def _split_bash_chain(command: str) -> list:
-    """Split `command` on `&&` / `||` / `;` / `|` outside quotes."""
+    """Split `command` on `&&` / `||` / `;` / `|` / `&` outside quotes."""
     segments = []
     cur = []
     i = 0
@@ -397,8 +410,11 @@ def _split_bash_chain(command: str) -> list:
             i += 2
             continue
 
-        # One-char separators (`;`, `|`).
-        if c == ";" or c == "|":
+        # One-char separators (`;`, `|`, `&`). The `&&` / `||` two-char
+        # forms are handled above and consume both chars first, so the
+        # single-char branch only fires for true backgrounding `&` /
+        # sequence `;` / pipe `|`.
+        if c == ";" or c == "|" or c == "&":
             segments.append("".join(cur))
             cur = []
             i += 1
