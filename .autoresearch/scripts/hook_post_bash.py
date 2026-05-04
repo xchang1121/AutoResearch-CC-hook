@@ -44,9 +44,13 @@ def _activation_target(command: str) -> str | None:
     return m.group(1) if m else None
 
 
-# Script-invocation parsing lives in phase_machine.parse_invoked_ar_script —
-# single regex shared with hook_guard_bash to avoid silent disagreement on
-# edge cases like `python3 baseline.py` or `bash some.py`.
+# Script-invocation parsing lives in phase_machine.parse_invoked_ar_script,
+# a thin view over `classify(command)` — returns the AR script basename
+# only when the classifier sees a canonical AR shape (and None otherwise,
+# including for non-canonical AR-mentions which PreToolUse already
+# rejected). Under that contract the basename returned here is
+# unambiguous, and shapes like `python --version ...X.py` or
+# `python -c ... .../X.py` no longer falsely advance phase.
 
 
 def _clean_stale_edit_marker(task_dir: str):
@@ -154,18 +158,15 @@ def main():
     stdout = str(hook_input.get("tool_output", ""))
 
     # --- Activation (export AR_TASK_DIR=...) ---
+    # Activation arrives as its own Bash call under the canonical-form
+    # gate (any chain is rejected at PreToolUse), so we can return as
+    # soon as `_handle_activation` has set up the task pointer + emitted
+    # guidance — there is no AR-script invocation in the same command
+    # to dispatch on.
     target = _activation_target(command)
     if target:
         _handle_activation(target)
-        # DO NOT early-exit. Compound commands like
-        # `export AR_TASK_DIR=... && python .autoresearch/scripts/create_plan.py ...`
-        # carry both an activation and a real script invocation in a single
-        # Bash call (the model joins them because Claude Code's Bash tool
-        # spawns a fresh shell per call so a previous `export AR_TASK_DIR=`
-        # doesn't persist; on Windows it also prepends KMP_DUPLICATE_LIB_OK=
-        # TRUE to the same call). If we returned here the script invocation
-        # would be silently skipped — the plan would never get validated,
-        # .phase would stay at PLAN, and the loop would stall.
+        sys.exit(0)
 
     task_dir = get_task_dir()
     if not task_dir:

@@ -8,9 +8,10 @@ made impossible to navigate):
     validators    — placeholder detection, validate_reference,
                     validate_kernel, plan.md parser, validate_plan.
                     Depends on state_store.
-    phase_policy  — _BASH_RULES, _EDIT_RULES, check_bash, check_edit,
-                    compute_next_phase, compute_resume_phase, script
-                    invocation parser. Depends on state_store + validators.
+    phase_policy  — canonical-AR grammar, _AR_ALLOWED_BY_PHASE,
+                    _EDIT_RULES, check_bash, check_edit,
+                    compute_next_phase, compute_resume_phase. Depends
+                    on state_store + validators.
     guidance      — get_guidance and the XML schema example shared by
                     PLAN/DIAGNOSE/REPLAN. Depends on state_store +
                     validators (no dep on phase_policy).
@@ -63,18 +64,20 @@ from .validators import (
     _PLAN_ITEM_RE, _PLAN_TAG_RE, _REF_RUNCHECK_SCRIPT,
 )
 from .phase_policy import (
-    parse_script_name, parse_script_names, parse_invoked_ar_script,
+    # Layer 1: classifier (pure function, command shape only)
+    classify, CommandShape,
+    parse_canonical_ar, parse_script_names, parse_invoked_ar_script,
+    is_single_foreground_ar_invocation,
+    # Layer 3: predicates hooks call
     check_bash, check_edit,
+    # Phase transitions
     compute_next_phase, compute_resume_phase,
-    # Bash command shape layer — single canonical bash parser; new
-    # callers should prefer these over re-implementing.
-    Segment, ScriptInvocation, BashCommandShape,
-    analyze_bash_command, is_single_foreground_ar_invocation,
-    # Policy tables — public-ish because tests / dashboards reference
-    # them. Underscore-prefixed for a "do not mutate at runtime" hint
-    # rather than for true privacy.
-    _BASH_RULES, _EDIT_RULES, _GLOBAL_BASH_BANS, _PHASE_AGNOSTIC_PATTERNS,
-    _BashPolicy,
+    # Layer 2: phase tables — public-ish because tests / dashboards
+    # reference them. Underscore-prefixed for a "do not mutate at
+    # runtime" hint rather than for true privacy.
+    _AR_ALLOWED_BY_PHASE, _OTHER_ALLOWED_BY_PHASE, _LIFECYCLE_SCRIPTS,
+    _EDIT_RULES, _GLOBAL_BASH_BANS,
+    _CANONICAL_AR_RE,
 )
 from .guidance import (
     get_guidance,

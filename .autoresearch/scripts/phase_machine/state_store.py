@@ -58,7 +58,7 @@ PENDING_SETTLE_FILE = ".pending_settle.json"  # kd_json saved when settle.py fai
 HEARTBEAT_FILE = ".heartbeat"
 ACTIVE_TASK_FILE = ".active_task"  # under .autoresearch/, not .ar_state/
 
-# DIAGNOSE artifact contract — see CLAUDE.md invariant #9.
+# DIAGNOSE artifact contract — see CLAUDE.md invariant #10.
 # The DIAGNOSE phase is gated on a structured report at this path before
 # create_plan.py / Stop become legal. The ar-diagnosis subagent is the
 # intended writer (per its prompt + read-only tool isolation), but hook

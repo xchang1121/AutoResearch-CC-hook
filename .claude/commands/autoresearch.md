@@ -101,7 +101,7 @@ Follow the phase guidance. Never stop between phases.
   (verbatim subagent prompt + artifact path + retry semantics). The full
   contract — required sections, marker, R\<n\> citations, 5-attempt cap,
   manual-planning fallback — lives in [CLAUDE.md](../../CLAUDE.md)
-  invariant #9 and the runtime hook guidance; no need to reproduce it
+  invariant #10 and the runtime hook guidance; no need to reproduce it
   here.
 - **EDIT** — Edit `kernel.py` (multiple Edit calls OK). When done:
   `python .autoresearch/scripts/pipeline.py "$AR_TASK_DIR"`.

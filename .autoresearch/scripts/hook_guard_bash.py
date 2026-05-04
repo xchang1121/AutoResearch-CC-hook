@@ -2,11 +2,20 @@
 """
 PreToolUse hook for Bash — thin dispatcher.
 
-All per-phase allow/block logic lives in phase_machine.check_bash.
-This hook only handles two hook-specific concerns:
-  1. Script-name sanity (blessed names / hallucinated-name suggestions)
-  2. Turning check_bash's (False, reason) into the `{decision: block}` wire
-     format Claude Code expects.
+Per-phase allow/block logic lives in phase_machine.check_bash. This hook
+only adds the concerns that need state outside check_bash's pure-function
+contract:
+  1. Script-name sanity (blessed names / hallucinated-name suggestions),
+     run BEFORE check_bash so the agent sees "Unknown script 'eval.py'"
+     instead of the generic canonical-form rejection.
+  2. DIAGNOSE artifact gate — create_plan.py is blocked until the
+     subagent's diagnose_v<N>.md validates (or the attempts cap relaxes
+     the gate).
+  3. EDIT-recovery gate — create_plan.py is allowed in EDIT iff
+     `.pending_settle.json` exists, as the recovery path out of a
+     settle.py deadlock.
+  4. Turning check_bash's (False, reason) into the `{decision: block}`
+     wire format Claude Code expects.
 """
 import os
 import sys
@@ -21,12 +30,15 @@ from phase_machine import (
 )
 from settings import hallucinated_scripts
 
-# Real scripts that live under .autoresearch/scripts/.
+# Real CLI scripts under .autoresearch/scripts/. Anything not listed
+# here (and not in _LIBRARY_NOT_CLI / hallucinated_scripts aliases) is
+# treated as an unknown script and rejected with a sorted list of
+# valid names.
 _BLESSED_SCRIPTS = {
     "quick_check.py", "eval_wrapper.py", "keep_or_discard.py",
-    "scaffold.py", "baseline.py", "_baseline_init.py", "dashboard.py",
+    "scaffold.py", "baseline.py", "dashboard.py",
     "create_plan.py", "settle.py", "pipeline.py", "resume.py",
-    "code_checker.py", "parse_args.py",
+    "parse_args.py",
 }
 
 # Library modules that live under .autoresearch/scripts/ but have no CLI.
@@ -47,6 +59,15 @@ _LIBRARY_NOT_CLI = {
     "hw_detect.py": "hw_detect.py is a library, not a CLI.",
     "hook_utils.py": "hook_utils.py is a library, not a CLI.",
     "failure_extractor.py": "failure_extractor.py is a library, not a CLI.",
+    "code_checker.py": (
+        "code_checker.py is a library used by quick_check.py, not a CLI. "
+        "It runs automatically as part of the pipeline."
+    ),
+    "_baseline_init.py": (
+        "_baseline_init.py is a subprocess child of baseline.py, not a "
+        "CLI. Run `python .autoresearch/scripts/baseline.py <task_dir>` "
+        "instead — it invokes _baseline_init.py for you."
+    ),
 }
 
 # Alias → real script mapping lives in .autoresearch/config.yaml under
@@ -57,16 +78,10 @@ def _script_name_check(command: str):
     """Flag unknown / hallucinated .autoresearch/scripts/*.py names before
     they reach the phase rule — gives a clearer message than 'not allowed'.
 
-    Iterates EVERY python/bash invocation in `command`, not just the first.
-    The earlier `parse_script_name` (singular) returned only the first
-    match, so a chain like
-        `python baseline.py && python evil_unknown.py`
-    sailed past the blessed/library/alias checks because evil_unknown.py
-    was never inspected. The phase_policy chain-segment rule still
-    catches it via the strict allow-list, but giving an unambiguous
-    "Unknown script 'evil_unknown.py'" beats the generic "phase BASELINE:
-    allowed = ['baseline.py']".
-    """
+    Under the canonical-form policy, parse_script_names returns at most
+    one entry (chains are rejected by check_bash before this could
+    matter). Non-canonical commands return [] and fall through to
+    check_bash's canonical-form rejection."""
     aliases = hallucinated_scripts()
     for script_path, script_name in parse_script_names(command):
         if script_name in aliases:
@@ -114,24 +129,17 @@ def main():
             )
 
     # EDIT-phase recovery gate: when settle.py keeps failing on a malformed
-    # plan.md, the agent has no legal action under the normal EDIT rules
-    # (kernel.py edits don't help; create_plan.py is normally banned in
-    # EDIT). If `.pending_settle.json` exists, allow ONE recovery path:
-    # invoke create_plan.py to write a fresh plan.md, which retires the
-    # broken plan_version. hook_post_bash clears pending_settle.json on
-    # successful create_plan validation.
+    # plan.md, the agent has no legal action under normal EDIT rules
+    # (kernel.py edits don't help; create_plan.py isn't in EDIT's
+    # allowlist). If `.pending_settle.json` exists, allow create_plan.py
+    # as a recovery path; hook_post_bash clears the sidecar on successful
+    # create_plan validation.
     #
-    # The recovery contract is enforced in two layers:
-    #   1. is_single_foreground_ar_invocation: the command MUST be
-    #      exactly one synchronous create_plan.py invocation, no chains,
-    #      no backgrounding. (Predicate lives in phase_policy so the
-    #      bash-shape knowledge stays single-sourced; this hook only
-    #      decides when to apply it.) Legitimate FD redirects (`2>&1`,
-    #      `&>log`, `> log`) all stay in one segment because the
-    #      splitter is redirection-aware.
-    #   2. check_bash(REPLAN) on top of (1), so global bans
-    #      (eval_wrapper.py / keep_or_discard.py / quick_check.py /
-    #      settle.py / `git commit`) still apply.
+    # is_single_foreground_ar_invocation reuses the canonical-form regex
+    # from phase_policy, so "single foreground call" stays defined in one
+    # place; FD redirects (`2>&1`, `&> log`) are part of the canonical
+    # grammar and pass naturally. The follow-up check_bash(REPLAN) is
+    # defense-in-depth for the global subprocess-script bans.
     if phase == EDIT and invoked == "create_plan.py" \
             and os.path.exists(pending_settle_path(task_dir)):
         ok, reason = is_single_foreground_ar_invocation(

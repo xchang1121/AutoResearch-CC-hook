@@ -1,37 +1,40 @@
 """Phase rules + bash/edit gates + transition logic.
 
-This is the policy layer: given a phase + a candidate Bash command (or
-Edit/Write target), should it be allowed? After a pipeline round, what's
-the next phase?
+Bash gate is decomposed into three layers, each with one job:
 
-What's NOT here:
-  - Phase string constants — those live in `state_store` (so the I/O
-    layer can validate phase strings without circular imports).
-  - Plan validation / placeholder detection — those live in `validators`,
-    consumed by this module via `has_pending_items`.
+  1. CLASSIFIER (`classify`) — pure function: command string → CommandShape.
+     Returns one of:
+       AR(name)    canonical .autoresearch/scripts/<name>.py invocation
+       LIFECYCLE   AR but the script is lifecycle (dashboard/parse_args/
+                   scaffold/resume), allowed in every phase
+       READONLY    every chain segment is a read-only command (ls/cat/git
+                   read/echo/pwd/...). NO redirections to files, NO mutations.
+       OTHER      anything else (ad-hoc bash, malformed AR, write commands)
+     Pure function: consults command text only — no phase, no filesystem.
 
-What IS here:
-  - The bash command shape layer (`Segment` / `ScriptInvocation` /
-    `BashCommandShape` / `analyze_bash_command` / etc.) — single
-    canonical bash parser. Char-level splitting and phase-level
-    semantics live in different functions; callers ask the shape
-    layer "what does this command DO?", they don't reparse.
-  - Global bash bans (`_GLOBAL_BASH_BANS`).
-  - Phase-agnostic command patterns (`_PHASE_AGNOSTIC_PATTERNS`).
-  - Per-phase Bash policy table (`_BASH_RULES`).
-  - Per-phase Edit allowance (`_EDIT_RULES`).
-  - `check_bash` / `check_edit` — the two predicates hooks call.
-  - `compute_next_phase` / `compute_resume_phase` — phase transition logic.
-  - Script-invocation parser (`parse_script_names` /
-    `parse_invoked_ar_script`) — thin wrappers over the shape layer.
-  - Recovery-path predicate (`is_single_foreground_ar_invocation`) —
-    used by hook_guard_bash's EDIT pending-settle gate.
+  2. PHASE TABLE — `_AR_ALLOWED_BY_PHASE` and `_OTHER_ALLOWED_BY_PHASE`.
+     Static dicts. LIFECYCLE and READONLY are always allowed (implicit).
+     Editing a rule means editing one row; nothing else changes.
+
+  3. `check_bash` — global string bans, classify(), table lookup.
+     ~20 lines. Knows nothing about regexes; the classifier knows nothing
+     about phases. Each layer single-purpose.
+
+This replaces an earlier 'one regex unifies everything' design that
+produced a patches-over-patches feel: each new edge case (chain
+bypass, absolute paths, --version short-circuit) needed its own
+sidecar rule because the regex was carrying both shape detection and
+policy. Splitting into classifier + table makes the seams explicit so
+new edge cases land in an obvious place.
+
+Edit/Write gate (`check_edit`) and phase-transition logic
+(`compute_next_phase` / `compute_resume_phase`) are unchanged.
 """
 import os
 import re
 import shlex
-from dataclasses import dataclass, field
-from typing import List, NamedTuple, Optional
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
 
 from .state_store import (
     INIT, GENERATE_REF, GENERATE_KERNEL, BASELINE, PLAN, EDIT,
@@ -39,383 +42,337 @@ from .state_store import (
     PLAN_FILE, PLAN_ITEMS_FILE,
     load_progress, plan_path,
 )
-from .validators import (
-    get_plan_items, has_pending_items,
+from .validators import get_plan_items, has_pending_items
+
+
+# === LAYER 1: CLASSIFIER ===============================================
+
+# Canonical AR invocation. Anchored full-command. Group 1 = basename.
+#
+# Flag whitelist is INTENTIONALLY restrictive — only Python flags that
+# really run the script. Excluded: `--version` / `-V` / `--help` / `-h`
+# (short-circuit; print and exit), `-c` (runs inline code instead),
+# `-m` (runs module instead). Earlier rounds had a generic `--[\w-]+`
+# fallback; the result was that `python --version
+# .autoresearch/scripts/X.py` falsely classified as AR(X.py), and
+# hook_post_bash thought X.py had run.
+#
+# Optional `(?:\S*?/)?` before `.autoresearch/scripts/` accepts both
+# relative invocations (`python .autoresearch/scripts/X.py`) and
+# absolute prefixes (`python /repo/.autoresearch/scripts/X.py`,
+# `python C:/repo/.autoresearch/scripts/X.py` after backslash
+# normalization).
+# Common Python flags allowed by both `py` and `python*` (don't affect
+# script execution semantics; just runtime tweaks).
+_COMMON_PY_FLAGS = (
+    r'-[OuBdESIqs]+'                              # combinable singles
+    r'|-X(?:\s+\S+|\S+)'                          # -X dev or -Xdev
+    r'|-W(?:\s+\S+|\S+)'                          # -W default or -Wdefault
 )
 
-
-# ---------------------------------------------------------------------------
-# Bash command shape layer
-# ---------------------------------------------------------------------------
-#
-# Char-level splitting and phase-level semantics are intentionally
-# separated. The parser walks the command once, returns a structured
-# `BashCommandShape`, and every other module asks that shape questions
-# instead of re-parsing the command string. This keeps the bash-quirk
-# knowledge (which `&` is backgrounding vs FD-redirection, which `python`
-# is a real launch vs `printf python ...`, etc.) in exactly one place.
-#
-# Layers:
-#   1. _split_bash_chain → list[Segment]     (char-level, redirection-aware)
-#   2. _scan_segment      → ScriptInvocation? (per-segment argv walker)
-#   3. analyze_bash_command → BashCommandShape (composition + flags)
-#
-# Public predicates (`parse_script_names`, `parse_invoked_ar_script`,
-# `is_single_foreground_ar_invocation`) are thin views over the shape.
-
-class Segment(NamedTuple):
-    """One bash chain segment plus the operator that came AFTER it.
-
-    `op_after` is one of '&&', '||', ';', '|', '&', or None for the
-    final segment. Knowing the trailing operator is what lets the
-    shape layer distinguish a phase-advancing AR script that runs
-    foreground (op_after != '&') from the same script smuggled into
-    the background (op_after == '&').
-    """
-    text: str
-    op_after: Optional[str]
-
-
-@dataclass
-class ScriptInvocation:
-    """One real interpreter-runs-script invocation found inside a
-    Segment. `path` is forward-slash-normalized; `is_ar_script` checks
-    whether it lives under `.autoresearch/scripts/`; `is_backgrounded`
-    reflects the segment's trailing `&` operator (NOT a property of
-    the script itself, but always traveled with it because the gate
-    rules need both)."""
-    segment_index: int
-    path: str
-    basename: str
-    is_ar_script: bool
-    is_backgrounded: bool
-
-
-@dataclass
-class BashCommandShape:
-    """Structured view of a Bash command. Single source of truth for
-    every `what does this command DO?` question downstream gates ask."""
-    segments: List[Segment]
-    scripts: List[ScriptInvocation]
-    first_ar_script: Optional[str]
-    has_background: bool
-    has_pipe: bool
-    has_control_chain: bool   # &&, ||, ;
-    nontrivial_segments: int  # count of segments with non-empty text
-
-
-# Detects an "interpreter" token (python, py, bash, sh, with optional
-# version suffix). Anchored — must match the WHOLE token, not just a
-# prefix; otherwise `pythoneer` would falsely register as `python`.
-_INTERPRETER_RE = re.compile(
-    r'^(?:python(?:\d+(?:\.\d+)?)?|py|bash|sh)$'
+_CANONICAL_AR_RE = re.compile(
+    r'\A\s*'
+    r'(?:[A-Za-z_]\w*=\S+\s+)*'                  # env-var prefixes
+    r'(?:'
+    # py launcher (Windows): accepts version flags `-3`/`-3.10` AND
+    # the common Python flags. The launcher then forwards everything
+    # past the version to the actual interpreter.
+    r'py(?:\s+(?:-\d+(?:\.\d+)?|' + _COMMON_PY_FLAGS + r'))*'
+    r'|'
+    # python / python3 / python3.10: NO version flag (Python rejects
+    # `-3`/`-3.10` with "Unknown option"). Only the common flags.
+    r'python(?:\d+(?:\.\d+)?)?(?:\s+(?:' + _COMMON_PY_FLAGS + r'))*'
+    r')'
+    r'\s+(?:\S*?/)?\.autoresearch/scripts/'      # script (with optional path prefix)
+    r'([A-Za-z_]\w*\.py)\b'                      #   group 1 = basename
+    r'(?:\s+(?:'                                 # script args
+    # Quoted strings: backtick and `$(` are forbidden (caught by the
+    # pre-check in `classify`); `$VAR`/`${VAR}` are still fine.
+    r'"[^"]*"|\'[^\']*\'|[^\s&|;()<>`][^\s&|;()<>`]*'
+    r'))*'
+    r'(?:\s+(?:'                                 # FD redirections
+    r'\d?>>?\s*\S+|\d?<\s*\S+|2>&1|1>&2|&>>?\s*\S+'
+    r'))*'
+    r'\s*\Z'
 )
 
-# Pre-interpreter command-line prefixes the parser is willing to skip
-# past while still treating the segment as a real interpreter
-# invocation. Currently only POSIX-style env-var assignments
-# (`KMP_DUPLICATE_LIB_OK=TRUE python script.py`). Anything else as a
-# prefix means this isn't a real launch — `printf python script.py`,
-# `time python script.py`, `nohup python script.py` etc. all fail
-# (printf prints; time/nohup are wrappers we don't bless). If a real
-# wrapper becomes common in our flow, add it here explicitly rather
-# than letting the parser scan anywhere in the segment for `python`
-# (the old behavior conflated `printf python ...` with a real call).
-_ENV_ASSIGNMENT_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*=')
+# READONLY check: a small tokenizer + per-command argspec.
+#
+# Earlier rounds tried "anchored regex with negative lookaheads" and
+# kept growing patches — quoted args bypassed the lookahead, then
+# `\b`-anchored lookaheads got the boundary wrong (`--output-format`
+# vs `--output`). The tokenizer collapses both: shlex strips quotes,
+# then the same `args[i] == "--output"` rule catches `--output`,
+# `"--output"`, and `'--output'` uniformly.
+#
+# Allowed shapes:
+#   ls/cat/head/tail/wc/grep/echo/pwd ARGS
+#   git log/diff/status/show/rev-parse/blame ARGS
+#   git branch [--list | --show-current | -a | -r | -v | -vv]*
+#   export AR_TASK_DIR=...
+#
+# ARGS are any tokens EXCEPT `--output` and `--output=...` (so
+# `git diff --output=patch.diff` can't smuggle a write). `--output-format`
+# and other hyphen-extended flags are NOT blocked.
+#
+# `find` is intentionally absent (`-delete` / `-exec rm` are too easy a
+# smuggle). Agent has Glob / Read tools.
 
-# Python flags that take their value as the NEXT separate argv token.
-# Real python CLI: -X opt, -W setting, --check-hash-based-pycs mode.
-# When we see one of these, advance past BOTH the flag and its value.
-# (Combined forms like `-Xdev` (no space) appear as a single token —
-# handled by the generic "starts with -" skip below.)
-_FLAGS_WITH_SEPARATE_VALUE = frozenset({
-    "-X", "-W", "--check-hash-based-pycs",
+_READONLY_HEAD_SINGLE = frozenset({
+    "ls", "cat", "head", "tail", "wc", "grep", "echo", "pwd",
+})
+_READONLY_GIT_OPS = frozenset({
+    "log", "diff", "status", "show", "rev-parse", "blame",
+})
+_GIT_BRANCH_LISTING_FLAGS = frozenset({
+    "--list", "--show-current", "-a", "-r", "-v", "-vv",
 })
 
-# Flags that REPLACE a script invocation. `python -c CODE` runs inline
-# code; `python -m MODULE` runs a module; in both cases anything that
-# follows is argv to the inline program, NOT a separate script. Same
-# for `bash -c CODE`. When we hit one of these, the segment has no
-# real script invocation regardless of what tokens come later — this
-# is the fix for the smuggle pattern
-# `python -c pass .autoresearch/scripts/create_plan.py` which the
-# old regex parser misclassified as a real create_plan.py call.
-_FLAGS_REPLACE_SCRIPT = frozenset({"-c", "-m"})
+
+def _is_safe_readonly_arg(arg: str) -> bool:
+    """Reject `--output` and `--output=...` (file-writing flag).
+    Accepts `--output-format`, `--output-something`, etc. — those are
+    different flags."""
+    return arg != "--output" and not arg.startswith("--output=")
 
 
-def _find_script_position(tokens: list, start: int) -> Optional[int]:
-    """Walk `tokens` starting at `start` (just past an interpreter token).
-    Return the index of the first non-flag token if it ends in `.py`,
-    else None (no real script invocation in this run)."""
-    j = start
-    while j < len(tokens):
-        t = tokens[j]
-        if t in _FLAGS_REPLACE_SCRIPT:
-            # `-c CODE` / `-m MODULE` — the rest is inline-program argv.
-            return None
-        if t in _FLAGS_WITH_SEPARATE_VALUE:
-            j += 2  # skip flag AND its value token
-            continue
-        if t.startswith("-"):
-            j += 1  # standalone flag like -O / -u / -3 / -3.10 / -Xdev
-            continue
-        # First non-flag positional token must be the script.
-        return j if t.endswith(".py") else None
-    return None
+def _has_unquoted_redirect(s: str) -> bool:
+    """True iff `s` contains an unquoted `<` or `>`. shlex tokenization
+    can't see these as redirection — `cat foo > log` becomes
+    `["cat", "foo", ">", "log"]` with all tokens looking like normal
+    args. Pre-scan with quote tracking so the readonly check can
+    reject the whole segment before tokenizing."""
+    in_s = in_d = False
+    i, n = 0, len(s)
+    while i < n:
+        c = s[i]
+        if c == "\\" and not in_s and i + 1 < n:
+            i += 2; continue
+        if c == "'" and not in_d:
+            in_s = not in_s; i += 1; continue
+        if c == '"' and not in_s:
+            in_d = not in_d; i += 1; continue
+        if not in_s and not in_d and c in "<>":
+            return True
+        i += 1
+    return False
 
 
-def _scan_segment_for_invocation(tokens: list) -> Optional[int]:
-    """Return the index of the script token if `tokens` (one bash
-    chain segment) is a real interpreter-runs-script invocation, else
-    None.
+def _is_readonly_segment(seg_text: str) -> bool:
+    """True iff `seg_text` is a single read-only command. Tokenizes
+    via shlex so quoted args go through the same checks as bare args:
+    `git diff "--output=patch"` and `git diff --output=patch` both
+    fail by the same rule.
 
-    Interpreter detection is COMMAND-HEAD-ANCHORED. The parser:
-      1. Skips zero or more env-var assignment tokens
-         (`KEY=VALUE`-shaped) at the head.
-      2. Requires the next token to match `_INTERPRETER_RE`. Anything
-         else (printf, time, nohup, sudo, the result of a subshell,
-         an arbitrary command) means this segment is NOT a real
-         Python/bash launch — return None.
-      3. Walks flag tokens after the interpreter via the rules in
-         _find_script_position (`-c`/`-m` short-circuit; `-X`/`-W`
-         consume value tokens; other flags skipped) and returns the
-         script index iff we land on a non-flag positional `.py`
-         token.
-
-    This is the fix for the false positive
-        printf python .autoresearch/scripts/create_plan.py
-    which the old "scan anywhere for `python`" loop treated as a
-    real create_plan.py call — the actual command runs printf, not
-    Python, but strict-bash and recovery gates were both fooled into
-    thinking create_plan.py had been launched.
-    """
+    shlex parse error (unbalanced quotes etc.) → False; the caller's
+    READONLY claim cannot be made about a malformed segment."""
+    s = seg_text.strip()
+    if not s:
+        return False
+    if _has_unquoted_redirect(s):
+        return False  # `cat foo > log`, `cat foo 2>&1`, etc.
+    try:
+        tokens = shlex.split(s, posix=True, comments=False)
+    except ValueError:
+        return False
     if not tokens:
-        return None
-    j = 0
-    while j < len(tokens) and _ENV_ASSIGNMENT_RE.match(tokens[j]):
-        j += 1
-    if j >= len(tokens) or not _INTERPRETER_RE.match(tokens[j]):
-        return None
-    return _find_script_position(tokens, j + 1)
+        return False
+
+    head, args = tokens[0], tokens[1:]
+
+    if head == "git":
+        if not args:
+            return False
+        sub, rest = args[0], args[1:]
+        if sub == "branch":
+            return all(a in _GIT_BRANCH_LISTING_FLAGS for a in rest)
+        if sub in _READONLY_GIT_OPS:
+            return all(_is_safe_readonly_arg(a) for a in rest)
+        return False
+
+    if head == "export" and args:
+        # `export AR_TASK_DIR=<value>` — shlex unquotes the value into
+        # the same token, so `AR_TASK_DIR="..."` arrives as one piece.
+        return args[0].startswith("AR_TASK_DIR=") and len(args) == 1
+
+    if head in _READONLY_HEAD_SINGLE:
+        return all(_is_safe_readonly_arg(a) for a in args)
+
+    return False
 
 
-def analyze_bash_command(command: str) -> BashCommandShape:
-    """Single canonical bash analysis. Walks `_split_bash_chain` once,
-    runs the per-segment argv walker, and returns a `BashCommandShape`.
+_LIFECYCLE_SCRIPTS = frozenset({
+    "dashboard.py", "parse_args.py", "scaffold.py", "resume.py",
+})
 
-    All downstream gate code (parse_script_names, parse_invoked_ar_script,
-    check_bash global rules, recovery predicate, hook routing) reads
-    from this shape rather than reparsing — keeping char-level bash
-    quirks in exactly one place.
 
-    Per-segment normalizations:
-      - Windows backslash → forward slash AFTER `_split_bash_chain`
-        finished its quote/escape walk. shlex(posix=True) would
-        otherwise treat `\\` as an escape and turn
-        `.autoresearch\\scripts\\create_plan.py` into
-        `.autoresearchscriptscreate_plan.py`.
-      - shlex.split(posix=True) tokenization. If a segment has
-        unbalanced quotes, treat it as having no invocation rather
-        than raising — downstream gates will default to "no script
-        recognized", which is the safe verdict for the input class
-        we'd refuse to parse.
+@dataclass(frozen=True)
+class CommandShape:
+    """Output of `classify`. Pure data — no methods, no phase awareness."""
+    klass: str                     # "AR" | "LIFECYCLE" | "READONLY" | "OTHER"
+    name: Optional[str] = None     # for AR/LIFECYCLE: the .py basename
+
+
+def _normalize(command: str) -> str:
+    """Forward-slash all backslashes so Windows path forms hit the same
+    grammar as POSIX forms."""
+    return command.replace("\\", "/")
+
+
+def _split_chain(command: str) -> List[str]:
+    """Split on bash chain operators (&& || ; | bare-&) outside quotes,
+    keeping `&` adjacent to `>`/`<` literal as FD redirection. Used by
+    `classify` to walk segments for the READONLY check.
+
+    Quote tracking and the redirection-aware `&` rule are inlined here
+    because this is the only consumer; AR shapes are vetted in one pass
+    by `_CANONICAL_AR_RE` and don't need segmenting."""
+    segments: List[str] = []
+    cur: List[str] = []
+    in_s = in_d = False
+    i, n = 0, len(command)
+    while i < n:
+        c = command[i]
+        if c == "\\" and not in_s and i + 1 < n:
+            cur.append(c); cur.append(command[i + 1]); i += 2; continue
+        if c == "'" and not in_d:
+            in_s = not in_s; cur.append(c); i += 1; continue
+        if c == '"' and not in_s:
+            in_d = not in_d; cur.append(c); i += 1; continue
+        if in_s or in_d:
+            cur.append(c); i += 1; continue
+        if i + 1 < n and command[i:i + 2] in ("&&", "||"):
+            segments.append("".join(cur)); cur = []; i += 2; continue
+        if c in (";", "|"):
+            segments.append("".join(cur)); cur = []; i += 1; continue
+        if c == "&":
+            prev = next((ch for ch in reversed(cur) if not ch.isspace()), None)
+            nxt = command[i + 1] if i + 1 < n else None
+            if prev in (">", "<") or nxt == ">":
+                cur.append(c); i += 1; continue   # FD redirect, not chain
+            segments.append("".join(cur)); cur = []; i += 1; continue
+        cur.append(c); i += 1
+    segments.append("".join(cur))
+    return segments
+
+
+def classify(command: str) -> CommandShape:
+    """Sole authority on 'what shape is this command?'. Pure function;
+    consults only `command`. Does NOT know phase, does NOT advance state.
+
+    Decision order:
+      1. Command-substitution pre-check (`$(...)` and backticks). These
+         execute arbitrary commands at parse time — never canonical AR,
+         never READONLY. Caught here so neither the AR regex's quoted-
+         arg branch nor the READONLY segment grammar has to defend
+         individually. `$VAR` / `${VAR}` (variable expansion) is fine.
+      2. Canonical AR regex on the normalized command.
+      3. AR-mention non-canonical: malformed AR → OTHER (check_bash
+         rejects everywhere). Stronger signal than READONLY so
+         `echo .autoresearch/scripts/foo.py` doesn't sneak through.
+      4. Per-segment READONLY check.
+      5. Else OTHER.
     """
-    segments = _split_bash_chain(command)
-    scripts: List[ScriptInvocation] = []
-    first_ar = None
-    for idx, seg in enumerate(segments):
-        normalized = seg.text.replace("\\", "/")
-        try:
-            tokens = shlex.split(normalized, comments=False, posix=True)
-        except ValueError:
-            continue
-        pos = _scan_segment_for_invocation(tokens)
-        if pos is None:
-            continue
-        path = tokens[pos]
-        basename = os.path.basename(path)
-        is_ar = ".autoresearch/scripts/" in path
-        is_bg = (seg.op_after == "&")
-        scripts.append(ScriptInvocation(
-            segment_index=idx, path=path, basename=basename,
-            is_ar_script=is_ar, is_backgrounded=is_bg,
-        ))
-        if is_ar and first_ar is None:
-            first_ar = basename
-    return BashCommandShape(
-        segments=segments,
-        scripts=scripts,
-        first_ar_script=first_ar,
-        has_background=any(s.op_after == "&" for s in segments),
-        has_pipe=any(s.op_after == "|" for s in segments),
-        has_control_chain=any(s.op_after in ("&&", "||", ";") for s in segments),
-        nontrivial_segments=sum(1 for s in segments if s.text.strip()),
-    )
+    if "$(" in command or "`" in command:
+        return CommandShape("OTHER")
+
+    normalized = _normalize(command)
+
+    m = _CANONICAL_AR_RE.match(normalized)
+    if m:
+        name = m.group(1)
+        klass = "LIFECYCLE" if name in _LIFECYCLE_SCRIPTS else "AR"
+        return CommandShape(klass, name)
+
+    if ".autoresearch/scripts/" in normalized:
+        return CommandShape("OTHER")  # malformed AR shape
+
+    segments = [s for s in _split_chain(command) if s.strip()]
+    if segments and all(_is_readonly_segment(s) for s in segments):
+        return CommandShape("READONLY")
+
+    return CommandShape("OTHER")
 
 
-def parse_script_names(command: str) -> list:
-    """Return [(script_path_forward_slashes, basename), ...] for every
-    real interpreter-runs-script invocation in `command`. Thin wrapper
-    over `analyze_bash_command` so the bash parser is single-sourced;
-    callers that need the structural information (backgrounded? in
-    which segment? AR vs other) should call `analyze_bash_command`
-    directly."""
-    return [(s.path, s.basename) for s in analyze_bash_command(command).scripts]
+# Thin views over `classify` — kept for hook callers that want a
+# one-liner answer to a specific question.
 
-
-def is_single_foreground_ar_invocation(command: str, *, script: str) -> tuple:
-    """Recovery-gate predicate: is `command` exactly one synchronous
-    invocation of `<.autoresearch/scripts/script>`, with no chains?
-
-    Returns (True, "") on pass; (False, reason) on fail.
-
-    Allowed:
-      - python .autoresearch/scripts/<script>.py task
-      - py -3 .autoresearch/scripts/<script>.py task
-      - AR_X=1 python .autoresearch/scripts/<script>.py task
-      - python .autoresearch/scripts/<script>.py task > out.log 2>&1
-
-    Rejected:
-      - <script>.py task & echo done           (background)
-      - <script>.py task ; python -c "..."     (sequence chain)
-      - <script>.py task && echo done          (control chain)
-      - <script>.py task | tee log             (pipe)
-      - python <other>.py task                  (wrong script)
-
-    The recovery contract (see hook_guard_bash) intentionally
-    refuses leading `export VAR=val && ...` chains — agents in EDIT
-    phase already have AR_TASK_DIR set, so this restriction holds
-    in practice and removes one ambiguity surface.
-    """
-    shape = analyze_bash_command(command)
-    if shape.nontrivial_segments != 1:
-        return False, ("expected exactly one substantive segment; "
-                       "chains (`&&`, `;`, `|`, `&`) are not allowed")
-    if len(shape.scripts) != 1:
-        return False, (f"expected exactly one .py invocation; got "
-                       f"{len(shape.scripts)}")
-    inv = shape.scripts[0]
-    if not inv.is_ar_script:
-        return False, "script must be under .autoresearch/scripts/"
-    if inv.basename != script:
-        return False, f"expected {script!r}, got {inv.basename!r}"
-    if inv.is_backgrounded:
-        return False, "the AR script must not be backgrounded with `&`"
-    return True, ""
-
-
-def parse_script_name(command: str) -> Optional[tuple]:
-    """Single-invocation form — first .py invocation in `command`.
-
-    Kept for callers that only care about the first script. New code
-    that needs full-chain awareness should use parse_script_names.
-    """
-    matches = parse_script_names(command)
-    return matches[0] if matches else None
+def parse_canonical_ar(command: str) -> Optional[str]:
+    """Return the AR script basename if `command` classifies as AR or
+    LIFECYCLE, else None."""
+    shape = classify(command)
+    return shape.name if shape.klass in ("AR", "LIFECYCLE") else None
 
 
 def parse_invoked_ar_script(command: str) -> Optional[str]:
-    """Basename of an .autoresearch/scripts/*.py invocation, or None.
-
-    Used by hook_post_bash to dispatch phase advances on
-    `baseline.py` / `pipeline.py` / `create_plan.py` after the user-issued
-    Bash returns. The dispatch logic deliberately inspects only the FIRST
-    matching .autoresearch/scripts/*.py — chained invocations would have
-    been blocked by hook_guard_bash before they reached the post hook
-    (the chain-segment rule rejects any chain that includes a non-allowed
-    script in the current phase), so post-hook only sees the legitimate
-    single invocation that was just permitted.
-    """
-    for script_path, basename in parse_script_names(command):
-        if ".autoresearch/scripts/" in script_path:
-            return basename
-    return None
+    """Basename of the AR script invocation, or None. Used by
+    hook_post_bash for routing on baseline.py / pipeline.py /
+    create_plan.py."""
+    return parse_canonical_ar(command)
 
 
-# ---------------------------------------------------------------------------
-# Phase rules — the declarative authority on what's allowed per phase.
-#
-# Hooks are thin dispatchers: they call check_bash() / check_edit() below and
-# pass the verdict to Claude Code's decision channel. The phase machine owns
-# every per-phase allow/block decision so adding or changing a phase never
-# requires editing hook files.
-# ---------------------------------------------------------------------------
+def parse_script_names(command: str) -> List[Tuple[str, str]]:
+    """Return [(path, basename)] for the AR script in `command`, or [].
+    Used by hook_guard_bash's hallucinated-name pre-check."""
+    invoked = parse_canonical_ar(command)
+    return [(f".autoresearch/scripts/{invoked}", invoked)] if invoked else []
 
-# Scripts that are never callable via the user-facing Bash tool — they're
-# subprocess children of pipeline.py and should never be user-invoked.
+
+def is_single_foreground_ar_invocation(command: str, *, script: str) -> tuple:
+    """Recovery-gate predicate: is `command` exactly one foreground
+    invocation of `<.autoresearch/scripts/script>`?"""
+    invoked = parse_canonical_ar(command)
+    if invoked is None:
+        return False, _CANONICAL_FORM_REJECTION
+    if invoked != script:
+        return False, f"expected {script!r}, got {invoked!r}"
+    return True, ""
+
+
+# === LAYER 2: PHASE TABLE ==============================================
+
+# Subprocess-only scripts: never user-callable. Caught by global ban
+# substring check before classification, so the agent gets the specific
+# "subprocess-only (invoked by pipeline.py)" reason.
 _GLOBAL_BASH_BANS = {
-    "eval_wrapper.py":   "subprocess-only (invoked by pipeline.py)",
+    "eval_wrapper.py":    "subprocess-only (invoked by pipeline.py)",
     "keep_or_discard.py": "subprocess-only (invoked by pipeline.py)",
-    "quick_check.py":    "subprocess-only (invoked by pipeline.py)",
-    "settle.py":         "subprocess-only (invoked by pipeline.py)",
+    "quick_check.py":     "subprocess-only (invoked by pipeline.py)",
+    "settle.py":          "subprocess-only (invoked by pipeline.py)",
+    "_baseline_init.py":  "subprocess-only (invoked by baseline.py)",
 }
 
-# Commands the bash gate always allows, regardless of phase.
-# Two reasons something lands here:
-#   (a) Phase-agnostic inspection — ls/cat/head/tail/grep/wc/find,
-#       read-only git, dashboard.py, parse_args.py, echo, pwd. No side
-#       effects on task state.
-#   (b) Task lifecycle ops — scaffold.py (creates a new task) and resume.py
-#       (switches the active task pointer). These have side effects, but
-#       the side effects are about WHICH task is active, not about the
-#       inner state of an already-active task. The phase machine is meant
-#       to keep the agent on the rails of a SINGLE task's optimization
-#       loop; lifecycle ops sit above that. If they were subject to phase
-#       rules, /autoresearch could not start a new task whenever a prior
-#       `.active_task` happened to point at one mid-BASELINE — exactly
-#       the deadlock that motivated this list.
-_PHASE_AGNOSTIC_PATTERNS = [
-    r"^(ls|cat|head|tail|wc|find|grep|git\s+(log|diff|status|show|branch))",
-    r"dashboard\.py",
-    r"parse_args\.py",
-    r"scaffold\.py",
-    r"resume\.py",
-    r"^echo\s",
-    r"^pwd$",
-]
+# Per-phase: which AR script names may run.
+# LIFECYCLE scripts are always allowed (handled separately, not duplicated).
+# Subprocess-only scripts above are blocked everywhere.
+# EDIT-recovery (create_plan.py while .pending_settle.json exists) is
+# layered on top by hook_guard_bash; this table reflects the normal path.
+_AR_ALLOWED_BY_PHASE = {
+    INIT:            frozenset(),
+    GENERATE_REF:    frozenset(),
+    GENERATE_KERNEL: frozenset(),
+    BASELINE:        frozenset({"baseline.py"}),
+    DIAGNOSE:        frozenset({"create_plan.py"}),
+    PLAN:            frozenset({"create_plan.py"}),
+    REPLAN:          frozenset({"create_plan.py"}),
+    EDIT:            frozenset({"pipeline.py"}),
+    FINISH:          frozenset(),
+}
 
-
-class _BashPolicy:
-    """Per-phase Bash rule. Two modes:
-
-    strict:     command must match one of `required` substrings (or be
-                readonly / activation). Everything else → block.
-    permissive: command is allowed UNLESS it matches one of `banned`
-                substrings (or the global ban list).
-
-    "strict" fits narrow phases (INIT/BASELINE/GENERATE_*) where Claude
-    should only be running the one script that advances the phase.
-    "permissive" fits work phases (PLAN/EDIT/DIAGNOSE/REPLAN) where Claude
-    legitimately needs ad-hoc shell access (git log, Python one-liners,
-    reading files) and we only block a few known-wrong actions.
-    """
-    __slots__ = ("mode", "required", "banned")
-
-    def __init__(self, mode, required=None, banned=None):
-        assert mode in ("strict", "permissive")
-        self.mode = mode
-        self.required = set(required or ())
-        self.banned = set(banned or ())
-
-
-_BASH_RULES = {
-    INIT:            _BashPolicy("strict", required={"export AR_TASK_DIR="}),
-    BASELINE:        _BashPolicy("strict", required={"baseline.py"}),
-    GENERATE_REF:    _BashPolicy("strict", required=set()),
-    GENERATE_KERNEL: _BashPolicy("strict", required=set()),
-    PLAN:            _BashPolicy("permissive", banned=set()),
-    # DIAGNOSE: only create_plan.py is a legal AR-script invocation. The
-    # phase's contract is "produce a new plan via Task -> artifact ->
-    # create_plan" (or manual-planning fallback after the cap). Read-only
-    # ops and AR_TASK_DIR export still pass via the phase-agnostic /
-    # activation special cases. hook_guard_bash adds the artifact gate on
-    # create_plan.py itself.
-    DIAGNOSE:        _BashPolicy("strict", required={"create_plan.py"}),
-    REPLAN:          _BashPolicy("permissive", banned=set()),
-    # EDIT is permissive for ad-hoc shell, but blocks create_plan.py —
-    # Claude must finish the current plan item via pipeline before replanning.
-    EDIT:            _BashPolicy("permissive", banned={"create_plan.py"}),
-    FINISH:          _BashPolicy("permissive", banned=set()),
+# Per-phase: do we accept OTHER (ad-hoc shell, anything not classified
+# as AR/LIFECYCLE/READONLY)? Strict phases reject; permissive phases
+# accept. AR-mention-but-not-canonical is rejected in EVERY phase
+# (handled in check_bash, not via this table).
+_OTHER_ALLOWED_BY_PHASE = {
+    INIT:            False,
+    GENERATE_REF:    False,
+    GENERATE_KERNEL: False,
+    BASELINE:        False,
+    DIAGNOSE:        True,
+    PLAN:            True,
+    REPLAN:          True,
+    EDIT:            True,
+    FINISH:          True,
 }
 
 # Edit/Write rules: which file classes may be written per phase.
@@ -426,241 +383,73 @@ _EDIT_RULES = {
     GENERATE_REF:    {"ref"},
     GENERATE_KERNEL: {"editable"},
     EDIT:            {"editable"},
-    # All other phases: no writable user files.
 }
 
 
-def _segment_is_phase_agnostic(segment: str) -> bool:
-    s = segment.strip()
-    if not s:
-        return True  # empty segments (trailing `&&`) don't add restrictions
-    for pat in _PHASE_AGNOSTIC_PATTERNS:
-        if re.search(pat, s):
-            return True
-    return False
+_CANONICAL_FORM_REJECTION = (
+    "AR scripts must be invoked directly: "
+    "`python .autoresearch/scripts/<name>.py <task_dir> [args...]`. "
+    "Allowed alongside: env-var assignments, real Python flags "
+    "(`-O`, `-u`, `-X dev`, ...), and FD redirection (`> log`, `2>&1`). "
+    "Not supported: short-circuit flags (`--version`, `-c`, `-m`), "
+    "wrappers (`nohup`, `bash -lc`, subshells, `$(…)`), chains "
+    "(`&&`, `||`, `;`, `|`), and backgrounding (`&`). Run multiple AR "
+    "scripts in separate Bash calls; use the Read tool to inspect "
+    "script source. (This is an LLM workflow guardrail, not a Bash "
+    "sandbox.)"
+)
 
 
-# Bash separators recognized as chain operators: && || ; | & (newline
-# left out — the model rarely uses literal newlines in slash-issued
-# commands). Bare `&` (backgrounding) was earlier omitted on the
-# argument that the model rarely uses it; in practice it's a free
-# smuggle channel — `python create_plan.py & python pipeline.py` ran
-# both invocations while strict-bash and EDIT-recovery gates only saw
-# the first one. We split on it, but EXCLUDE `&` that is part of a
-# file-descriptor redirection so legitimate forms continue to work
-# in one segment:
-#   - `>&` / `<&`  — FD duplication (`2>&1`, `1>&2`, `<&-`)
-#   - `&>` / `&>>` — bash combined stdout+stderr redirect
-# The splitter inspects the previous non-space char and the next char
-# at each `&`; only an isolated `&` (not adjacent to `>`/`<`) is
-# treated as a chain separator. Quoted `&` and backslash-escaped
-# `\&` were already preserved by the existing quote/escape logic.
-#
-# Splitting must respect shell quoting and backslash escapes — a naive
-# `re.split(r'&&|\|\||;|\|')` over `grep 'a|b' foo` cuts the quoted `|`
-# and produces two nonsense segments that fail the rule, false-blocking
-# a perfectly legal command. _split_bash_chain walks the string with a
-# tiny quote/escape tracker; that's all this routine claims to do.
-#
-# What this gate is NOT:
-# Subshells (`$(...)`, backticks) and process substitution (`<()`) are
-# NOT parsed — substitution bodies appear as opaque text inside a
-# single segment. The phase rules are substring heuristics, so:
-#   - In strict phases, a substitution body can ride along with a legal
-#     outer command. `python baseline.py $(python pipeline.py x)` is
-#     accepted in BASELINE because the segment contains the required
-#     substring "baseline.py". The pipeline.py invocation inside the
-#     `$(...)` is invisible to this gate.
-#   - In permissive phases, substring bans incidentally catch banned
-#     names anywhere in the segment, including inside `$()` — but that
-#     is coincidence, not enforcement.
-#
-# Threat model: this is an LLM-operations guardrail, not a security
-# sandbox. It prevents the routine drift modes we've actually observed
-# (chain-and-smuggle, wrong script name, off-phase command). It does
-# not defend against an adversarial command author trying to evade.
-# If `$()` / backtick smuggling shows up as an observed pattern in a
-# real run, add a dedicated guard then — don't pre-build half a bash
-# parser on the assumption.
-
-def _split_bash_chain(command: str) -> List[Segment]:
-    """Split `command` on `&&` / `||` / `;` / `|` / `&` (outside quotes)
-    into a list of `Segment(text, op_after)`. The trailing operator is
-    captured so downstream gates can ask `was this segment backgrounded?`
-    without re-parsing.
-
-    Bare `&` is a separator (backgrounding) UNLESS it's part of a
-    file-descriptor redirection. The disambiguator looks at the
-    previous non-space char and the next char:
-
-      - prev `>` or `<`  → FD duplication (`2>&1`, `1>&2`, `<&-`)
-      - next `>`         → bash combined redirect (`&> log`, `&>> log`)
-
-    Either case keeps `&` literal inside the segment text. Quoted `&`
-    and backslash-escaped `\\&` are preserved by the existing
-    quote/escape logic (they never reach the separator branch).
-    """
-    segments: List[Segment] = []
-    cur: List[str] = []
-    i = 0
-    n = len(command)
-    in_single = False
-    in_double = False
-
-    def flush(op):
-        segments.append(Segment(text="".join(cur), op_after=op))
-        cur.clear()
-
-    while i < n:
-        c = command[i]
-
-        # Backslash escape: take the next char literally (outside
-        # single quotes, like real bash). End-of-string: emit `\`.
-        if c == "\\" and not in_single and i + 1 < n:
-            cur.append(c)
-            cur.append(command[i + 1])
-            i += 2
-            continue
-
-        # Quote toggles
-        if c == "'" and not in_double:
-            in_single = not in_single
-            cur.append(c)
-            i += 1
-            continue
-        if c == '"' and not in_single:
-            in_double = not in_double
-            cur.append(c)
-            i += 1
-            continue
-
-        # Inside any quotes: literal byte, never a separator.
-        if in_single or in_double:
-            cur.append(c)
-            i += 1
-            continue
-
-        # Two-char separators first (`&&`, `||`).
-        if c == "&" and i + 1 < n and command[i + 1] == "&":
-            flush("&&"); i += 2
-            continue
-        if c == "|" and i + 1 < n and command[i + 1] == "|":
-            flush("||"); i += 2
-            continue
-
-        # One-char separators (`;`, `|`).
-        if c == ";":
-            flush(";"); i += 1
-            continue
-        if c == "|":
-            flush("|"); i += 1
-            continue
-
-        # Bare `&` — backgrounding UNLESS adjacent to redirection (see
-        # function docstring).
-        if c == "&":
-            prev = next((ch for ch in reversed(cur) if not ch.isspace()), None)
-            next_c = command[i + 1] if i + 1 < n else None
-            if prev in (">", "<") or next_c == ">":
-                cur.append(c)
-                i += 1
-                continue
-            flush("&"); i += 1
-            continue
-
-        cur.append(c)
-        i += 1
-
-    # Final segment has no trailing operator
-    segments.append(Segment(text="".join(cur), op_after=None))
-    return segments
-
-
-def _segment_passes_phase_rule(segment: str, policy: "_BashPolicy") -> tuple:
-    """Decide whether a single chain segment is allowed under `policy`.
-
-    Returns (ok, reason). The phase-agnostic patterns (read-only +
-    lifecycle ops) and the activation special case are checked first;
-    only when both fail does the per-phase strict/permissive rule apply.
-    """
-    s = segment.strip()
-    if not s:
-        return True, ""  # empty (trailing `&&`) — no restriction
-
-    if _segment_is_phase_agnostic(s):
-        return True, ""
-    if "export AR_TASK_DIR=" in s:
-        return True, ""
-
-    if policy.mode == "strict":
-        # AR-script required entries (`.py`) are matched against the
-        # actual python invocation via parse_invoked_ar_script — NOT via
-        # raw substring. A naive `req in s` would let smuggling like
-        # `python -c "print('create_plan.py')"` pass: the string
-        # 'create_plan.py' appears in the command yet no AR script runs.
-        # Non-script entries (e.g. "export AR_TASK_DIR=" for INIT) are
-        # not python files; keep substring match for those.
-        invoked = parse_invoked_ar_script(s)
-        for req in policy.required:
-            if req.endswith(".py"):
-                if invoked == req:
-                    return True, ""
-            elif req in s:
-                return True, ""
-        required_txt = sorted(policy.required) or "(no user bash legal here; only file edits)"
-        return False, f"segment {s!r}: allowed = {required_txt}"
-
-    # permissive
-    for b in policy.banned:
-        if b in s:
-            return False, f"segment {s!r}: '{b}' is blocked here"
-    return True, ""
-
+# === LAYER 3: check_bash + check_edit ==================================
 
 def check_bash(phase: str, command: str) -> tuple:
     """Return (allowed: bool, reason: str) for a Bash command at `phase`.
 
-    Decision order:
-      1. Global bans (subprocess-only scripts, `git commit`) — checked
-         against the full command first.
-      2. Global ban on backgrounding any AR-script invocation — phase-
-         advancing scripts under `.autoresearch/scripts/` must run
-         synchronously. Backgrounding lets hook_post_bash advance phase
-         / clear pending_settle before the script has finished writing
-         its outputs (plan.md, history.jsonl, progress.json).
-      3. Per-chain-segment phase rules: every segment must independently
-         pass either the agnostic-shortcut (read-only + lifecycle), the
-         activation special case, or the per-phase strict/permissive
-         rule. Per-segment closes the hole where strict phases used to
-         accept `python baseline.py && python pipeline.py` because the
-         whole-command substring contained the strict-required name.
+    Three layers, in order:
+      1. Global string bans (subprocess-only scripts, `git commit`).
+         Substring match for clear, specific error messages.
+      2. classify() — pure command-shape decision.
+      3. Phase table lookup — (phase, class) → allowed/blocked.
+
+    AR-mention-but-not-canonical is rejected in EVERY phase to keep
+    the canonical-form contract crisp; without that, permissive phases
+    would accept shapes like `nohup python .autoresearch/scripts/X.py
+    &` as 'ad-hoc shell'.
     """
     for ban, why in _GLOBAL_BASH_BANS.items():
         if ban in command:
             return False, f"'{ban}' — {why}"
     if "git commit" in command:
-        return False, ("manual 'git commit' forbidden — commits are produced "
-                       "by pipeline.py via keep_or_discard")
+        return False, ("manual 'git commit' forbidden — commits are "
+                       "produced by pipeline.py via keep_or_discard")
 
-    shape = analyze_bash_command(command)
-    for inv in shape.scripts:
-        if inv.is_ar_script and inv.is_backgrounded:
-            return False, (
-                f"backgrounding '{inv.basename}' with `&` is forbidden — "
-                f"phase-advancing AR scripts under .autoresearch/scripts/ "
-                f"must run synchronously. Drop the `&` (run foreground) "
-                f"or break the command into separate Bash invocations."
-            )
+    shape = classify(command)
 
-    policy = _BASH_RULES.get(phase)
-    if policy is None:
-        return False, f"unknown phase {phase!r}"
+    if shape.klass == "LIFECYCLE":
+        return True, ""
 
-    for seg in shape.segments:
-        ok, reason = _segment_passes_phase_rule(seg.text, policy)
-        if not ok:
-            return False, f"phase {phase}: {reason}"
-    return True, ""
+    if shape.klass == "READONLY":
+        return True, ""
+
+    if shape.klass == "AR":
+        allowed = _AR_ALLOWED_BY_PHASE.get(phase)
+        if allowed is None:
+            return False, f"unknown phase {phase!r}"
+        if shape.name in allowed:
+            return True, ""
+        allowed_txt = sorted(allowed) or "(no AR scripts allowed in this phase)"
+        return False, (f"phase {phase}: AR script {shape.name!r} not "
+                       f"allowed; allowed = {allowed_txt}")
+
+    # OTHER. AR-mention here means a malformed AR shape (chain, wrapper,
+    # backgrounded, --version, etc.) — reject everywhere.
+    if ".autoresearch/scripts/" in _normalize(command):
+        return False, _CANONICAL_FORM_REJECTION
+
+    if _OTHER_ALLOWED_BY_PHASE.get(phase, False):
+        return True, ""
+    return False, (f"phase {phase}: only AR scripts, lifecycle scripts, "
+                   f"and read-only commands are allowed")
 
 
 _DIAGNOSE_ARTIFACT_RE = re.compile(r"^\.ar_state/diagnose_v\d+\.md$")
@@ -725,9 +514,7 @@ def check_edit(phase: str, rel_path: str, editable_files) -> tuple:
     return False, f"phase {phase} does not allow writing {rel_path!r}"
 
 
-# ---------------------------------------------------------------------------
-# Phase transitions
-# ---------------------------------------------------------------------------
+# === Phase transitions =================================================
 
 def compute_next_phase(task_dir: str) -> str:
     """After a pipeline round finishes, mechanically determine the next phase.
@@ -745,16 +532,10 @@ def compute_next_phase(task_dir: str) -> str:
 
     if eval_rounds >= max_rounds:
         return FINISH
-
-    # Diagnosis trigger
     if consecutive_failures >= 3:
         return DIAGNOSE
-
-    # Check if plan has remaining pending items
     if has_pending_items(task_dir):
-        return EDIT  # More items to work on
-
-    # All items settled
+        return EDIT
     return REPLAN
 
 
@@ -790,5 +571,5 @@ def compute_resume_phase(task_dir: str) -> str:
     has_pending = any(not it["done"] for it in items)
 
     if has_active or has_pending:
-        return EDIT  # has_pending-without-active means: mark next as active
+        return EDIT
     return REPLAN

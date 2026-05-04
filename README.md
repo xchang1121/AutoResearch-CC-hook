@@ -300,23 +300,40 @@ false`。关掉后占位 kernel（scaffold TODO）仍会被拒，GENERATE_KERNEL
 `INIT` / `GENERATE_REF` / `GENERATE_KERNEL` / `BASELINE` / `PLAN` / `EDIT` /
 `DIAGNOSE` / `REPLAN` / `FINISH`。
 
-**规则表**（[phase_policy.py](.autoresearch/scripts/phase_machine/phase_policy.py)）：
+**Bash gate 三层架构**（[phase_policy.py](.autoresearch/scripts/phase_machine/phase_policy.py)）：
 
 ```python
-_BASH_RULES = {
-    INIT:            _BashPolicy("strict",     required={"export AR_TASK_DIR="}),
-    BASELINE:        _BashPolicy("strict",     required={"baseline.py"}),
-    GENERATE_REF:    _BashPolicy("strict",     required=set()),
-    GENERATE_KERNEL: _BashPolicy("strict",     required=set()),
-    PLAN:            _BashPolicy("permissive", banned=set()),
-    # DIAGNOSE: only create_plan.py is a legal AR-script invocation;
-    # the phase exists to produce a new plan via Task -> artifact ->
-    # create_plan (or manual-planning fallback after the cap).
-    DIAGNOSE:        _BashPolicy("strict",     required={"create_plan.py"}),
-    REPLAN:          _BashPolicy("permissive", banned=set()),
-    EDIT:            _BashPolicy("permissive", banned={"create_plan.py"}),
-    FINISH:          _BashPolicy("permissive", banned=set()),
+# Layer 1 — classifier(command) -> CommandShape(klass, name)
+#   纯函数，只看命令文本。返回:
+#     AR(name)    canonical .autoresearch/scripts/<name>.py 调用
+#     LIFECYCLE   AR 但脚本是 lifecycle (dashboard/parse_args/scaffold/resume)
+#     READONLY    每个 chain segment 都是只读命令；不允许重定向到文件
+#     OTHER       其余（含 ad-hoc shell、AR-mention 非 canonical）
+
+# Layer 2 — phase 表（静态字典）
+_AR_ALLOWED_BY_PHASE = {
+    INIT: frozenset(), GENERATE_REF: frozenset(),
+    GENERATE_KERNEL: frozenset(),
+    BASELINE: frozenset({"baseline.py"}),
+    DIAGNOSE: frozenset({"create_plan.py"}),
+    PLAN:     frozenset({"create_plan.py"}),
+    REPLAN:   frozenset({"create_plan.py"}),
+    EDIT:     frozenset({"pipeline.py"}),
+    FINISH:   frozenset(),
 }
+_OTHER_ALLOWED_BY_PHASE = {
+    INIT: False, GENERATE_REF: False, GENERATE_KERNEL: False,
+    BASELINE: False,
+    DIAGNOSE: True, PLAN: True, REPLAN: True, EDIT: True, FINISH: True,
+}
+_LIFECYCLE_SCRIPTS = {"dashboard.py", "parse_args.py",
+                      "scaffold.py", "resume.py"}
+
+# Layer 3 — check_bash: global ban → classify → 查表
+#   LIFECYCLE / READONLY 始终允许；
+#   AR 看 _AR_ALLOWED_BY_PHASE[phase]；
+#   OTHER 看 _OTHER_ALLOWED_BY_PHASE[phase]；
+#   AR-mention 但 classify 成 OTHER（malformed shape）→ 任何 phase 拒绝。
 
 _EDIT_RULES = {
     GENERATE_REF:    {"ref"},        # 仅允许写 reference.py
@@ -326,27 +343,31 @@ _EDIT_RULES = {
 }
 ```
 
-`strict` 为白名单匹配，`permissive` 为黑名单子串匹配。strict 模式下
-`.py` required 项通过 `parse_invoked_ar_script()` 校验真实 python 调用
-（不是子串扫描）—— 避免 `python -c "print('create_plan.py')"` 这种把脚本
-名混进字面量绕过 gate。非 `.py` required 项（如 INIT 的
-`export AR_TASK_DIR=`）仍走子串匹配。PLAN / EDIT / REPLAN 需要 `git log`、
-读文件等 ad-hoc 操作，使用 permissive；INIT / BASELINE / GENERATE_*
-/ DIAGNOSE 收紧到 strict。DIAGNOSE 在 strict 下只放行 `create_plan.py`
-（hook_guard_bash 还会按 artifact 状态再加一道 gate；详见 CLAUDE.md
-不变量 #9）。
+设计要点：
 
-**查询函数**（[phase_policy.py](.autoresearch/scripts/phase_machine/phase_policy.py)）：
-`check_bash` 和 `check_edit`，输入 phase 名 + 命令 / 文件名，返回
-`(allowed, reason)`。纯函数，不读写任何状态。`check_bash` 按 bash 链
-分隔符（`&&` `||` `;` `|`）切片后**逐段**评估——避免链式命令把单个
-strict-required 子串带飞整个链路。
+- **canonical AR** 只接受真会执行脚本的 Python flag（`-O`/`-u`/`-X val`/
+  `-W val`/...），明确拒绝 `--version`/`-V`/`--help`/`-c`/`-m` 这种短路或
+  替换脚本的 flag，避免 `python --version .autoresearch/scripts/X.py`
+  被错认成 AR(X.py)。版本 flag `-3` / `-3.10` 仅在 `py` launcher 下接受
+  （`py -3.10 .../X.py`），`python -3.10 .../X.py` 在真实运行时会报
+  `Unknown option`，所以 classifier 也拒绝。
+- **READONLY 真的只读**：禁止 `>` / `>>` 写文件、禁止 FD redirect。
+  `cat foo > log` / `cat foo 2>&1` 都归 OTHER，不再混进只读类别。
+- **chain 按 segment 评估**：strict phase 下 `echo ok && rm -rf …` 因
+  第二段非只读被拦；`git status && git log -1` 这种纯只读链仍放行。
+- **AR-mention 非 canonical 一律拒绝**（含 wrapper / 链 / 后台化 / 仅
+  字面提及如 `echo .autoresearch/scripts/foo.py`）。这是 product-level
+  decision——刻意不追求"精确识别真实执行 vs 字面提及"，所以拒绝面比
+  必要的更广，但规则很短，不会再为各种边角再补支线。
+- **lifecycle 脚本**（`dashboard.py` / `parse_args.py` / `scaffold.py` /
+  `resume.py`）跨 phase 放行；不进 `_AR_ALLOWED_BY_PHASE` 表。
 
-跨 phase 全局黑名单也在此定义：`quick_check.py` / `eval_wrapper.py` /
-`keep_or_discard.py` / `settle.py` 在任何 phase 均禁止手动调用（只能由
-`pipeline.py` 子进程执行）；`git commit` 仅允许 `keep_or_discard.py` 在
-KEEP 时调用。读类命令（`ls` / `cat` / `grep` / `git log|diff|status` /
-`dashboard.py` / `echo` / `pwd`）跨 phase 放行。
+跨 phase 全局黑名单：`quick_check.py` / `eval_wrapper.py` /
+`keep_or_discard.py` / `settle.py` / `_baseline_init.py` 在任何 phase
+均禁止手动调用（只能作为 `pipeline.py` / `baseline.py` 的子进程执行）；
+`git commit` 仅允许 `keep_or_discard.py` 在 KEEP 时调用。
+
+DIAGNOSE 在白名单上还有一道 artifact gate（详见 CLAUDE.md 不变量 #10）。
 
 ### 2. 状态文件
 
@@ -398,7 +419,7 @@ stdout 输出 `{"decision":"block","reason":"..."}` + `sys.exit(2)` 即阻断
 
 - `.ar_state/` 精确白名单：`plan_items.xml`（`create_plan.py` 的 XML
   入参）、`ranking.md`（FINISH 阶段）、`diagnose_v<N>.md`（DIAGNOSE 阶段，
-  内容契约见 CLAUDE.md invariant #9）可写。`plan.md` / `.phase` /
+  内容契约见 CLAUDE.md invariant #10）可写。`plan.md` / `.phase` /
   `progress.json` / `history.jsonl` / 心跳和 marker 一律拦住——这些由
   `create_plan.py` / `settle.py` / `pipeline.py` 写入，手工修改会破坏
   审计记录或让状态机脱轨
@@ -408,7 +429,7 @@ stdout 输出 `{"decision":"block","reason":"..."}` + `sys.exit(2)` 即阻断
 
 ### 5. 为什么 Claude 绕不过去
 
-- **规则单点**：`_BASH_RULES` / `_EDIT_RULES` 只在 phase_machine 定义一次，
+- **规则单点**：`_AR_ALLOWED_BY_PHASE` / `_EDIT_RULES` 只在 phase_machine 定义一次，
   两个 PreToolUse hook 共享；改一处两端同步。
 - **pipeline 子步骤禁止手调**：`quick_check.py` / `eval_wrapper.py` /
   `keep_or_discard.py` / `settle.py` 跨 phase 黑名单；`git commit` 全部走

@@ -76,7 +76,19 @@ The following invariants are non-negotiable:
    and rewrite — don't retry the same XML payload.
 8. **TodoWrite sync is mandatory.** When a hook emits `additionalContext`
    with a TodoWrite payload, call TodoWrite with it verbatim next turn.
-9. **DIAGNOSE phase ends with a new plan.** Two paths to that end:
+9. **AR scripts run as direct top-level Bash invocations only.** Any
+   command mentioning `.autoresearch/scripts/` must be a single
+   foreground call:
+   `python .autoresearch/scripts/<name>.py <task_dir> [args...]`
+   (env-var prefixes, Python flags, and FD redirection like `> log
+   2>&1` are fine). Wrappers (`nohup`, `bash -lc`, `sh -c`,
+   subshells, `$(...)`), chains (`&&`, `||`, `;`, `|`), and
+   backgrounding (`&`) are unsupported and rejected by
+   `hook_guard_bash`. Run multiple AR scripts as separate Bash
+   tool calls; use the Read tool — not `cat` — to inspect script
+   source. This is an LLM-workflow guardrail and a deliberately
+   small grammar, not a Bash sandbox.
+10. **DIAGNOSE phase ends with a new plan.** Two paths to that end:
    - **Preferred (subagent route).** Call `Task(subagent_type='ar-diagnosis')`;
      the subagent's prompt asks it to Write a structured artifact at
      `<task_dir>/.ar_state/diagnose_v<plan_version>.md` containing three
