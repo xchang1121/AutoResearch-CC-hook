@@ -10,15 +10,13 @@ Validators (each: "is this artifact OK enough to advance the phase?"):
     py_compile, imports, stray Chinese, DSL, autotune restore_value).
   - validate_plan: structural check on plan.md (≥3 items, rationale length,
     exactly one ACTIVE).
-  - validate_diagnose: marker + sections + R<n> citations on
-    diagnose_v<N>.md.
+  - validate_diagnose: marker + sections on diagnose_v<N>.md.
 
 Plan.md parsing (`parse_plan_text`, `get_plan_items`, `has_pending_items`,
 `get_active_item`, `is_settled_table_header`) is the single source of
 truth for plan-file structure; phase_policy, guidance, settle.py and
 create_plan.py all consume it from here.
 """
-import json
 import os
 import re
 import subprocess
@@ -30,7 +28,7 @@ from typing import NamedTuple, Optional
 # subprocess output of validate_reference.
 from .state_store import (
     plan_path, parse_last_json_line,
-    diagnose_artifact_path, diagnose_marker, history_path,
+    diagnose_artifact_path, diagnose_marker,
     load_progress, DIAGNOSE_ATTEMPTS_CAP,
 )
 
@@ -347,34 +345,11 @@ def get_active_item(task_dir: str) -> Optional[dict]:
 
 _DIAGNOSE_REQUIRED_SECTIONS = ("Root cause", "Fix directions", "What to avoid")
 
-
-def _last_n_fail_rounds(task_dir: str, n: int = 3) -> list:
-    """Read history.jsonl, return the last N records whose decision is FAIL.
-
-    Used by validate_diagnose to require that the artifact references each
-    failing round it was supposed to analyze. Tolerant of missing/corrupt
-    history lines (they're skipped); returns at most N entries, fewer if
-    history doesn't have enough FAILs yet (validator is lenient in that case).
-    """
-    hpath = history_path(task_dir)
-    if not os.path.exists(hpath):
-        return []
-    fails = []
-    try:
-        with open(hpath, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except Exception:
-                    continue
-                if rec.get("decision") == "FAIL":
-                    fails.append(rec)
-    except OSError:
-        return []
-    return fails[-n:]
+# DIAGNOSE has three host-visible sub-states. Keep this as the single branch
+# used by guidance + Task/Bash/Stop hooks so they cannot drift.
+DIAGNOSE_NEED_DIAGNOSIS = "NEED_DIAGNOSIS"
+DIAGNOSE_READY = "DIAGNOSIS_READY"
+DIAGNOSE_MANUAL_FALLBACK = "MANUAL_FALLBACK"
 
 
 def validate_diagnose(task_dir: str, plan_version: int) -> tuple:
@@ -389,11 +364,6 @@ def validate_diagnose(task_dir: str, plan_version: int) -> tuple:
          "Fix directions", "What to avoid". Match is substring (so either
          "## Root cause" or "Root cause:" passes — generous on heading style,
          strict on content presence).
-      4. References each of the last 3 FAIL rounds by `R<round>` token.
-         Substring match is sufficient (`R29` matches `R29:` / `(R29)` / etc.)
-         If history doesn't have 3 FAILs yet (early DIAGNOSE during
-         GENERATE_KERNEL retries), this check is skipped.
-
     Returns (ok, reason). On failure, `reason` is a short user-facing
     string suitable for an `[AR Phase: DIAGNOSE retry]` message.
     """
@@ -425,46 +395,19 @@ def validate_diagnose(task_dir: str, plan_version: int) -> tuple:
                        f"{', '.join(missing_sections)}. Required headings: "
                        f"{', '.join(_DIAGNOSE_REQUIRED_SECTIONS)}.")
 
-    last_fails = _last_n_fail_rounds(task_dir, n=3)
-    if len(last_fails) >= 3:
-        missing_refs = []
-        for rec in last_fails:
-            r = rec.get("round")
-            if r is None:
-                continue
-            tok = f"R{r}"
-            # Boundary-match the round token: a bare `tok in body`
-            # substring check would let R1 false-match inside R10/R11/...
-            # — so an artifact citing only the higher-numbered rounds
-            # would silently appear to cover the lower one. The lookbehind
-            # excludes alnum/underscore prefixes (so R1 doesn't match
-            # AR1 / _R1) and the trailing `(?!\d)` excludes a digit
-            # suffix (so R1 still matches "R1:"/"(R1)"/"R1 caused" but
-            # not R10/R11/R100).
-            pattern = re.compile(rf"(?<![A-Za-z0-9_])R{r}(?!\d)")
-            if not pattern.search(body):
-                missing_refs.append(tok)
-        if missing_refs:
-            return False, (f"artifact does not reference all of the last 3 "
-                           f"FAIL rounds (missing: {', '.join(missing_refs)}). "
-                           f"Cite each by its R<n> identifier.")
-
     return True, ""
 
 
 class DiagnoseState(NamedTuple):
     """Snapshot of DIAGNOSE-phase state for the hook callers.
 
-    `attempts` is the per-plan_version Task-failure count. The accessor
-    folds the "did this counter belong to a different plan_version?"
-    cross-check so callers don't reimplement it. `exhausted` is the
-    cap-comparison; `artifact_ok` / `artifact_reason` come from
-    `validate_diagnose`.
+    `action` is the next legal high-level action. `attempts` is the
+    per-plan_version Task-failure count. `artifact_reason` comes from
+    `validate_diagnose` and explains the NEED_DIAGNOSIS state.
     """
     plan_version: int
     attempts: int
-    exhausted: bool
-    artifact_ok: bool
+    action: str
     artifact_reason: str
 
 
@@ -472,11 +415,9 @@ def diagnose_state(task_dir: str,
                    progress: Optional[dict] = None) -> DiagnoseState:
     """Single read of all DIAGNOSE-relevant state needed by hooks.
 
-    Replaces a 6-line copy-paste that used to live in five hook files.
-    Pass `progress` if you've already loaded it; otherwise this loads
-    it. The artifact validation is always run because hook decisions
-    branch on (exhausted) AND (artifact_ok) and the cost is one file
-    read + a few regex/substring checks.
+    Pass `progress` if you've already loaded it; otherwise this loads it.
+    The artifact validation is always run because the next legal action
+    depends on both artifact validity and the attempt cap.
     """
     if progress is None:
         progress = load_progress(task_dir) or {}
@@ -486,11 +427,17 @@ def diagnose_state(task_dir: str,
     else:
         attempts = 0
     artifact_ok, artifact_reason = validate_diagnose(task_dir, pv)
+    exhausted = attempts >= DIAGNOSE_ATTEMPTS_CAP
+    if artifact_ok:
+        action = DIAGNOSE_READY
+    elif exhausted:
+        action = DIAGNOSE_MANUAL_FALLBACK
+    else:
+        action = DIAGNOSE_NEED_DIAGNOSIS
     return DiagnoseState(
         plan_version=pv,
         attempts=attempts,
-        exhausted=attempts >= DIAGNOSE_ATTEMPTS_CAP,
-        artifact_ok=artifact_ok,
+        action=action,
         artifact_reason=artifact_reason,
     )
 

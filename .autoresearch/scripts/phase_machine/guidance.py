@@ -21,7 +21,10 @@ from .state_store import (
     history_path, load_progress, read_phase, state_path,
     _PROJECT_ROOT,
 )
-from .validators import get_active_item, diagnose_state
+from .validators import (
+    get_active_item, diagnose_state,
+    DIAGNOSE_READY, DIAGNOSE_MANUAL_FALLBACK,
+)
 
 
 def _format_fail_record(rec: dict) -> str:
@@ -219,6 +222,33 @@ def _skills_hint(dsl) -> str:
     )
 
 
+def _diagnose_plan_next_step(task_dir: str, *,
+                             artifact_path: Optional[str] = None,
+                             fallback: bool = False) -> str:
+    """Guidance text for the post-DIAGNOSE create_plan step.
+
+    Two callers in get_guidance: action == DIAGNOSE_READY passes the
+    artifact path; action == DIAGNOSE_MANUAL_FALLBACK passes nothing
+    (artifact_path is unused in fallback mode — the diagnosis context
+    is history.jsonl + plan.md).
+    """
+    if fallback:
+        header = "[AR Phase: DIAGNOSE — manual planning fallback]"
+        source = "history.jsonl + plan.md (subagent route exhausted)"
+    else:
+        header = "[AR Phase: DIAGNOSE — diagnosis ready]"
+        source = artifact_path or "(diagnosis artifact)"
+    return (
+        f"{header}\n"
+        f"Create a NEW plan with >= 3 diverse items using {source}.\n"
+        f"Max 1 parameter-tuning item; the rest must be structural changes "
+        f"(algorithmic / fusion / memory layout / data movement).\n\n"
+        f"{_create_plan_instruction(task_dir)}"
+        f"\nAfter create_plan.py validates, the hook advances phase to EDIT "
+        f"and emits the TodoWrite payload."
+    )
+
+
 def get_guidance(task_dir: str) -> str:
     """Return a context-aware instruction for Claude based on current phase.
 
@@ -354,10 +384,9 @@ def get_guidance(task_dir: str) -> str:
         hpath = history_path(task_dir)
         recent_summary = ""
         fail_details = ""
-        last_3_fail_rounds = []
         if os.path.exists(hpath):
             all_recs = []
-            with open(hpath, "r") as f:
+            with open(hpath, "r", encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -374,7 +403,6 @@ def get_guidance(task_dir: str) -> str:
                 r for r in all_recs
                 if r.get("decision") == "FAIL" and r.get("round") is not None
             ][-3:]
-            last_3_fail_rounds = [r["round"] for r in last_3_fails]
             if last_3_fails:
                 fail_details = "\n".join(_format_fail_record(r) for r in last_3_fails) + "\n"
 
@@ -396,10 +424,18 @@ def get_guidance(task_dir: str) -> str:
         ds = diagnose_state(task_dir, progress=progress) if progress else None
         plan_version = ds.plan_version if ds else 0
         attempts = ds.attempts if ds else 0
+        artifact_path = diagnose_artifact_path(task_dir, plan_version)
+        if ds and ds.action == DIAGNOSE_READY:
+            return _diagnose_plan_next_step(
+                task_dir, artifact_path=artifact_path)
+        if ds and ds.action == DIAGNOSE_MANUAL_FALLBACK:
+            return _diagnose_plan_next_step(task_dir, fallback=True)
 
         arch = (config.arch if config and config.arch else "<unknown>")
         backend = (config.backend if config and config.backend else "<unknown>")
-        editable_list = ", ".join(editable)
+        editable_paths = "\n".join(
+            f"  - {task_dir}/{name}" for name in (editable or ["kernel.py"])
+        )
         # Resolve the on-disk skills/<...> dir name (dash form). May be
         # None if this DSL has no curated skills tree, in which case the
         # whole skills section is dropped from the subagent prompt.
@@ -437,12 +473,7 @@ def get_guidance(task_dir: str) -> str:
 
         # Artifact contract — the host validates these literals after the
         # Task call returns. See validators.validate_diagnose.
-        artifact_path = diagnose_artifact_path(task_dir, plan_version)
         marker = diagnose_marker(plan_version)
-        last_3_str = (
-            ", ".join(f"R{r}" for r in last_3_fail_rounds)
-            if last_3_fail_rounds else "(no FAIL rounds yet — cite the FAILs you find in history.jsonl)"
-        )
 
         # Pre-baked subagent prompt. Parent passes this verbatim to the Agent
         # tool so the subagent doesn't improvise (an earlier open-ended brief
@@ -455,10 +486,10 @@ def get_guidance(task_dir: str) -> str:
         # the subagent only saw round + 60-char description per FAIL and
         # had to guess which Ascend constraint was violated.
         fail_details_block = (
-            f"Last 3 FAILs (cite each by R<n> in your Root cause):\n"
+            f"Last 3 FAILs (use these as the primary evidence):\n"
             f"{fail_details}\n"
             if fail_details
-            else "Last 3 FAILs: (none yet — cite any FAILs you uncover in history.jsonl)\n\n"
+            else "Last 3 FAILs: (none yet — use history.jsonl if needed)\n\n"
         )
         subagent_prompt = (
             f"Diagnose why the current optimization rounds are failing, then "
@@ -470,7 +501,7 @@ def get_guidance(task_dir: str) -> str:
             f"{fail_details_block}"
             f"Read these task files for context:\n"
             f"  - {task_dir}/reference.py\n"
-            f"  - {task_dir}/{editable_list}\n"
+            f"{editable_paths}\n"
             f"  - {task_dir}/.ar_state/plan.md\n"
             f"  - {task_dir}/.ar_state/history.jsonl (focus on the last "
             f"~10 rounds; older entries are usually stale)\n\n"
@@ -487,8 +518,8 @@ def get_guidance(task_dir: str) -> str:
             f"this exact path:\n"
             f"  {artifact_path}\n\n"
             f"The file body must contain ALL of:\n"
-            f"  - heading section 'Root cause' (one paragraph; cite each "
-            f"of {last_3_str} by its R<n> token)\n"
+            f"  - heading section 'Root cause' (one paragraph grounded in "
+            f"the FAIL summary / history)\n"
             f"  - heading section 'Fix directions' (≤3 STRUCTURALLY "
             f"different approaches: algorithmic / fusion / memory layout "
             f"/ data movement; NOT parameter tuning.{cite_clause})\n"
@@ -497,7 +528,7 @@ def get_guidance(task_dir: str) -> str:
             f"  - the magic marker line on its own line at the end:\n"
             f"      {marker}\n"
             f"Total ≤ 300 words across the three sections. The host "
-            f"validates path + marker + sections + R<n> citations after "
+            f"validates path + marker + the three section names after "
             f"this Task call returns; missing any element will force a "
             f"retry."
         )
@@ -510,7 +541,7 @@ def get_guidance(task_dir: str) -> str:
                 f"subagent ends its work with a Write of the marker line."
             )
         return (f"[AR Phase: DIAGNOSE] consecutive_failures >= 3.\n"
-                f"Step 1 (mandatory, only legal action right now): call the "
+                f"Required action: call the "
                 f"Task tool with subagent_type='ar-diagnosis' and this "
                 f"EXACT prompt. Do not paraphrase. Do not add or remove "
                 f"constraints. Do not Edit, Write, or Bash before this "
@@ -518,19 +549,9 @@ def get_guidance(task_dir: str) -> str:
                 f"---BEGIN SUBAGENT PROMPT---\n"
                 f"{subagent_prompt}\n"
                 f"---END SUBAGENT PROMPT---\n"
-                f"\n"
-                f"Step 2 (after Task returns AND the host confirms the "
-                f"artifact validated): create a NEW plan with >= 3 items "
-                f"using {artifact_path} as input.\n"
-                f"\n"
-                f"{_create_plan_instruction(task_dir)}"
-                f"\n"
-                f"Items must be diverse: max 1 parameter-tuning item, rest "
-                f"must be structural changes. Then sync TodoWrite.\n"
-                f"\n"
-                f"Artifact contract: the host gates Step 2 on a valid "
+                f"Artifact contract: the host gates plan creation on a valid "
                 f"{os.path.basename(artifact_path)} (path + marker + 3 "
-                f"sections + R<n> citations). Up to "
+                f"sections). Up to "
                 f"{DIAGNOSE_ATTEMPTS_CAP} Task attempts are allowed; after "
                 f"that the gate is relaxed and you must write "
                 f"plan_items.xml directly (manual-planning fallback) "

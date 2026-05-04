@@ -368,7 +368,7 @@ _OTHER_ALLOWED_BY_PHASE = {
     GENERATE_REF:    False,
     GENERATE_KERNEL: False,
     BASELINE:        False,
-    DIAGNOSE:        True,
+    DIAGNOSE:        False,
     PLAN:            True,
     REPLAN:          True,
     EDIT:            True,
@@ -473,8 +473,8 @@ def check_edit(phase: str, rel_path: str, editable_files) -> tuple:
         ar-diagnosis subagent is the intended writer (per the prompt
         contract), but hook payloads do NOT distinguish main agent from
         subagent — provenance is not enforced. Only the artifact's
-        CONTENT (sections, marker, R<n> citations) is validated, and only
-        writable while phase=DIAGNOSE.
+        CONTENT (sections + marker) is validated, and only writable while
+        phase=DIAGNOSE.
     """
     if rel_path.startswith(".ar_state/"):
         if rel_path == f".ar_state/{PLAN_ITEMS_FILE}":

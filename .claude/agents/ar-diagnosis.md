@@ -24,14 +24,17 @@ Workflow:
 
 ## Required artifact structure
 
-You must produce a file with **all** of these elements (validated by the host before phase advancement):
+You must produce a file with **all** of these elements. The host validates
+the path, section names, and marker before phase advancement:
 
 ```markdown
 # Diagnose v<plan_version> (round <R>)
 
 ## Root cause
-<one paragraph — what's making the recent rounds fail. Cite specific failed
-rounds by R<n> tokens. ALL of the last 3 FAIL rounds must be referenced.>
+<one paragraph — what's making the recent rounds fail. Cite the FAIL rounds
+your analysis is grounded in by R<n> token (typically 1–3 of the recent
+FAILs). The host validates section names and the marker, not citation
+counts; quality of analysis matters more than coverage.>
 
 ## Fix directions
 <at most 3 STRUCTURALLY different approaches (algorithmic / fusion /

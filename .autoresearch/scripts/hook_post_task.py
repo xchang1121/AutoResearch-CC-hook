@@ -3,25 +3,20 @@
 
 Runs after every Task call. Only acts when phase==DIAGNOSE; otherwise no-op.
 
-Behavior:
-  - Validate `<task_dir>/.ar_state/diagnose_v<plan_version>.md` against the
-    contract (see validators.validate_diagnose).
-  - Pass → emit_status("[AR] DIAGNOSE artifact validated. Proceed to
-    create_plan.py."). Reset diagnose_attempts counter.
-  - Fail → increment diagnose_attempts (per plan_version). Inject
-    additionalContext telling the main agent EXACTLY what's wrong and to
-    re-issue Task.
-  - On reaching DIAGNOSE_ATTEMPTS_CAP attempts: switch to the
-    manual-planning fallback. The artifact gate on create_plan.py is
-    relaxed downstream (hook_guard_bash + hook_post_bash check
-    diagnose_attempts vs cap); the main agent is told to write
-    plan_items.xml directly using history.jsonl + plan.md and run
-    create_plan.py. The DIAGNOSE phase still must end via create_plan.py
-    advancing to EDIT — the task does NOT terminate here. The subagent
-    failed; the goal (a new plan) hasn't.
+Behavior (driven by `state.action` from `diagnose_state`):
+  - DIAGNOSE_READY (artifact valid) → reset diagnose_attempts; emit
+    success status; main agent then runs create_plan.py.
+  - else → increment diagnose_attempts (per plan_version). The new value
+    determines next state:
+      * still NEED_DIAGNOSIS → emit retry context (re-issue Task).
+      * crossed cap → emit manual-planning context. From here on,
+        hook_guard_task blocks further Task calls and hook_guard_bash's
+        DIAGNOSE gate (which checks `state.action == DIAGNOSE_NEED_DIAGNOSIS`)
+        no longer blocks create_plan.py, so the main agent can write
+        plan_items.xml itself and proceed.
 
-This hook is independent of hook_post_bash, which handles create_plan.py /
-pipeline.py / baseline.py post-actions in DIAGNOSE and other phases.
+The DIAGNOSE phase always exits via create_plan.py advancing phase to EDIT
+— manual-planning is a fallback path to that same exit, not a termination.
 """
 import json
 import os
@@ -33,6 +28,7 @@ from phase_machine import (
     DIAGNOSE, DIAGNOSE_ATTEMPTS_CAP, diagnose_artifact_path,
     diagnose_marker, diagnose_state, get_task_dir, read_phase,
     update_progress,
+    DIAGNOSE_READY, DIAGNOSE_MANUAL_FALLBACK, DIAGNOSE_NEED_DIAGNOSIS,
 )
 
 
@@ -69,37 +65,21 @@ def _emit_retry_context(task_dir: str, plan_version: int, reason: str,
 
 def _emit_manual_planning_context(task_dir: str, plan_version: int,
                                   reason: str) -> None:
-    """At cap, tell the agent to write the plan itself and run create_plan.
+    """At cap, tell the agent to switch to manual planning.
 
-    This is the fallback path: the subagent route is exhausted but the
-    DIAGNOSE phase's end goal — a new plan — is unchanged. The artifact
-    gate on create_plan.py is relaxed in hook_guard_bash / hook_post_bash
-    once attempts reach the cap, so the agent is free to skip Task and
-    proceed via the normal plan_items.xml + create_plan.py path.
+    Subagent route is exhausted; DIAGNOSE still needs a new plan. The
+    artifact gate is dropped (state.action == DIAGNOSE_MANUAL_FALLBACK
+    means hook_guard_bash no longer blocks create_plan.py and
+    hook_guard_task blocks further Task calls). Agent proceeds via the
+    normal PLAN/REPLAN flow: write plan_items.xml from history.jsonl +
+    plan.md, then run create_plan.py.
     """
     msg = (
-        f"[AR Phase: DIAGNOSE — manual planning fallback] "
-        f"Subagent invocation failed {DIAGNOSE_ATTEMPTS_CAP} times for "
-        f"plan_version={plan_version}; last reason: {reason}\n"
-        f"\n"
-        f"Stop re-issuing Task — further Task calls are blocked here. "
-        f"The DIAGNOSE phase still requires a NEW plan; produce one "
-        f"yourself:\n"
-        f"  1. Read .ar_state/history.jsonl (focus on the last ~10 rounds, "
-        f"especially FAIL rows — their description fields contain the "
-        f"raw failure signal the subagent would have analyzed).\n"
-        f"  2. Read .ar_state/plan.md to see what's already been tried.\n"
-        f"  3. Write your <items>...</items> XML to "
-        f"$AR_TASK_DIR/.ar_state/plan_items.xml. The plan must contain "
-        f"≥3 items, ≥2 STRUCTURALLY different from the last plan "
-        f"(algorithmic / fusion / memory layout / data movement, NOT "
-        f"parameter tuning).\n"
-        f"  4. Run python .autoresearch/scripts/create_plan.py "
-        f"\"$AR_TASK_DIR\". The artifact gate is relaxed in this state; "
-        f"only create_plan.py's own structural validation applies.\n"
-        f"\n"
-        f"Do NOT Edit kernel.py, do NOT Stop — phase advances to EDIT "
-        f"once create_plan.py validates the new plan."
+        f"[AR Phase: DIAGNOSE — manual planning fallback] Subagent failed "
+        f"{DIAGNOSE_ATTEMPTS_CAP}x for plan_v={plan_version} "
+        f"(last reason: {reason}). Further Task calls are blocked. Build "
+        f"plan_items.xml from history.jsonl + plan.md (same as PLAN/REPLAN "
+        f"flow), then run create_plan.py. Artifact gate is relaxed."
     )
     print(json.dumps({
         "hookSpecificOutput": {
@@ -123,7 +103,7 @@ def main():
     state = diagnose_state(task_dir)
     pv = state.plan_version
 
-    if state.artifact_ok:
+    if state.action == DIAGNOSE_READY:
         # Reset attempts so a future DIAGNOSE round (different
         # plan_version) starts fresh.
         update_progress(task_dir, diagnose_attempts=0,
@@ -134,23 +114,28 @@ def main():
         )
         sys.exit(0)
 
-    # Failure path: increment per-plan-version counter and route to retry
-    # or fallback based on cap.
+    # Failure path: persist incremented counter, then project the new
+    # action that diagnose_state would compute on the next read. Branching
+    # on the projected enum (rather than `new_attempts >= cap`) keeps this
+    # hook's vocabulary aligned with the other hooks.
     new_attempts = state.attempts + 1
     update_progress(task_dir, diagnose_attempts=new_attempts,
                     diagnose_attempts_for_version=pv,
                     last_diagnose_failure_reason=state.artifact_reason)
-
-    if new_attempts >= DIAGNOSE_ATTEMPTS_CAP:
+    next_action = (
+        DIAGNOSE_MANUAL_FALLBACK
+        if new_attempts >= DIAGNOSE_ATTEMPTS_CAP
+        else DIAGNOSE_NEED_DIAGNOSIS
+    )
+    if next_action == DIAGNOSE_MANUAL_FALLBACK:
         emit_status(
             f"[AR] DIAGNOSE subagent exhausted {DIAGNOSE_ATTEMPTS_CAP} "
             f"attempts for plan_version={pv}; switching to manual "
             f"planning fallback. Last reason: {state.artifact_reason}"
         )
         _emit_manual_planning_context(task_dir, pv, state.artifact_reason)
-        sys.exit(0)
-
-    _emit_retry_context(task_dir, pv, state.artifact_reason, new_attempts)
+    else:
+        _emit_retry_context(task_dir, pv, state.artifact_reason, new_attempts)
     sys.exit(0)
 
 

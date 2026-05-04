@@ -37,6 +37,7 @@ from .validators import (
     is_placeholder_file,
     validate_reference, validate_kernel, validate_plan, validate_diagnose,
     DiagnoseState, diagnose_state,
+    DIAGNOSE_NEED_DIAGNOSIS, DIAGNOSE_READY, DIAGNOSE_MANUAL_FALLBACK,
     get_plan_items, parse_plan_text, has_pending_items, get_active_item,
     is_settled_table_header,
     # Internal — re-exported so debug / extension scripts that previously

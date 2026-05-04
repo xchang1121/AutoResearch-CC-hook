@@ -27,6 +27,7 @@ from phase_machine import (
     get_task_dir, touch_heartbeat, check_bash, parse_script_names,
     diagnose_state, parse_invoked_ar_script, pending_settle_path,
     is_single_foreground_ar_invocation,
+    DIAGNOSE_NEED_DIAGNOSIS,
 )
 from settings import hallucinated_scripts
 
@@ -114,7 +115,7 @@ def main():
     # the artifact gate is dropped.
     if phase == DIAGNOSE and invoked == "create_plan.py":
         state = diagnose_state(task_dir)
-        if not state.exhausted and not state.artifact_ok:
+        if state.action == DIAGNOSE_NEED_DIAGNOSIS:
             block_decision(
                 f"[AR] create_plan.py blocked in DIAGNOSE: artifact "
                 f"check failed ({state.artifact_reason}). Issue Task "

@@ -20,6 +20,7 @@ from hook_utils import read_hook_input, block_decision
 from phase_machine import (
     DIAGNOSE, DIAGNOSE_ATTEMPTS_CAP, get_task_dir, read_phase,
     touch_heartbeat, diagnose_state,
+    DIAGNOSE_READY, DIAGNOSE_MANUAL_FALLBACK,
 )
 
 
@@ -49,7 +50,15 @@ def main():
     # that has empirically failed; redirect them to write plan_items.xml
     # directly and run create_plan.py.
     state = diagnose_state(task_dir)
-    if state.exhausted:
+    if state.action == DIAGNOSE_READY:
+        block_decision(
+            f"[AR] DIAGNOSE artifact already validated for plan_version="
+            f"{state.plan_version}. Do not re-issue Task; write "
+            f".ar_state/plan_items.xml from the diagnosis and run "
+            f"create_plan.py."
+        )
+
+    if state.action == DIAGNOSE_MANUAL_FALLBACK:
         block_decision(
             f"[AR] DIAGNOSE subagent already failed "
             f"{DIAGNOSE_ATTEMPTS_CAP} times for plan_version="

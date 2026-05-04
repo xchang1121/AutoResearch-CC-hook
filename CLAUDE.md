@@ -95,8 +95,9 @@ The following invariants are non-negotiable:
      the subagent's prompt asks it to Write a structured artifact at
      `<task_dir>/.ar_state/diagnose_v<plan_version>.md` containing three
      sections (`Root cause` / `Fix directions` / `What to avoid`),
-     citations of the last 3 FAIL rounds by `R<n>`, and the marker line
-     `[AR DIAGNOSE COMPLETE marker_v<plan_version>]`. Then write
+     useful citations of recent FAIL rounds by `R<n>`, and the marker
+     line `[AR DIAGNOSE COMPLETE marker_v<plan_version>]`. The host
+     gates on file presence, marker, and section names; then write
      `plan_items.xml` and run `create_plan.py`.
    - **Fallback (manual planning).** After 5 failed Task attempts on the
      same `plan_version`, the artifact gate is relaxed: write

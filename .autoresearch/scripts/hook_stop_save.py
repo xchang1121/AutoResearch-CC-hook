@@ -19,6 +19,7 @@ from hook_utils import read_hook_input, emit_status
 from phase_machine import (
     DIAGNOSE, DIAGNOSE_ATTEMPTS_CAP, diagnose_state, get_task_dir,
     load_progress, read_phase, update_progress,
+    DIAGNOSE_READY, DIAGNOSE_MANUAL_FALLBACK,
 )
 
 
@@ -48,21 +49,28 @@ def main():
     # Either way Stop is illegal here.
     if read_phase(task_dir) == DIAGNOSE:
         state = diagnose_state(task_dir, progress=progress)
-        if not state.exhausted:
+        if state.action == DIAGNOSE_READY:
             _block_stop_with_reason(
-                f"[AR] Cannot Stop: phase=DIAGNOSE requires a new plan. "
-                f"Re-issue Task with subagent_type='ar-diagnosis'; only "
-                f"create_plan.py advancing the phase out of DIAGNOSE "
-                f"makes Stop legal. Attempts so far: "
-                f"{state.attempts}/{DIAGNOSE_ATTEMPTS_CAP}."
+                f"[AR] Cannot Stop: DIAGNOSE artifact is ready, but the "
+                f"phase still needs a new plan. Write plan_items.xml from "
+                f"diagnose_v{state.plan_version}.md, then run "
+                f"create_plan.py."
             )
-        else:
+        elif state.action == DIAGNOSE_MANUAL_FALLBACK:
             _block_stop_with_reason(
                 f"[AR] Cannot Stop: phase=DIAGNOSE requires a new plan. "
                 f"Subagent attempts exhausted "
                 f"({state.attempts}/{DIAGNOSE_ATTEMPTS_CAP}); switch to "
                 f"manual planning — Write plan_items.xml directly using "
                 f"history.jsonl + plan.md, then run create_plan.py."
+            )
+        else:
+            _block_stop_with_reason(
+                f"[AR] Cannot Stop: phase=DIAGNOSE requires a new plan. "
+                f"Re-issue Task with subagent_type='ar-diagnosis'; only "
+                f"create_plan.py advancing the phase out of DIAGNOSE "
+                f"makes Stop legal. Attempts so far: "
+                f"{state.attempts}/{DIAGNOSE_ATTEMPTS_CAP}."
             )
 
     update_progress(
