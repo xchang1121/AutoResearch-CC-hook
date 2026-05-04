@@ -28,7 +28,7 @@ from phase_machine import (
     DIAGNOSE, DIAGNOSE_ATTEMPTS_CAP, diagnose_artifact_path,
     diagnose_marker, diagnose_state, get_task_dir, read_phase,
     update_progress,
-    DIAGNOSE_READY, DIAGNOSE_MANUAL_FALLBACK, DIAGNOSE_NEED_DIAGNOSIS,
+    DIAGNOSE_READY,
 )
 
 
@@ -114,20 +114,15 @@ def main():
         )
         sys.exit(0)
 
-    # Failure path: persist incremented counter, then project the new
-    # action that diagnose_state would compute on the next read. Branching
-    # on the projected enum (rather than `new_attempts >= cap`) keeps this
-    # hook's vocabulary aligned with the other hooks.
+    # Failure path: persist incremented counter; branch on whether the
+    # new attempt count crossed the cap. (Earlier code also computed a
+    # `next_action` enum here, but it was just a rename of the same
+    # comparison — drop the indirection.)
     new_attempts = state.attempts + 1
     update_progress(task_dir, diagnose_attempts=new_attempts,
                     diagnose_attempts_for_version=pv,
                     last_diagnose_failure_reason=state.artifact_reason)
-    next_action = (
-        DIAGNOSE_MANUAL_FALLBACK
-        if new_attempts >= DIAGNOSE_ATTEMPTS_CAP
-        else DIAGNOSE_NEED_DIAGNOSIS
-    )
-    if next_action == DIAGNOSE_MANUAL_FALLBACK:
+    if new_attempts >= DIAGNOSE_ATTEMPTS_CAP:
         emit_status(
             f"[AR] DIAGNOSE subagent exhausted {DIAGNOSE_ATTEMPTS_CAP} "
             f"attempts for plan_version={pv}; switching to manual "

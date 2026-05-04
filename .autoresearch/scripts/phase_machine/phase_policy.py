@@ -458,7 +458,8 @@ def check_bash(phase: str, command: str) -> tuple:
 _DIAGNOSE_ARTIFACT_RE = re.compile(r"^\.ar_state/diagnose_v\d+\.md$")
 
 
-def check_edit(phase: str, rel_path: str, editable_files) -> tuple:
+def check_edit(phase: str, rel_path: str, editable_files,
+               *, diagnose_action: Optional[str] = None) -> tuple:
     """Return (allowed: bool, reason: str) for an Edit/Write on `rel_path`
     (task-dir-relative, forward-slash form) at `phase`.
 
@@ -467,7 +468,12 @@ def check_edit(phase: str, rel_path: str, editable_files) -> tuple:
     maintained — letting Claude Edit them would let the model skip phases,
     rewrite counters, or forge history. Three paths are agent-writable:
       - .ar_state/plan_items.xml: the XML input file /autoresearch hands to
-        create_plan.py (see .claude/commands/autoresearch.md).
+        create_plan.py. In DIAGNOSE this write is gated on
+        `diagnose_action` so the agent can't pre-stage stale plan input
+        before the subagent has produced (or the cap has retired) the
+        diagnosis artifact. Caller hooks are expected to compute the
+        action via `diagnose_state(...).action` and pass it; if not
+        provided, the gate is open (matches pre-DIAGNOSE behaviour).
       - .ar_state/ranking.md: the FINISH-phase summary (phase-gated).
       - .ar_state/diagnose_v<N>.md: the DIAGNOSE-phase artifact. The
         ar-diagnosis subagent is the intended writer (per the prompt
@@ -478,6 +484,20 @@ def check_edit(phase: str, rel_path: str, editable_files) -> tuple:
     """
     if rel_path.startswith(".ar_state/"):
         if rel_path == f".ar_state/{PLAN_ITEMS_FILE}":
+            # In DIAGNOSE the write is gated on the three-state action
+            # (see validators.diagnose_state). NEED_DIAGNOSIS = subagent
+            # hasn't validated yet; allowing plan_items.xml here lets the
+            # agent skip the diagnosis. READY / MANUAL_FALLBACK both
+            # legitimately want the plan input written.
+            if (phase == DIAGNOSE
+                    and diagnose_action == "NEED_DIAGNOSIS"):
+                return False, (
+                    f".ar_state/{PLAN_ITEMS_FILE} is locked while DIAGNOSE "
+                    f"awaits a valid diagnosis artifact. Issue Task with "
+                    f"subagent_type='ar-diagnosis' first; once the artifact "
+                    f"validates (or the attempt cap relaxes the gate) "
+                    f"plan_items.xml becomes writable."
+                )
             return True, ""
         if rel_path == ".ar_state/ranking.md":
             if phase == FINISH:

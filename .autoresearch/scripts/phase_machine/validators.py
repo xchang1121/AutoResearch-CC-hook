@@ -387,7 +387,8 @@ def validate_diagnose(task_dir: str, plan_version: int) -> tuple:
     marker = diagnose_marker(plan_version)
     if marker not in body:
         return False, (f"missing required marker line {marker!r} — the "
-                       f"subagent must end the file with this exact string")
+                       f"subagent must include this exact string in the "
+                       f"artifact (recommended on its own line near the end)")
 
     missing_sections = [s for s in _DIAGNOSE_REQUIRED_SECTIONS if s not in body]
     if missing_sections:

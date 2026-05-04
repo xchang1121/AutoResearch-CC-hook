@@ -20,7 +20,7 @@ Workflow:
 2. Read `kernel.py` and `reference.py` — compare structure; the gap to baseline is your target.
 3. Read `plan.md` — see what's already been tried so you don't repeat it.
 4. If a `skills/<dsl>/` tree was named, Glob it and Read 1–3 SKILL.md files whose frontmatter description / keywords match a candidate fix direction.
-5. **Write your report** to the exact path given by the parent. The file's body must contain three sections AND end with the marker. Do not paraphrase the section headings; do not omit the marker.
+5. **Write your report** to the exact path given by the parent. The file's body must contain the three section headings and the marker line — the host validates presence, not position, but the marker on its own line near the end is the recommended style. Do not paraphrase the section headings; do not omit the marker.
 
 ## Required artifact structure
 
