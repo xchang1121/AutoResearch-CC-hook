@@ -76,18 +76,20 @@ The following invariants are non-negotiable:
    and rewrite — don't retry the same XML payload.
 8. **TodoWrite sync is mandatory.** When a hook emits `additionalContext`
    with a TodoWrite payload, call TodoWrite with it verbatim next turn.
-9. **AR scripts run as direct top-level Bash invocations only.** Any
-   command mentioning `.autoresearch/scripts/` must be a single
-   foreground call:
-   `python .autoresearch/scripts/<name>.py <task_dir> [args...]`
+9. **AR scripts run as direct top-level Bash invocations only.**
+   To *invoke* an AR script the command must be a single foreground
+   call: `python .autoresearch/scripts/<name>.py <task_dir> [args...]`
    (env-var prefixes, Python flags, and FD redirection like `> log
-   2>&1` are fine). Wrappers (`nohup`, `bash -lc`, `sh -c`,
-   subshells, `$(...)`), chains (`&&`, `||`, `;`, `|`), and
-   backgrounding (`&`) are unsupported and rejected by
-   `hook_guard_bash`. Run multiple AR scripts as separate Bash
-   tool calls; use the Read tool — not `cat` — to inspect script
-   source. This is an LLM-workflow guardrail and a deliberately
-   small grammar, not a Bash sandbox.
+   2>&1` are fine). Wrappers (`nohup`, `bash -lc`, `sh -c`, subshells,
+   `$(...)`), chains (`&&`, `||`, `;`, `|`), and backgrounding (`&`)
+   are unsupported and rejected by `hook_guard_bash`. Run multiple
+   AR scripts as separate Bash tool calls.
+
+   *Reading* AR scripts (e.g. `cat .autoresearch/scripts/X.py`,
+   `git diff -- .autoresearch/scripts/X.py`) is allowed because the
+   classifier sees those heads as read-only and the args don't
+   execute. The Read tool is still preferred — it's the idiomatic
+   way to inspect file contents in Claude Code.
 10. **DIAGNOSE phase ends with a new plan.** Two paths to that end:
    - **Preferred (subagent route).** Call `Task(subagent_type='ar-diagnosis')`;
      the subagent's prompt asks it to Write a structured artifact at

@@ -12,7 +12,6 @@ Without --watch: print once and exit.
 import argparse
 import json
 import os
-import re
 import sys
 import time
 
@@ -344,35 +343,23 @@ def render(task_dir, history_offset=0, history_window=None):
     lines.append(f"  {BOLD}  #   │ Status    │ Description{RESET}")
     lines.append(f"  {BOLD}{'─' * divider_width}{RESET}")
 
-    plan_lines = plan_text.strip().split("\n")
-    for pl in plan_lines:
-        pl = pl.strip()
-        if not pl.startswith("- ["):
-            continue
-
-        # Parse item: - [x] **p1** [KEEP, metric=...]: description
-        #             - [ ] **p2** (ACTIVE): description
-        #             - [ ] **p3**: description
-        m = re.match(r'-\s*\[([ x])\]\s*\*\*(\w+)\*\*\s*(.*)', pl)
-        if not m:
-            continue
-        done = m.group(1) == 'x'
-        item_id = m.group(2)
-        rest = m.group(3).strip()
-
-        is_active = "(ACTIVE)" in rest
-        rest = rest.replace("(ACTIVE)", "").strip()
-
-        # Extract outcome tag like [KEEP, metric=1294.77] or [DISCARD].
+    # Plan parsing goes through phase_machine.parse_plan_text — single
+    # source of truth shared with hook validators. The dashboard's old
+    # in-line regex drifted out of sync the moment plan.md format
+    # changed; use the canonical parser instead.
+    for item in _pm.parse_plan_text(plan_text):
+        item_id = item["id"]
+        is_active = item["active"]
+        tag = item["tag"]
+        # tag carries the leading bracket content like "KEEP, metric=..."
+        # or "DISCARD" or "FAIL" — collapse to the keyword for display.
         outcome = ""
-        om = re.match(r'\[(KEEP|DISCARD|FAIL)[^\]]*\]:?\s*(.*)', rest)
-        if om:
-            outcome = om.group(1)
-            desc = om.group(2).lstrip(": ").strip()
-        else:
-            desc = rest.lstrip(": ").strip()
+        for kw in ("KEEP", "DISCARD", "FAIL"):
+            if tag.startswith(kw):
+                outcome = kw
+                break
 
-        desc = _fit(desc, plan_desc_avail)
+        desc = _fit(item["description"], plan_desc_avail)
 
         if is_active:
             status_str = f"{CYAN}> ACTIVE {RESET}"

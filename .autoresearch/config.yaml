@@ -5,7 +5,10 @@
 # (local: npu-smi / nvidia-smi / uname; remote: worker /api/v1/status).
 # None of those need to appear in this file.
 
-# When /autoresearch is invoked without --dsl, scaffold uses this key.
+# Fallback DSL when scaffold.py is invoked directly without --dsl
+# (e.g. reconstructing an old task from task.yaml). The /autoresearch
+# slash command no longer uses this — parse_args.py rejects missing
+# --dsl up front so the LLM never silently picks a DSL.
 default_dsl: triton_ascend
 
 # Modules that live only on the remote worker (NPU / GPU rig). Static code

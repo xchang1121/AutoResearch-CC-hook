@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -43,10 +44,12 @@ CRITICAL rules — read carefully, this session is non-interactive:
 
 1. After scaffold prints "Task directory created: <path>", your VERY FIRST
    subsequent action MUST be exactly:
-       export AR_TASK_DIR=<that path>
-   Without this, .autoresearch/.active_task is never written, the PostToolUse
-   Edit hook is gated off, validate_kernel never runs, and phase stays stuck
-   forever. THIS IS THE SINGLE MOST IMPORTANT STEP.
+       export AR_TASK_DIR="<that path>"
+   The double quotes are required — paths with spaces or backslashes
+   (e.g. C:\\Users\\Foo Bar\\...) get truncated otherwise. Without this
+   step .autoresearch/.active_task is never written, the PostToolUse
+   Edit hook is gated off, validate_kernel never runs, and phase stays
+   stuck forever. THIS IS THE SINGLE MOST IMPORTANT STEP.
 
 2. {mode_block}
 
@@ -65,10 +68,11 @@ CRITICAL rules — read carefully, this session is non-interactive:
    max-rounds, or truly stuck), print exactly one line in this format and
    then stop:
 
-       AUTORESEARCH_RESULT task_dir=<absolute path> phase=<phase> status=<ok|stuck>
+       AUTORESEARCH_RESULT task_dir="<absolute path>" phase=<phase> status=<ok|stuck>
 
-   status=ok if phase==FINISH, status=stuck otherwise. This line is parsed
-   by the orchestrator — do not deviate from the format.
+   status=ok if phase==FINISH, status=stuck otherwise. The task_dir
+   value MUST be wrapped in double quotes so that paths containing
+   spaces survive the orchestrator's parser.
 """
 
 MODE_BLOCK = {
@@ -90,8 +94,13 @@ MODE_BLOCK = {
     ),
 }
 
+# task_dir may be quoted ("...") so paths with spaces survive parsing;
+# bare \S+ form is also accepted for backward compatibility with existing
+# in-flight sessions. phase / status are simple identifiers and never
+# contain whitespace or quotes.
 MARKER_RE = re.compile(
-    r"AUTORESEARCH_RESULT\s+task_dir=(\S+)\s+phase=(\S+)\s+status=(\S+)"
+    r'AUTORESEARCH_RESULT\s+task_dir=(?:"([^"]*)"|(\S+))'
+    r'\s+phase=(\S+)\s+status=(\S+)'
 )
 
 
@@ -101,7 +110,8 @@ def parse_marker(text: str) -> tuple[str, str, str] | None:
     matches = MARKER_RE.findall(text)
     if not matches:
         return None
-    return matches[-1]
+    quoted, bare, phase, status = matches[-1]
+    return (quoted or bare, phase, status)
 
 
 def health_check_worker(worker_url: str) -> None:
@@ -201,12 +211,18 @@ def recover_stale_running(progress: dict) -> int:
 
 def build_prompt(case: dict, mode: str, dsl: str, hw_arg: str,
                  max_rounds: int, eval_timeout: int) -> str:
-    kernel_arg = f" --kernel {case['kernel']}" if case.get("kernel") else ""
+    """Quote every value-bearing flag with shlex.quote so paths with
+    spaces (e.g. workspace under `C:\\Users\\Foo Bar\\...`, or
+    `--output-dir "my tasks"`) reach /autoresearch as one argv each.
+    `hw_arg` is constructed by the caller from already-validated CLI
+    flags — pass through unchanged."""
+    kernel_arg = (f" --kernel {shlex.quote(case['kernel'])}"
+                  if case.get("kernel") else "")
     return PROMPT_TEMPLATE.format(
-        ref=case["ref"],
+        ref=shlex.quote(case["ref"]),
         kernel_arg=kernel_arg,
-        op=case["op_name"],
-        dsl=dsl,
+        op=shlex.quote(case["op_name"]),
+        dsl=shlex.quote(dsl),
         hw=hw_arg,
         rounds=max_rounds,
         timeout=eval_timeout,

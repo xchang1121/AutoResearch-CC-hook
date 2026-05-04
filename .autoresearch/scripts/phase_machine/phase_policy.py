@@ -267,10 +267,16 @@ def classify(command: str) -> CommandShape:
          arg branch nor the READONLY segment grammar has to defend
          individually. `$VAR` / `${VAR}` (variable expansion) is fine.
       2. Canonical AR regex on the normalized command.
-      3. AR-mention non-canonical: malformed AR → OTHER (check_bash
-         rejects everywhere). Stronger signal than READONLY so
-         `echo .autoresearch/scripts/foo.py` doesn't sneak through.
-      4. Per-segment READONLY check.
+      3. Per-segment READONLY check. Read-only heads (cat/git diff/...)
+         don't execute their args, so AR script paths in args
+         (`cat .autoresearch/scripts/X.py`,
+         `git diff -- .autoresearch/scripts/X.py`) are pure references,
+         not invocations — safe to allow. Pipes / chains / redirects
+         to non-readonly heads still fail the grammar so smuggle attempts
+         like `cat .../X.py | bash` are rejected at the second segment.
+      4. AR-mention non-canonical and not readonly → malformed AR shape
+         (wrappers like `nohup python .../X.py &`, `bash -lc "..."`, etc.).
+         Returns OTHER; check_bash rejects in every phase.
       5. Else OTHER.
     """
     if "$(" in command or "`" in command:
@@ -284,12 +290,12 @@ def classify(command: str) -> CommandShape:
         klass = "LIFECYCLE" if name in _LIFECYCLE_SCRIPTS else "AR"
         return CommandShape(klass, name)
 
-    if ".autoresearch/scripts/" in normalized:
-        return CommandShape("OTHER")  # malformed AR shape
-
     segments = [s for s in _split_chain(command) if s.strip()]
     if segments and all(_is_readonly_segment(s) for s in segments):
         return CommandShape("READONLY")
+
+    if ".autoresearch/scripts/" in normalized:
+        return CommandShape("OTHER")  # malformed AR shape
 
     return CommandShape("OTHER")
 
@@ -331,10 +337,14 @@ def is_single_foreground_ar_invocation(command: str, *, script: str) -> tuple:
 
 # === LAYER 2: PHASE TABLE ==============================================
 
-# Subprocess-only scripts: never user-callable. Caught by global ban
-# substring check before classification, so the agent gets the specific
-# "subprocess-only (invoked by pipeline.py)" reason.
-_GLOBAL_BASH_BANS = {
+# Subprocess-only AR scripts: never user-callable. The check fires
+# only when classify() returns AR(name) with name in this set — i.e.,
+# someone tried `python .autoresearch/scripts/<x>.py task` directly.
+# An earlier version did substring-banning on the raw command, but
+# that falsely blocked harmless mentions like `echo quick_check.py`
+# or `git diff -- .autoresearch/scripts/settle.py` (READONLY shapes
+# that mention the name in args, not invocations).
+_SUBPROCESS_ONLY_AR_SCRIPTS = {
     "eval_wrapper.py":    "subprocess-only (invoked by pipeline.py)",
     "keep_or_discard.py": "subprocess-only (invoked by pipeline.py)",
     "quick_check.py":     "subprocess-only (invoked by pipeline.py)",
@@ -406,19 +416,19 @@ def check_bash(phase: str, command: str) -> tuple:
     """Return (allowed: bool, reason: str) for a Bash command at `phase`.
 
     Three layers, in order:
-      1. Global string bans (subprocess-only scripts, `git commit`).
-         Substring match for clear, specific error messages.
+      1. `git commit` substring ban (must never run raw, even inside
+         a permissive phase).
       2. classify() — pure command-shape decision.
-      3. Phase table lookup — (phase, class) → allowed/blocked.
+      3. Phase table lookup — (phase, class) → allowed/blocked. The
+         subprocess-only AR-script check fires only when classify
+         returns AR(name) for one of those names — substring banning
+         was retired because it falsely blocked READONLY mentions.
 
     AR-mention-but-not-canonical is rejected in EVERY phase to keep
     the canonical-form contract crisp; without that, permissive phases
     would accept shapes like `nohup python .autoresearch/scripts/X.py
     &` as 'ad-hoc shell'.
     """
-    for ban, why in _GLOBAL_BASH_BANS.items():
-        if ban in command:
-            return False, f"'{ban}' — {why}"
     if "git commit" in command:
         return False, ("manual 'git commit' forbidden — commits are "
                        "produced by pipeline.py via keep_or_discard")
@@ -432,6 +442,9 @@ def check_bash(phase: str, command: str) -> tuple:
         return True, ""
 
     if shape.klass == "AR":
+        if shape.name in _SUBPROCESS_ONLY_AR_SCRIPTS:
+            return False, (f"'{shape.name}' — "
+                           f"{_SUBPROCESS_ONLY_AR_SCRIPTS[shape.name]}")
         allowed = _AR_ALLOWED_BY_PHASE.get(phase)
         if allowed is None:
             return False, f"unknown phase {phase!r}"

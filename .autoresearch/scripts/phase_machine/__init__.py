@@ -58,7 +58,7 @@ from .validators import (
     is_placeholder_file,
     validate_reference, validate_kernel, validate_plan, validate_diagnose,
     DiagnoseState, diagnose_state,
-    get_plan_items, has_pending_items, get_active_item,
+    get_plan_items, parse_plan_text, has_pending_items, get_active_item,
     # Internal — re-exported so debug / extension scripts that previously
     # reached into phase_machine can still find them at the old name.
     _PLAN_ITEM_RE, _PLAN_TAG_RE, _REF_RUNCHECK_SCRIPT,
@@ -76,7 +76,7 @@ from .phase_policy import (
     # reference them. Underscore-prefixed for a "do not mutate at
     # runtime" hint rather than for true privacy.
     _AR_ALLOWED_BY_PHASE, _OTHER_ALLOWED_BY_PHASE, _LIFECYCLE_SCRIPTS,
-    _EDIT_RULES, _GLOBAL_BASH_BANS,
+    _EDIT_RULES, _SUBPROCESS_ONLY_AR_SCRIPTS,
     _CANONICAL_AR_RE,
 )
 from .guidance import (

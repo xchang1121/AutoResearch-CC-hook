@@ -20,7 +20,7 @@ so they don't need their own phase constants or branches here.
 """
 import json
 import os
-import re
+import shlex
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -38,10 +38,20 @@ from phase_machine import (
 
 
 def _activation_target(command: str) -> str | None:
+    r"""Extract the path from `export AR_TASK_DIR=<path>`. Uses shlex
+    so quoted values with spaces (`AR_TASK_DIR="/path with space"`)
+    survive — the earlier `[^"\';\s&]+` regex truncated at the first
+    space."""
     if "AR_TASK_DIR=" not in command:
         return None
-    m = re.search(r'AR_TASK_DIR=["\']?([^"\';\s&]+)', command)
-    return m.group(1) if m else None
+    try:
+        tokens = shlex.split(command, posix=True, comments=False)
+    except ValueError:
+        return None
+    for tok in tokens:
+        if tok.startswith("AR_TASK_DIR="):
+            return tok[len("AR_TASK_DIR="):] or None
+    return None
 
 
 # Script-invocation parsing lives in phase_machine.parse_invoked_ar_script,

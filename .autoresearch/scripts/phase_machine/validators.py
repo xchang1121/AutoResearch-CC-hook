@@ -257,17 +257,16 @@ _PLAN_ITEM_RE = re.compile(r'\s*-\s*\[([ x])\]\s*\*\*(\w+)\*\*\s*(.*)')
 _PLAN_TAG_RE = re.compile(r'^\[([^\]]*)\]:?\s*(.*)')
 
 
-def get_plan_items(task_dir: str, include_meta: bool = False) -> list:
-    """Canonical plan.md parser. Returns [{id, description, done, active, tag}, ...].
+def parse_plan_text(text: str, include_meta: bool = False) -> list:
+    """Canonical plan.md parser, on already-loaded text. Returns
+    [{id, description, done, active, tag}, ...]. With include_meta=True
+    also captures the `- rationale:` sub-line.
 
-    Every plan reader in the codebase must go through this function — no ad-hoc
-    regex scans. With include_meta=True, also captures the `- rationale:`
-    sub-line (used by validate_plan).
-    """
-    if not os.path.exists(plan_path(task_dir)):
-        return []
-    with open(plan_path(task_dir), "r", encoding="utf-8") as f:
-        lines = f.read().split("\n")
+    Every plan reader in the codebase must go through this function or
+    `get_plan_items` — no ad-hoc regex scans. The dashboard's display
+    layer used to keep its own copy of these regexes; that drifted and
+    was retired."""
+    lines = text.split("\n")
 
     out = []
     i = 0
@@ -309,6 +308,16 @@ def get_plan_items(task_dir: str, include_meta: bool = False) -> list:
         out.append(item)
         i += 1
     return out
+
+
+def get_plan_items(task_dir: str, include_meta: bool = False) -> list:
+    """Canonical plan.md parser by task_dir. Thin wrapper over
+    `parse_plan_text` so file-loading lives in one place."""
+    if not os.path.exists(plan_path(task_dir)):
+        return []
+    with open(plan_path(task_dir), "r", encoding="utf-8") as f:
+        text = f.read()
+    return parse_plan_text(text, include_meta=include_meta)
 
 
 def has_pending_items(task_dir: str) -> bool:
