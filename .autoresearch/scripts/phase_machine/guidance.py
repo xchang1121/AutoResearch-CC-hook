@@ -24,6 +24,61 @@ from .state_store import (
 from .validators import get_active_item, diagnose_state
 
 
+def _format_fail_record(rec: dict) -> str:
+    """Compact per-FAIL block for the DIAGNOSE subagent prompt.
+
+    Surfaces what kept-or-discard now persists per FAIL:
+    `failure_signals` (kind + extracted params + hint) and a trimmed
+    `raw_output_tail` when the pattern matchers found nothing. The
+    earlier prompt only listed `R<n>: <description>`, so the subagent
+    had to Read history.jsonl to learn what actually broke — which
+    didn't help anyway because the structured signals weren't in
+    history before this change.
+    """
+    rnd = rec.get("round", "?")
+    desc = (rec.get("description") or "")[:80]
+    out = [f"  R{rnd}: {desc}"]
+
+    sig = rec.get("failure_signals") or {}
+    signals = sig.get("signals") or []
+    primary = sig.get("primary")
+    python_error = sig.get("python_error")
+
+    for s in signals[:2]:  # at most two distinct kinds, the rest is noise
+        kind = s.get("kind", "?")
+        params = ", ".join(
+            f"{k}={v}"
+            for k, v in s.items()
+            if k not in ("kind", "excerpt", "hint") and v is not None
+        )
+        marker = f"      → {kind}"
+        if params:
+            marker += f"  [{params}]"
+        out.append(marker)
+        if s.get("hint"):
+            out.append(f"        hint: {s['hint']}")
+    if python_error:
+        out.append(f"      python_error: {python_error[:200]}")
+    if not signals and not python_error:
+        # Legacy FAIL row (recorded before failure_signals were
+        # persisted) or one whose log matched no pattern. Surface the
+        # raw error message and a trimmed tail if either is available.
+        err = (rec.get("error") or "").strip()
+        if err and "verify failed (kernel broken)" not in err:
+            out.append(f"      error: {err[:160]}")
+        tail = (rec.get("raw_output_tail") or "").strip()
+        if tail:
+            # Strip noisy whitespace-only lines from the tail head, keep
+            # the last couple of lines — that's where Python tracebacks
+            # and ACL runtime errors land.
+            keep = [l for l in tail.splitlines()[-4:] if l.strip()]
+            if keep:
+                out.append("      tail:")
+                for line in keep:
+                    out.append(f"        {line[:160]}")
+    return "\n".join(out)
+
+
 # Shared plan-item scaffolding shown in PLAN / DIAGNOSE / REPLAN guidance.
 # The example is deliberately a short SENTENCE (not a snake_case identifier) —
 # dashboards surface `desc` directly in the history and plan tables, so
@@ -292,35 +347,36 @@ def get_guidance(task_dir: str) -> str:
         # subagent has it without spending a tool call re-reading
         # history.jsonl. The full file stays in the read list for deeper
         # digs (full traces / older rounds).
+        # Single pass through history.jsonl: build both the high-level
+        # rhythm (last 5 records, any decision) and the FAIL detail block
+        # (last 3 FAILs with structured failure_signals, courtesy of
+        # keep_or_discard which now persists them per FAIL).
         hpath = history_path(task_dir)
-        fail_summary = ""
+        recent_summary = ""
+        fail_details = ""
         last_3_fail_rounds = []
         if os.path.exists(hpath):
+            all_recs = []
             with open(hpath, "r") as f:
-                lines = [l.strip() for l in f if l.strip()]
-            recent = []
-            for l in lines[-5:]:
-                try:
-                    recent.append(json.loads(l))
-                except Exception:
-                    pass
-            for rec in recent:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        all_recs.append(json.loads(line))
+                    except Exception:
+                        continue
+            for rec in all_recs[-5:]:
                 _r = rec.get("round")
                 _r = "?" if _r is None else _r
-                fail_summary += f"  R{_r}: {rec.get('decision','?')} — {rec.get('description','')[:60]}\n"
-            # Pull last 3 FAILs across the WHOLE history (not just last 5
-            # records) — these are the rounds the subagent must reference
-            # by R<n> token.
-            all_recs = []
-            for l in lines:
-                try:
-                    all_recs.append(json.loads(l))
-                except Exception:
-                    pass
-            last_3_fail_rounds = [
-                r.get("round") for r in all_recs
+                recent_summary += f"  R{_r}: {rec.get('decision','?')} — {rec.get('description','')[:60]}\n"
+            last_3_fails = [
+                r for r in all_recs
                 if r.get("decision") == "FAIL" and r.get("round") is not None
             ][-3:]
+            last_3_fail_rounds = [r["round"] for r in last_3_fails]
+            if last_3_fails:
+                fail_details = "\n".join(_format_fail_record(r) for r in last_3_fails) + "\n"
 
         # Compact metric snapshot — saves the subagent from reading
         # history.jsonl just to answer "how big a delta do we need?".
@@ -391,14 +447,27 @@ def get_guidance(task_dir: str) -> str:
         # Pre-baked subagent prompt. Parent passes this verbatim to the Agent
         # tool so the subagent doesn't improvise (an earlier open-ended brief
         # sent it grepping git log for 100+ tool calls before timing out).
+        #
+        # Two-section history view: the recent-5 block gives rhythm
+        # (KEEP/DISCARD/FAIL pattern), the FAIL-detail block gives the
+        # structured signals (UB overflow / aivec trap / OOM / correctness
+        # mismatch + hint) that root-cause analysis needs. Before this,
+        # the subagent only saw round + 60-char description per FAIL and
+        # had to guess which Ascend constraint was violated.
+        fail_details_block = (
+            f"Last 3 FAILs (cite each by R<n> in your Root cause):\n"
+            f"{fail_details}\n"
+            if fail_details
+            else "Last 3 FAILs: (none yet — cite any FAILs you uncover in history.jsonl)\n\n"
+        )
         subagent_prompt = (
             f"Diagnose why the current optimization rounds are failing, then "
             f"Write a structured report to a fixed path.\n\n"
             f"Target: dsl={dsl} backend={backend} arch={arch}{metric_line}\n"
             f"plan_version={plan_version}\n\n"
-            f"Recent rounds (pre-baked from history.jsonl — read the file "
-            f"itself only if you need full traces / older rounds):\n"
-            f"{fail_summary or '  (none settled yet)'}\n"
+            f"Recent rounds (last 5 from history.jsonl):\n"
+            f"{recent_summary or '  (none settled yet)'}\n"
+            f"{fail_details_block}"
             f"Read these task files for context:\n"
             f"  - {task_dir}/reference.py\n"
             f"  - {task_dir}/{editable_list}\n"

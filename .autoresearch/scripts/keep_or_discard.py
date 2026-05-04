@@ -124,7 +124,7 @@ def main():
     progress["eval_rounds"] = round_num
     save_progress(task_dir, progress)
 
-    append_history(task_dir, {
+    hist_record = {
         "round": round_num,
         "plan_item": args.plan_item,
         "description": args.description,
@@ -133,7 +133,21 @@ def main():
         "correctness": eval_result.correctness,
         "error": eval_result.error,
         "commit": commit_hash,
-    })
+    }
+    # FAIL rows carry the structured failure context so DIAGNOSE has
+    # something concrete to reason about. KEEP/DISCARD passed correctness
+    # so their signals dict is empty noise — skip to keep history.jsonl
+    # slim. raw_output_tail is truncated to 1500 chars; the actionable
+    # detail is in `failure_signals`, the tail is just there for FAILs
+    # whose pattern wasn't matched.
+    if decision == "FAIL":
+        sig = eval_data.get("failure_signals")
+        if isinstance(sig, dict) and (sig.get("primary") or sig.get("python_error") or sig.get("signals")):
+            hist_record["failure_signals"] = sig
+        tail = (eval_data.get("raw_output_tail") or "").strip()
+        if tail:
+            hist_record["raw_output_tail"] = tail[-1500:]
+    append_history(task_dir, hist_record)
 
     output = {
         "decision": decision,
