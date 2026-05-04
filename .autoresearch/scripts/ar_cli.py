@@ -263,6 +263,11 @@ def _worker_status(args: argparse.Namespace) -> int:
 
 def _cmd_worker(args: argparse.Namespace) -> int:
     # --start / --stop / --status are mutually exclusive; argparse enforces it.
+    # `--host` default is action-dependent: bind on 0.0.0.0 for --start,
+    # connect to 127.0.0.1 for --stop/--status (0.0.0.0 is bind-only and
+    # cannot be the target of an outbound TCP connect).
+    if args.host is None:
+        args.host = "0.0.0.0" if args.start else "127.0.0.1"
     if args.start:
         return _worker_start(args)
     if args.stop:
@@ -300,9 +305,10 @@ def _add_worker_subcommand(sub: argparse._SubParsersAction) -> None:
                         "(default: ascend910b4).")
     p.add_argument("--devices", default="0",
                    help="Comma-separated device IDs, e.g. '2,5' (default: 0).")
-    p.add_argument("--host", default="0.0.0.0",
-                   help="Bind / probe address. 0.0.0.0 by default for --start "
-                        "(all interfaces); 127.0.0.1 for --status by default.")
+    p.add_argument("--host", default=None,
+                   help="Bind / probe address. Defaults to 0.0.0.0 for "
+                        "--start (all interfaces) and 127.0.0.1 for "
+                        "--status / --stop (loopback connect).")
     p.add_argument("--port", type=int, default=9001,
                    help="TCP port (default: 9001).")
     p.add_argument("--bg", action="store_true",

@@ -5,7 +5,8 @@ Eval wrapper for Claude Code autoresearch.
 Zero external dependency — uses local task_config.py for YAML parsing and eval execution.
 
 Usage:
-    python .autoresearch/scripts/eval_wrapper.py <task_dir> [--device-id N] [--worker-url URL,...]
+    python .autoresearch/scripts/eval_wrapper.py <task_dir> [--device-id N] [--worker-url URL[,URL,...]]
+                                                                              ^ comma-separated; first reachable wins
 
 Output (last line of stdout):
     {"correctness": true, "metrics": {"latency_us": 145.3}, "error": null}

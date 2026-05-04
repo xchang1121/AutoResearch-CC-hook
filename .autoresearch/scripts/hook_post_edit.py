@@ -31,6 +31,45 @@ def _same_path(a: str, b: str) -> bool:
 _WRITE_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 
 
+def _seed_and_advance(task_dir: str, current_phase: str, kind: str,
+                      validator, files_to_commit, next_phase: str) -> bool:
+    """Validate, git-commit the seed, then advance phase.
+
+    `kind` is the human-readable file label ("reference.py" / "kernel.py")
+    used in the status messages; `validator` is the validate_* function;
+    `files_to_commit` is the list passed to git; `next_phase` is the phase
+    to write on success. Returns True iff phase advanced; False (and
+    emit_status already called) otherwise.
+    """
+    ok, err = validator(task_dir)
+    if not ok:
+        emit_status(
+            f"[AR] {kind} invalid — phase stays at {current_phase}.\n"
+            f"     {err}\n"
+            f"     Re-Edit {kind} to fix; downstream phases will not "
+            f"advance until it passes."
+        )
+        return False
+    commit_ok, info = commit_in_task(
+        task_dir, files_to_commit,
+        f"autoresearch: seed {kind} ({current_phase})",
+    )
+    if not commit_ok:
+        emit_status(
+            f"[AR] {kind} validated but seed commit FAILED — phase stays "
+            f"at {current_phase}.\n"
+            f"     git error: {info}\n"
+            f"     Resolve the git issue (e.g. clear .git/index.lock, "
+            f"check disk space, fix .git/config), then re-Edit {kind} to "
+            f"retry the commit."
+        )
+        return False
+    write_phase(task_dir, next_phase)
+    emit_status(f"[AR] {kind} validated. Phase -> {next_phase}. "
+                f"{get_guidance(task_dir)}")
+    return True
+
+
 def main():
     hook_input = read_hook_input()
     if hook_input.get("tool_name", "") not in _WRITE_TOOLS:
@@ -58,70 +97,18 @@ def main():
             is_editable = False
 
     if is_ref and phase == GENERATE_REF:
-        ok, err = validate_reference(task_dir)
-        if not ok:
-            emit_status(
-                f"[AR] reference.py invalid — phase stays at GENERATE_REF.\n"
-                f"     {err}\n"
-                f"     Re-Edit reference.py to fix; baseline will not run "
-                f"until it passes."
-            )
-            sys.exit(0)
-        # Freeze the generated reference.py as a git baseline before advancing.
-        # If the commit fails we HOLD phase here — the alternative is silent
-        # advance with an uncommitted file, which surfaces as a misleading
-        # "previous round" block several phases later.
-        commit_ok, info = commit_in_task(
-            task_dir, ["reference.py"],
-            "autoresearch: seed reference.py (GENERATE_REF)",
-        )
-        if not commit_ok:
-            emit_status(
-                f"[AR] reference.py validated but seed commit FAILED — "
-                f"phase stays at GENERATE_REF.\n"
-                f"     git error: {info}\n"
-                f"     Resolve the git issue (e.g. clear .git/index.lock, "
-                f"check disk space, fix .git/config), then re-Edit reference.py "
-                f"to retry the commit."
-            )
-            sys.exit(0)
         # Route to GENERATE_KERNEL if kernel.py is still the scaffold
         # placeholder, else straight to BASELINE.
         next_phase = GENERATE_KERNEL if is_placeholder_file(
             os.path.join(task_dir, "kernel.py")
         ) else BASELINE
-        write_phase(task_dir, next_phase)
-        emit_status(f"[AR] reference.py validated. Phase -> {next_phase}. {get_guidance(task_dir)}")
+        _seed_and_advance(task_dir, GENERATE_REF, "reference.py",
+                          validate_reference, ["reference.py"], next_phase)
 
     elif is_editable and phase == GENERATE_KERNEL:
-        ok, err = validate_kernel(task_dir)
-        if not ok:
-            emit_status(
-                f"[AR] kernel.py invalid — phase stays at GENERATE_KERNEL.\n"
-                f"     {err}\n"
-                f"     Re-Edit kernel.py to fix; baseline will not run "
-                f"until it passes."
-            )
-            sys.exit(0)
-        # Freeze the seed kernel as git baseline. If commit fails we HOLD
-        # phase at GENERATE_KERNEL — same reasoning as the GENERATE_REF
-        # branch above. The agent's next Edit re-fires the hook and retries.
         editable_files = list(config.editable_files) if config else ["kernel.py"]
-        commit_ok, info = commit_in_task(
-            task_dir, editable_files,
-            "autoresearch: seed kernel (GENERATE_KERNEL)",
-        )
-        if not commit_ok:
-            emit_status(
-                f"[AR] kernel.py validated but seed commit FAILED — "
-                f"phase stays at GENERATE_KERNEL.\n"
-                f"     git error: {info}\n"
-                f"     Resolve the git issue, then re-Edit kernel.py to "
-                f"retry the commit."
-            )
-            sys.exit(0)
-        write_phase(task_dir, BASELINE)
-        emit_status(f"[AR] kernel.py validated. Phase -> BASELINE. {get_guidance(task_dir)}")
+        _seed_and_advance(task_dir, GENERATE_KERNEL, "kernel.py",
+                          validate_kernel, editable_files, BASELINE)
 
     elif is_editable and phase == EDIT:
         emit_status(

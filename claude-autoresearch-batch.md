@@ -222,7 +222,7 @@ python .autoresearch/scripts/batch/verify.py <batch_dir> --only layernorm --full
 
 verify.py Tier 2 和 autoresearch 跑 `verify_<op>.py` 用的是同一个比较函数 [`.autoresearch/scripts/correctness.py`](.autoresearch/scripts/correctness.py)（同 dtype 处理、`equal_nan=False`），所以**当 atol/rtol 相同时**（默认两侧都是 `1e-2 / 1e-2`），verify Tier 2 PASS = autoresearch 实跑也会 PASS。
 
-⚠️ **当 atol/rtol 不同时不成立**：当前 batch [run.py](.autoresearch/scripts/batch/run.py) **不会**把 manifest 里的 `correctness_atol/rtol` 透传到 `/autoresearch` 命令（详见下文「容差解析顺序」末尾的注）。所以 manifest 里写了 `1e-3` 等更严容差只影响 verify.py 自己；autoresearch 实跑仍按默认 `1e-2`。如果你既要 verify 严，也要 autoresearch 严，得手动 `claude` 进交互模式 + 给 `/autoresearch` 单独传同一对 `--correctness-atol / --correctness-rtol`。
+⚠️ **当 atol/rtol 不同时不成立**：当前 batch [run.py](.autoresearch/scripts/batch/run.py) **不会**把 manifest 里的 `correctness_atol/rtol` 透传到 `/autoresearch` 命令。所以 manifest 里写了 `1e-3` 等更严容差只影响 verify.py 自己；autoresearch 实跑仍按默认 `1e-2`。如果你既要 verify 严，也要 autoresearch 严，得手动 `claude` 进交互模式 + 给 `/autoresearch` 单独传同一对 `--correctness-atol / --correctness-rtol`。
 
 容差解析顺序：
 
@@ -248,8 +248,6 @@ ops:
   - op1
   - op2
 ```
-
-> 注：当前 batch [run.py](.autoresearch/scripts/batch/run.py) 还没把 manifest 里的 atol/rtol 透传到 `/autoresearch` 命令里 —— 想让 autoresearch 实跑也用更严的容差，目前只能手动 `claude` 进交互模式 + 单独传 `--correctness-atol/--correctness-rtol` 给 `/autoresearch`。这是后续可以补的一步透传，不影响 verify 自身的对齐。
 
 仅临时调试 verify 时，CLI 覆盖更方便：
 
@@ -293,7 +291,7 @@ run.py <workspace_dir>                  ┌─ load + validate manifest
                                         │    ┌─ 起 headless `claude --print`
                                         │    │  在 claude-autoresearch repo cwd 下
                                         │    │
-                                        │    │  prompt 内容（自动生成）：
+                                        │    │  prompt 内容（PROMPT_TEMPLATE 模板拼接）：
                                         │    │  - /autoresearch --ref ... [--kernel ...]
                                         │    │    --op-name ... --dsl ... --worker-url ...
                                         │    │  - Non-interactive contract（A/B/C/D 四节）

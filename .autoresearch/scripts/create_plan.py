@@ -63,6 +63,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from phase_machine import (
     load_progress, save_progress, get_plan_items,
     plan_path, progress_path, PLAN_ITEMS_FILE,
+    is_settled_table_header,
 )
 
 
@@ -243,7 +244,7 @@ def _parse_old_plan(task_dir: str):
         in_table = False
         for line in content.split("\n"):
             stripped = line.strip()
-            if stripped.startswith("|") and "Item" in stripped and "Outcome" in stripped:
+            if is_settled_table_header(line):
                 in_table = True
                 continue
             if in_table and stripped.startswith("|---"):

@@ -17,7 +17,9 @@ follow the latest `[AR Phase: ...]` message and never stop between phases.
   --dsl ascendc|cpp|cuda_c|pypto|swft|tilelang_cuda|tilelang_npuir|torch|triton_ascend|triton_cuda
   [--framework torch|mindspore|numpy]
   (--devices <N[,M,...]> | --worker-url <host:port>)
-  [--kernel <file>] [--max-rounds <N>]
+  [--kernel <file>] [--max-rounds <N>] [--eval-timeout <sec>]
+  [--no-code-checker]
+  [--correctness-atol <float>] [--correctness-rtol <float>]
   ```
   Hardware spec is exactly one of `--devices` (local) or `--worker-url`
   (remote). `--backend` and `--arch` are auto-derived from `--dsl` +

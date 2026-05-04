@@ -31,7 +31,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 from hook_utils import read_hook_input, emit_status
 from phase_machine import (
     DIAGNOSE, DIAGNOSE_ATTEMPTS_CAP, diagnose_artifact_path,
-    diagnose_state, get_task_dir, read_phase, update_progress,
+    diagnose_marker, diagnose_state, get_task_dir, read_phase,
+    update_progress,
 )
 
 
@@ -41,6 +42,7 @@ def _emit_retry_context(task_dir: str, plan_version: int, reason: str,
     backstop the diagnose work itself. We surface attempts/cap so the model
     knows it has finite tries."""
     artifact = diagnose_artifact_path(task_dir, plan_version)
+    marker = diagnose_marker(plan_version)
     msg = (
         f"[AR Phase: DIAGNOSE retry {attempts}/{DIAGNOSE_ATTEMPTS_CAP}] "
         f"Subagent did not produce a valid artifact: {reason}\n"
@@ -50,8 +52,9 @@ def _emit_retry_context(task_dir: str, plan_version: int, reason: str,
         f"a Write call to:\n"
         f"  {artifact}\n"
         f"and that the file body must contain headings 'Root cause', "
-        f"'Fix directions', 'What to avoid', and end with the marker line "
-        f"the host gave in the previous DIAGNOSE guidance.\n"
+        f"'Fix directions', 'What to avoid', and end with this exact marker "
+        f"line (plan-version-specific, do not paraphrase):\n"
+        f"  {marker}\n"
         f"\n"
         f"Do NOT call create_plan.py, do NOT Edit kernel.py, do NOT Stop. "
         f"Only Task is legal in DIAGNOSE until the artifact validates."

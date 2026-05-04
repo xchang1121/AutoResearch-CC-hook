@@ -50,7 +50,7 @@ CLI 只暴露三个维度，其余全部派生：
 | `--devices` | 本地 NPU/GPU 下标，逗号分隔：`5` 或 `0,1,2,3` | **XOR**：和 `--worker-url` 二选一 |
 | `--worker-url` | 远端 worker URL：`127.0.0.1:9070` | **XOR**：和 `--devices` 二选一 |
 | `--framework` | `torch` / `mindspore` / `numpy` | 默认 `torch` |
-| `--no-code-checker` | 关闭 CodeChecker 静态分析（仅 triton_* 默认规则；其他 DSL 会误报，scaffold 时关掉，事后改 `task.yaml: code_checker.enabled: false` 也能切换）| 可选 |
+| `--no-code-checker` | 关闭 CodeChecker 静态分析。当前默认规则只覆盖 `triton_*`，其他 DSL 会误报；scaffold 时直接 `--no-code-checker`，或事后改 `task.yaml: code_checker.enabled: false` | 可选 |
 
 派生项（用户不写）：`backend` 由 DSL 决定（`triton_ascend → ascend`、
 `cuda_c → cuda`、…，见
@@ -199,7 +199,7 @@ rationale。还有跨 DSL 的工作流 skill（`kernel-agent/` / `kernel-workflo
 | 想了解 | 看哪里 |
 |--------|--------|
 | Bash gate（哪条命令在哪个 phase 合法） | [phase_policy.py](.autoresearch/scripts/phase_machine/phase_policy.py) 头部注释——三层架构：`classify` → 静态 phase 表 → `check_bash`。AR-script / lifecycle / readonly 分类 + canonical-form grammar。 |
-| Hook 接线 | [.claude/settings.json](.claude/settings.json) 注册 5 个 hook（PreToolUse Edit/Bash/Task + PostToolUse Edit/Bash + Stop）；脚本一律 `hook_*.py`，每个文件首段 docstring 说明职责。 |
+| Hook 接线 | [.claude/settings.json](.claude/settings.json) 注册 7 个 hook（PreToolUse Edit/Bash/Task + PostToolUse Edit/Bash/Task + Stop）；脚本一律 `hook_*.py`，每个文件首段 docstring 说明职责。 |
 | phase 转移 | [phase_machine/state_store.py](.autoresearch/scripts/phase_machine/state_store.py) 定义阶段常量；`compute_next_phase` / `compute_resume_phase` 在 [phase_policy.py](.autoresearch/scripts/phase_machine/phase_policy.py) 末尾。 |
 | DSL adapter（profiler / autotune / 编译选项） | [ar_vendored/op/verifier/adapters/factory.py](.autoresearch/scripts/ar_vendored/op/verifier/adapters/factory.py) 注册 10 个 adapter；模板生成在 [task_config/package_builder.py](.autoresearch/scripts/task_config/package_builder.py)。 |
 | 本地 vs 远端执行路由 | [local_worker.py](.autoresearch/scripts/local_worker.py) 按 DSL 分流到 `_profile_via_subprocess` / `_profile_via_msprof` / `_profile_via_nsys`；远端走 [ar_vendored/worker/server.py](.autoresearch/scripts/ar_vendored/worker/server.py)。 |

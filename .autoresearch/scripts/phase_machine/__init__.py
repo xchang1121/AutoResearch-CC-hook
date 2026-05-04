@@ -1,35 +1,14 @@
 """phase_machine package — facade over four single-concern submodules.
 
-Layout (single-responsibility cuts the previous 1170-line phase_machine.py
-made impossible to navigate):
+Dependency direction (top depends on lower):
+    guidance, phase_policy
+        → validators
+            → state_store
 
-    state_store   — phase enum constants, .ar_state file I/O, task_dir
-                    pointer, JSON-tail parser. No internal deps.
-    validators    — placeholder detection, validate_reference,
-                    validate_kernel, plan.md parser, validate_plan.
-                    Depends on state_store.
-    phase_policy  — canonical-AR grammar, _AR_ALLOWED_BY_PHASE,
-                    _EDIT_RULES, check_bash, check_edit,
-                    compute_next_phase, compute_resume_phase. Depends
-                    on state_store + validators.
-    guidance      — get_guidance and the XML schema example shared by
-                    PLAN/DIAGNOSE/REPLAN. Depends on state_store +
-                    validators (no dep on phase_policy).
-
-Why a package over a flat file split: with the package layout the
-file tree itself shows the dependency direction — `state_store.py`
-sits next to its callers, but in a clearly separate module. Adding a
-new phase or a new validator no longer enlarges a god-module; it
-either adds a small file or extends one of the four named layers.
-
-This `__init__.py` re-exports everything so the 17 existing importers
-of `phase_machine` continue to work without modification. New code may
-prefer importing from the canonical sub-module
-(`from phase_machine.state_store import load_progress`).
-
-`auto_rollback` moved to git_utils because it is a pure git operation;
-re-exported here for backward compatibility (one previous caller imported
-it from phase_machine).
+This `__init__.py` re-exports the public surface; new code may import
+directly from the submodule (`from phase_machine.state_store import ...`).
+`auto_rollback` lives in git_utils and is re-exported here for callers
+that still import it from phase_machine.
 """
 # fmt: off
 from .state_store import (
@@ -59,6 +38,7 @@ from .validators import (
     validate_reference, validate_kernel, validate_plan, validate_diagnose,
     DiagnoseState, diagnose_state,
     get_plan_items, parse_plan_text, has_pending_items, get_active_item,
+    is_settled_table_header,
     # Internal — re-exported so debug / extension scripts that previously
     # reached into phase_machine can still find them at the old name.
     _PLAN_ITEM_RE, _PLAN_TAG_RE, _REF_RUNCHECK_SCRIPT,

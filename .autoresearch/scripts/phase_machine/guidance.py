@@ -159,8 +159,8 @@ def _skills_hint(dsl) -> str:
     return (
         f"\nDSL skills: Glob skills/{skill_dir}/**/*.md, then Read 1-3 "
         f"SKILL.md files whose frontmatter description / keywords match "
-        f"a candidate plan-item direction. Cite SKILL ids in the item "
-        f"rationale."
+        f"a candidate plan-item direction. Citing the SKILL id in the "
+        f"rationale is recommended for traceability but not enforced."
     )
 
 
@@ -271,7 +271,8 @@ def get_guidance(task_dir: str) -> str:
                 f"{_create_plan_instruction(task_dir)}"
                 f"\n"
                 f"The script writes plan.md in the correct format. Hook validates and advances to EDIT.\n"
-                f"After plan creation, sync items to TodoWrite.")
+                f"(After validation the hook emits a TodoWrite payload — call "
+                f"it verbatim; do not pre-emptively craft one here.)")
 
     if phase == EDIT:
         desc = active["description"] if active else "(no active item)"
@@ -282,7 +283,9 @@ def get_guidance(task_dir: str) -> str:
                 f"CRITICAL: Implement ONLY {item_id}'s idea. Do NOT implement other plan items.\n"
                 f"The pipeline will settle {item_id} with this round's metric.\n"
                 f"Make your edit(s), then: python .autoresearch/scripts/pipeline.py \"{task_dir}\"\n"
-                f"TodoWrite: mark {item_id} in_progress, other pending items stay pending.")
+                f"(TodoWrite payloads are delivered by the hook after each "
+                f"settle / create_plan — call them verbatim when emitted; "
+                f"do not synthesize TodoWrite calls from this hint.)")
 
     if phase == DIAGNOSE:
         # Pre-bake the recent-rounds summary INTO the subagent prompt so the

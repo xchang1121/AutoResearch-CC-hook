@@ -1,34 +1,24 @@
 """Phase rules + bash/edit gates + transition logic.
 
-Bash gate is decomposed into three layers, each with one job:
+Bash gate is three layers, each with one job:
 
   1. CLASSIFIER (`classify`) — pure function: command string → CommandShape.
-     Returns one of:
-       AR(name)    canonical .autoresearch/scripts/<name>.py invocation
-       LIFECYCLE   AR but the script is lifecycle (dashboard/parse_args/
-                   scaffold/resume), allowed in every phase
-       READONLY    every chain segment is a read-only command (ls/cat/git
-                   read/echo/pwd/...). NO redirections to files, NO mutations.
-       OTHER      anything else (ad-hoc bash, malformed AR, write commands)
-     Pure function: consults command text only — no phase, no filesystem.
+       AR(name)   canonical `.autoresearch/scripts/<name>.py` invocation
+       LIFECYCLE  AR but lifecycle (dashboard / parse_args / scaffold /
+                  resume), allowed in every phase
+       READONLY   every chain segment is read-only (ls / cat / git read /
+                  echo / pwd / ...). NO file redirects, NO mutations.
+       OTHER      anything else (ad-hoc bash, malformed AR, writes)
+     Consults command text only — no phase, no filesystem.
 
-  2. PHASE TABLE — `_AR_ALLOWED_BY_PHASE` and `_OTHER_ALLOWED_BY_PHASE`.
-     Static dicts. LIFECYCLE and READONLY are always allowed (implicit).
-     Editing a rule means editing one row; nothing else changes.
+  2. PHASE TABLE — `_AR_ALLOWED_BY_PHASE` / `_OTHER_ALLOWED_BY_PHASE`.
+     Static dicts. LIFECYCLE / READONLY are implicitly allowed everywhere.
+     A rule change is a one-row edit.
 
   3. `check_bash` — global string bans, classify(), table lookup.
-     ~20 lines. Knows nothing about regexes; the classifier knows nothing
-     about phases. Each layer single-purpose.
 
-This replaces an earlier 'one regex unifies everything' design that
-produced a patches-over-patches feel: each new edge case (chain
-bypass, absolute paths, --version short-circuit) needed its own
-sidecar rule because the regex was carrying both shape detection and
-policy. Splitting into classifier + table makes the seams explicit so
-new edge cases land in an obvious place.
-
-Edit/Write gate (`check_edit`) and phase-transition logic
-(`compute_next_phase` / `compute_resume_phase`) are unchanged.
+The Edit/Write gate (`check_edit`) and phase-transition logic
+(`compute_next_phase` / `compute_resume_phase`) live below.
 """
 import os
 import re
@@ -42,7 +32,7 @@ from .state_store import (
     PLAN_FILE, PLAN_ITEMS_FILE,
     load_progress, plan_path,
 )
-from .validators import get_plan_items, has_pending_items
+from .validators import get_active_item, has_pending_items
 
 
 # === LAYER 1: CLASSIFIER ===============================================
@@ -579,10 +569,6 @@ def compute_resume_phase(task_dir: str) -> str:
     if not os.path.exists(plan_path(task_dir)) or status == "no_plan":
         return PLAN
 
-    items = get_plan_items(task_dir)
-    has_active = any(it["active"] and not it["done"] for it in items)
-    has_pending = any(not it["done"] for it in items)
-
-    if has_active or has_pending:
+    if get_active_item(task_dir) is not None or has_pending_items(task_dir):
         return EDIT
     return REPLAN

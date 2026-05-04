@@ -193,8 +193,16 @@ class CodeChecker:
                 "suggestion": "Check the flagged line for illegal expressions, invalid identifiers, or version-incompatible syntax.",
                 "code_snippet": snippet,
             })
-        except Exception:
-            pass
+        except (OSError, MemoryError) as e:
+            # Tempfile / disk / memory issues — surface them so a broken
+            # environment isn't misread as a clean compile.
+            errors.append({
+                "line": 0,
+                "error_type": "checker_environment_error",
+                "detail": f"py_compile environment error: {type(e).__name__}: {e}",
+                "suggestion": "Check disk space and write permissions on the system tempdir.",
+                "code_snippet": "",
+            })
         finally:
             for path in (tmp_src, tmp_pyc):
                 if path:

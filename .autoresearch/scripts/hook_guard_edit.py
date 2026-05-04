@@ -13,9 +13,10 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from hook_utils import read_hook_input, block_decision, extract_target_path
+from hook_utils import (read_hook_input, block_decision, block_with_guidance,
+                        extract_target_path)
 from phase_machine import (
-    read_phase, get_guidance, get_task_dir, touch_heartbeat,
+    read_phase, get_task_dir, touch_heartbeat,
     edit_marker_path, check_edit, EDIT,
 )
 
@@ -128,7 +129,7 @@ def main():
     phase = read_phase(task_dir)
     ok, reason = check_edit(phase, rel, editable_files)
     if not ok:
-        block_decision(f"[AR] {reason}. {get_guidance(task_dir)}")
+        block_with_guidance(task_dir, reason)
 
     # Phase says OK. For EDIT writes to editable files, also check the git
     # state gate (dirty tree on entry to a new round).

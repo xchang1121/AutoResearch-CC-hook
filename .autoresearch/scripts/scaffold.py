@@ -437,9 +437,9 @@ def main():
                 "status": "error",
                 "task_dir": task_dir,
                 "error": f"reference.py failed runnability check: {err}",
-                "hint": ("Fix the file under workspace/ and re-run /autoresearch. "
-                         "scaffold left the partial task_dir in place for "
-                         "inspection."),
+                "hint": ("Fix the source reference file (the one passed via "
+                         "--ref) and re-run /autoresearch. scaffold left the "
+                         "partial task_dir in place for inspection."),
             }))
             sys.exit(2)
 

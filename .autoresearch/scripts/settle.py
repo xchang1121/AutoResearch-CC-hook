@@ -22,7 +22,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 # settle.py mutates the file but uses the canonical matcher for finding
 # the lines to mutate. _PLAN_ITEM_RE captures (status, item_id, rest)
 # where status is ' '/'x'.
-from phase_machine import compute_next_phase, plan_path, _PLAN_ITEM_RE
+from phase_machine import (compute_next_phase, plan_path, _PLAN_ITEM_RE,
+                           is_settled_table_header)
 
 
 def main():
@@ -110,7 +111,7 @@ def main():
     # Find the table and append
     table_end = None
     for i, line in enumerate(lines):
-        if line.strip().startswith("|") and "Item" in line and "Outcome" in line:
+        if is_settled_table_header(line):
             # Found header, skip header + separator
             table_end = i + 2
             # Find last row

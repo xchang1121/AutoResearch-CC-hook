@@ -21,9 +21,9 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from hook_utils import read_hook_input, block_decision
+from hook_utils import read_hook_input, block_decision, block_with_guidance
 from phase_machine import (
-    DIAGNOSE, DIAGNOSE_ATTEMPTS_CAP, EDIT, REPLAN, read_phase, get_guidance,
+    DIAGNOSE, DIAGNOSE_ATTEMPTS_CAP, EDIT, REPLAN, read_phase,
     get_task_dir, touch_heartbeat, check_bash, parse_script_names,
     diagnose_state, parse_invoked_ar_script, pending_settle_path,
     is_single_foreground_ar_invocation,
@@ -41,12 +41,9 @@ _BLESSED_SCRIPTS = {
     "parse_args.py",
 }
 
-# Library modules that live under .autoresearch/scripts/ but have no CLI.
-# The LLM repeatedly tries to invoke `phase_machine.py get_guidance ...`
-# because CLAUDE.md / README.md used to namedrop `phase_machine.get_guidance()`
-# in a way that read like a callable. The docs are fixed, but a pointed
-# error here gives the LLM an unambiguous nudge if it reaches for them
-# again instead of just listing _BLESSED_SCRIPTS and walking off.
+# Library modules under .autoresearch/scripts/ that are not CLI-invocable.
+# Each entry maps the module name to a pointed message so the LLM gets a
+# specific nudge instead of the generic "unknown script" rejection.
 _LIBRARY_NOT_CLI = {
     "phase_machine.py": (
         "phase_machine.py is a library used by hooks, not a CLI. "
@@ -105,7 +102,7 @@ def main():
         sys.exit(0)
     touch_heartbeat(task_dir)
 
-    command = hook_input.get("tool_input", {}).get("command", "")
+    command = (hook_input.get("tool_input") or {}).get("command", "")
     _script_name_check(command)
 
     phase = read_phase(task_dir)
@@ -153,12 +150,12 @@ def main():
             )
         ok, reason = check_bash(REPLAN, command)
         if not ok:
-            block_decision(f"[AR] {reason}. {get_guidance(task_dir)}")
+            block_with_guidance(task_dir, reason)
         sys.exit(0)
 
     ok, reason = check_bash(phase, command)
     if not ok:
-        block_decision(f"[AR] {reason}. {get_guidance(task_dir)}")
+        block_with_guidance(task_dir, reason)
     sys.exit(0)
 
 

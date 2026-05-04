@@ -14,11 +14,14 @@ Public surface:
   - local_verify(package_bytes, op_name, timeout, device_id=0) -> dict
   - local_profile(package_bytes, op_name, timeout, device_id=0) -> dict
 
-This file deliberately does NOT depend on ar_vendored. It mirrors the
-`collect_json_artifacts` helper from the vendored LocalWorker but stays
-synchronous (subprocess.run, no asyncio) and skips the DevicePool /
-msprof / nsys / roofline machinery that doesn't apply to single-developer
-local iteration.
+This module mirrors the `collect_json_artifacts` helper from the vendored
+LocalWorker but stays synchronous (subprocess.run, no asyncio) and skips
+the DevicePool / roofline machinery that doesn't apply to single-developer
+local iteration. It DOES wrap profile scripts with msprof (ascendc) or
+nsys (cuda_c) when those CLIs are on PATH — see `_profile_via_msprof` /
+`_profile_via_nsys`; the dispatcher in `local_profile` falls back to a
+plain subprocess profile when the wrapper CLI / vendored helpers aren't
+importable.
 """
 from __future__ import annotations
 

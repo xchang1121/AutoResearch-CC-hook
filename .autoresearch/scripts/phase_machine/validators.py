@@ -1,7 +1,6 @@
 """Reference / kernel / plan validators + plan.md parser.
 
-Three families live here, all about "is this artifact OK enough to advance
-the phase":
+Validators (each: "is this artifact OK enough to advance the phase?"):
 
   - is_placeholder_file: does kernel.py / reference.py still contain the
     scaffold-time placeholder text? (placeholder constants live here too.)
@@ -11,11 +10,13 @@ the phase":
     py_compile, imports, stray Chinese, DSL, autotune restore_value).
   - validate_plan: structural check on plan.md (≥3 items, rationale length,
     exactly one ACTIVE).
+  - validate_diagnose: marker + sections + R<n> citations on
+    diagnose_v<N>.md.
 
-Plan.md parsing (`get_plan_items`, `has_pending_items`, `get_active_item`)
-is bundled here because `validate_plan` is the primary consumer and the
-parsing rules are validation-shaped (not just I/O). Other modules that
-read plan items go through `get_plan_items`.
+Plan.md parsing (`parse_plan_text`, `get_plan_items`, `has_pending_items`,
+`get_active_item`, `is_settled_table_header`) is the single source of
+truth for plan-file structure; phase_policy, guidance, settle.py and
+create_plan.py all consume it from here.
 """
 import json
 import os
@@ -255,6 +256,17 @@ def validate_kernel(task_dir: str) -> tuple:
 
 _PLAN_ITEM_RE = re.compile(r'\s*-\s*\[([ x])\]\s*\*\*(\w+)\*\*\s*(.*)')
 _PLAN_TAG_RE = re.compile(r'^\[([^\]]*)\]:?\s*(.*)')
+
+
+def is_settled_table_header(line: str) -> bool:
+    """True iff `line` is the Settled-History markdown table header.
+
+    Both create_plan.py and settle.py find the same row to either append a
+    new settled entry (settle) or carry forward existing rows (create_plan).
+    Centralising the predicate keeps the table format defined in one place.
+    """
+    s = line.strip()
+    return s.startswith("|") and "Item" in s and "Outcome" in s
 
 
 def parse_plan_text(text: str, include_meta: bool = False) -> list:

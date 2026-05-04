@@ -20,6 +20,18 @@ def block_decision(reason: str):
     sys.exit(2)
 
 
+def block_with_guidance(task_dir: str, reason: str):
+    """Block with a `[AR] {reason}. <fresh phase guidance>` message.
+
+    Used by every guard that wants the LLM to read both the specific
+    rejection reason AND the current phase's recovery instructions in one
+    message. Imported lazily because phase_machine -> hook_utils would
+    create a cycle on package init.
+    """
+    from phase_machine import get_guidance
+    block_decision(f"[AR] {reason}. {get_guidance(task_dir)}")
+
+
 def norm_abs_fwd_slash(p: str) -> str:
     """Absolute, normalized, forward-slash form of a path.
 

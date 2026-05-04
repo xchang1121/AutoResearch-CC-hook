@@ -83,7 +83,7 @@ def main():
 
     emit_status(f"\n[AR] Session stopped: {stop_reason}")
     emit_status(f"[AR] Progress: {rounds}/{max_rounds} rounds | Best: {best}{improv}")
-    emit_status(f"[AR] Resume with: /autoresearch {task_dir}")
+    emit_status(f"[AR] Resume with: /autoresearch --resume {task_dir}")
 
 
 if __name__ == "__main__":

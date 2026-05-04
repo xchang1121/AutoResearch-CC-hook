@@ -261,9 +261,7 @@ def append_history(task_dir: str, record: dict):
 def update_progress(task_dir: str, **fields) -> Optional[dict]:
     """Load progress, apply **fields, save. Returns the new dict.
 
-    Replaces the scattered `_update_progress_status`, `_reset_consecutive_failures`,
-    `_increment_plan_version`, `_update_progress_for_plan` helpers. Silently
-    no-ops if progress.json does not exist.
+    Silently no-ops if progress.json does not exist.
     """
     progress = load_progress(task_dir)
     if progress is None:

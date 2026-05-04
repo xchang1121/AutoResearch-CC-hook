@@ -51,8 +51,8 @@ whose frontmatter matches your direction; cite SKILL ids in plan rationales.
 
 Hooks emit `[AR Phase: ...]` messages on stderr after every state-changing
 event. Follow the latest one. Don't try to fetch guidance manually —
-`phase_machine.py` is a library, not a CLI; `hook_guard_bash` rejects
-direct invocation.
+`phase_machine` is a Python package used by hooks, not a CLI;
+`hook_guard_bash` rejects direct invocation.
 
 The following invariants are non-negotiable:
 
