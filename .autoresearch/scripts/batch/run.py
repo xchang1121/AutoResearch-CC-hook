@@ -16,10 +16,11 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
+import queue
 import shlex
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -45,74 +46,50 @@ CRITICAL rules — read carefully, this session is non-interactive:
 1. After scaffold prints "Task directory created: <path>", your VERY FIRST
    subsequent action MUST be exactly:
        export AR_TASK_DIR="<that path>"
-   The double quotes are required — paths with spaces or backslashes
-   (e.g. C:\\Users\\Foo Bar\\...) get truncated otherwise. Without this
-   step .autoresearch/.active_task is never written, the PostToolUse
-   Edit hook is gated off, validate_kernel never runs, and phase stays
-   stuck forever. THIS IS THE SINGLE MOST IMPORTANT STEP.
+   The double quotes are required so paths with spaces or backslashes
+   (e.g. C:\\Users\\Foo Bar\\...) survive shell parsing. This single
+   command writes .autoresearch/.active_task, which activates the hook
+   chain — every PostToolUse gate keys off that file. THIS IS THE
+   SINGLE MOST IMPORTANT STEP.
 
 2. {mode_block}
 
 3. In EDIT phase use the Edit tool (or Write for full rewrites).
-   PostToolUse will validate kernel.py and auto-advance on pass.
+   PostToolUse validates kernel.py and auto-advances on pass.
 
-4. Follow ALL hook guidance verbatim. Do not skip phases. Do not run
-   baseline.py while phase != BASELINE — hooks will block it. Read the
-   hook error messages — they tell you the next action.
+4. Treat hook output as authoritative. Each hook prints the legal next
+   action on stderr (or as additionalContext). Hooks gate every script
+   to the right phase (e.g. baseline.py runs only in BASELINE); when a
+   hook blocks something, the rejection reason is the next step.
 
-5. Keep going through every phase until FINISH or max-rounds. Never stop
-   to ask the user — there is no user. If a phase stalls, read the latest
-   hook output and try what it says.
-
-6. WHEN AND ONLY WHEN you have nothing more to do (phase=FINISH, exhausted
-   max-rounds, or truly stuck), print exactly one line in this format and
-   then stop:
-
-       AUTORESEARCH_RESULT task_dir="<absolute path>" phase=<phase> status=<ok|stuck>
-
-   status=ok if phase==FINISH, status=stuck otherwise. The task_dir
-   value MUST be wrapped in double quotes so that paths containing
-   spaces survive the orchestrator's parser.
+5. Keep working through whatever phase the hooks indicate, until the
+   framework itself writes phase=FINISH (which only happens when
+   eval_rounds reaches max-rounds — settling all current plan items
+   triggers REPLAN, not FINISH). The session is fully unattended; the
+   orchestrator detects completion by reading .ar_state/.phase. When
+   the hooks have nothing more to ask of you, the session ends
+   naturally on your last tool call.
 """
 
 MODE_BLOCK = {
     "ref-kernel": (
-        "The kernel.py we passed via --kernel is a seed implementation. "
-        "Scaffold's --run-baseline will run it; baseline should PASS, and "
-        ".ar_state/.phase will be set to PLAN immediately, skipping "
-        "GENERATE_KERNEL. Your job is PERFORMANCE OPTIMIZATION via "
-        "PLAN -> EDIT -> VERIFY for the configured max-rounds. Do NOT rewrite "
-        "ModelNew from scratch — propose targeted edits and let pipeline.py "
-        "measure the speedup. If baseline unexpectedly fails, the hook will "
-        "demote to GENERATE_KERNEL — fix the regression with minimal diffs "
-        "against the seed, do not start over."
+        "The kernel.py we passed via --kernel is a verified seed. "
+        "Scaffold's --run-baseline runs it; on PASS .ar_state/.phase is "
+        "set to PLAN immediately, skipping GENERATE_KERNEL. Your job is "
+        "PERFORMANCE OPTIMIZATION via PLAN -> EDIT -> VERIFY for the "
+        "configured max-rounds: propose targeted incremental edits to "
+        "ModelNew (block sizes, memory layout, vectorization, fewer DRAM "
+        "round-trips) and let pipeline.py measure the speedup. If "
+        "baseline unexpectedly fails, the hook demotes to "
+        "GENERATE_KERNEL; recover with the smallest diff against the "
+        "seed that fixes the regression."
     ),
     "ref": (
-        "No seed kernel was supplied. Scaffold will run GENERATE_KERNEL "
+        "Only the reference is supplied. Scaffold runs GENERATE_KERNEL "
         "first; produce a working kernel.py that passes baseline, then "
         "optimize via PLAN -> EDIT -> VERIFY for the remaining rounds."
     ),
 }
-
-# task_dir may be quoted ("...") so paths with spaces survive parsing;
-# bare \S+ form is also accepted for backward compatibility with existing
-# in-flight sessions. phase / status are simple identifiers and never
-# contain whitespace or quotes.
-MARKER_RE = re.compile(
-    r'AUTORESEARCH_RESULT\s+task_dir=(?:"([^"]*)"|(\S+))'
-    r'\s+phase=(\S+)\s+status=(\S+)'
-)
-
-
-def parse_marker(text: str) -> tuple[str, str, str] | None:
-    # Take the LAST match: Claude may echo the marker format mid-stream while
-    # explaining the contract; only the final line is authoritative.
-    matches = MARKER_RE.findall(text)
-    if not matches:
-        return None
-    quoted, bare, phase, status = matches[-1]
-    return (quoted or bare, phase, status)
-
 
 def health_check_worker(worker_url: str) -> None:
     """Probe http://<host>:<port>/api/v1/status. Raises SystemExit on failure."""
@@ -294,23 +271,51 @@ def run_one(workspace_dir: Path, case: dict, args: argparse.Namespace,
         env=env_with_no_proxy(),
     )
 
-    captured: list[str] = []
+    # Background reader thread + bounded queue.get poll. The earlier
+    # `for line in proc.stdout` form blocks on readline indefinitely when
+    # claude is alive but silent (API retry, deep IO wait), so the
+    # wall-clock check inside the loop never fires and `--timeout-min`
+    # becomes a no-op. Selectors aren't an option because Windows can't
+    # select() on pipe handles, so we use a thread + queue (cross-platform).
+    line_q: "queue.Queue[str]" = queue.Queue()
+    reader_done = threading.Event()
+
+    def _reader():
+        try:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                line_q.put(line)
+        finally:
+            reader_done.set()
+
+    threading.Thread(target=_reader, daemon=True).start()
+
     timeout_s = args.timeout_min * 60
     interrupted = False
     try:
-        assert proc.stdout is not None
-        for line in proc.stdout:
+        while True:
+            try:
+                # Short poll so a silent claude still hits the wall-clock
+                # check below within 5s of crossing the deadline.
+                line = line_q.get(timeout=5)
+            except queue.Empty:
+                if time.time() - started > timeout_s:
+                    msg = (f"[run] WALL-CLOCK TIMEOUT after "
+                           f"{args.timeout_min}min, killing claude\n")
+                    sys.stdout.write(msg)
+                    sys.stdout.flush()
+                    log_fp.write(msg)
+                    log_fp.flush()
+                    proc.kill()
+                    break
+                if reader_done.is_set() and line_q.empty():
+                    # Reader saw EOF and queue is fully drained.
+                    break
+                continue
             sys.stdout.write(line)
             sys.stdout.flush()
             log_fp.write(line)
             log_fp.flush()
-            captured.append(line)
-            if time.time() - started > timeout_s:
-                msg = f"[run] WALL-CLOCK TIMEOUT after {args.timeout_min}min, killing claude\n"
-                sys.stdout.write(msg)
-                log_fp.write(msg)
-                proc.kill()
-                break
         proc.wait(timeout=30)
     except KeyboardInterrupt:
         interrupted = True
@@ -323,40 +328,34 @@ def run_one(workspace_dir: Path, case: dict, args: argparse.Namespace,
             pass
 
     elapsed = time.time() - started
-    full_out = "".join(captured)
     footer = (f"{'─' * 72}\n"
               f"[run] claude exited rc={proc.returncode} after {elapsed:.0f}s\n")
     sys.stdout.write(footer)
     log_fp.write(footer)
     log_fp.flush()
 
-    parsed = parse_marker(full_out)
-    if parsed:
-        task_dir_str, phase, status_marker = parsed
-        task_dir = Path(task_dir_str)
-    else:
-        td = mf.find_recent_task_dir(op, since_ts=started - 5)
-        if td is None:
-            mf.update_case(workspace_dir, op,
-                           status="error",
-                           finished_at=mf.now_iso(),
-                           rc=proc.returncode,
-                           note=f"no task_dir found; rc={proc.returncode}"
-                                + ("; interrupted" if interrupted else ""))
-            return 130 if interrupted else 2
-        task_dir = td
-        phase = mf.read_phase(td)
-        status_marker = "ok" if phase == "FINISH" else "stuck"
-        sys.stdout.write(
-            f"[run] no marker line; inferred task_dir={task_dir} phase={phase}\n"
-        )
+    # Authoritative task discovery: scan ar_tasks/ for the freshest dir
+    # matching this op. There is no in-band marker — the model is forbidden
+    # from self-declaring "done"/"stuck" (any such instruction would let an
+    # early-stop heuristic creep back in). Truth lives in .ar_state/.phase.
+    td = mf.find_recent_task_dir(op, since_ts=started - 5)
+    if td is None:
+        mf.update_case(workspace_dir, op,
+                       status="error",
+                       finished_at=mf.now_iso(),
+                       rc=proc.returncode,
+                       note=f"no task_dir found; rc={proc.returncode}"
+                            + ("; interrupted" if interrupted else ""))
+        return 130 if interrupted else 2
+    task_dir = td
+    phase = mf.read_phase(td)
 
     result = mf.read_task_state(task_dir)
-    final_status = "done" if (phase == "FINISH" and status_marker == "ok"
-                              and not interrupted) else "error"
+    final_status = ("done" if phase == "FINISH" and not interrupted
+                    else "error")
     note = ""
     if final_status == "error":
-        note = f"phase={phase} status={status_marker} rc={proc.returncode}"
+        note = f"phase={phase} rc={proc.returncode}"
         if interrupted:
             note += "; interrupted"
 

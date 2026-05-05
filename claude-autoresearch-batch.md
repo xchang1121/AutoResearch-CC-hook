@@ -296,8 +296,8 @@ run.py <workspace_dir>                  ┌─ load + validate manifest
                                         │    │    --op-name ... --dsl ... --worker-url ...
                                         │    │  - Non-interactive contract（A/B/C/D 四节）
                                         │    │  - 强调："scaffold 后立刻 export AR_TASK_DIR"
-                                        │    │  - 强调："follow hooks，不停问"
-                                        │    │  - 强调："最后打 AUTORESEARCH_RESULT 行"
+                                        │    │  - 强调："follow hooks，不停问，不自评 stuck"
+                                        │    │  - 强调："不需要打任何 done 标记 — host 读 .phase"
                                         │    │
                                         │    │  Claude 在那个 session 里自动：
                                         │    │    - scaffold task_dir
@@ -305,12 +305,13 @@ run.py <workspace_dir>                  ┌─ load + validate manifest
                                         │    │    - 模式 1：BASELINE PASS → 直接 PLAN
                                         │    │      模式 2：GENERATE_KERNEL 先
                                         │    │    - PLAN → EDIT → VERIFY 循环 ≤max-rounds
-                                        │    │    - FINISH
-                                        │    │    - 打 AUTORESEARCH_RESULT 标记
+                                        │    │    - FINISH（hook 自动写 .phase=FINISH）
+                                        │    │    - 自然退出（最后一次工具调用结束即可）
                                         │    │
                                         │    ├─ stdout 实时 stream 到 batch.log
-                                        │    ├─ 解析 marker 拿 task_dir + phase
-                                        │    │  （拿不到就 fallback 扫 ar_tasks/）
+                                        │    ├─ claude 进程退出后 host 扫 ar_tasks/ 找
+                                        │    │  匹配 op_name + mtime>started 的最新 task_dir
+                                        │    │  → 读 .ar_state/.phase 决定 done/error
                                         │    └─ 自动更新 batch_progress.json
                                         │       从 task_dir 抽 baseline_metric / best_metric
                                         │
@@ -383,7 +384,7 @@ done speedup  median=1.42x  best=2.18x  worst=0.93x  (n=4)
               improved=3  on-par=0  regress=1
 
 errored ops (1):
-  - foo_kernel: phase=GENERATE_KERNEL status=stuck rc=0
+  - foo_kernel: phase=GENERATE_KERNEL rc=0
 
 (refresh every 10s; Ctrl-C to stop  |  full TUI: monitor.py --dashboard)
 ```
@@ -467,8 +468,8 @@ regressions (1 ops slower than baseline):
   - groupnorm: baseline 5.234 -> best 5.567  (0.94x)
 
 errored ops (2):
-  - softmax: phase=GENERATE_KERNEL  phase=GENERATE_KERNEL status=stuck rc=1
-  - foo_op:  phase=EDIT             phase=EDIT max-rounds exhausted
+  - softmax: phase=GENERATE_KERNEL  phase=GENERATE_KERNEL rc=1
+  - foo_op:  phase=EDIT             phase=EDIT rc=0
 
 still pending: 1
   - layernorm
@@ -779,7 +780,7 @@ claude CLI 透传：
 - 修：`python .autoresearch/scripts/ar_cli.py worker --status --port 9111`，没起就 `--start`；或者改用 `--devices 0` 走 in-process eval。
 
 ### Claude 没按 prompt 跑 `export AR_TASK_DIR`，phase 卡 GENERATE_KERNEL
-- 现象：`monitor.py` 看到 `phase=GENERATE_KERNEL` 长时间不动；run.py 最终标 `error: phase=GENERATE_KERNEL status=stuck`。
+- 现象：`monitor.py` 看到 `phase=GENERATE_KERNEL` 长时间不动；run.py 最终标 `error: phase=GENERATE_KERNEL rc=...`。
 - 大前提：模型偶尔会跳过这条 prompt。批量会自动跳到下一个。
 - 修：跑完后 `--retry-errored` 重试一遍。仍然卡的就手动接管。
 
