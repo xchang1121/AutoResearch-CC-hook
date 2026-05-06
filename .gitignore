@@ -2,7 +2,6 @@ __pycache__/
 *.pyc
 ar_tasks/
 *.egg-info/
-.ar_state/.last_script
 .ar_state/.heartbeat
 .ar_state/.edit_started
 .autoresearch/.active_task

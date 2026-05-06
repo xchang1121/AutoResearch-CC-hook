@@ -584,7 +584,9 @@ def get_guidance(task_dir: str) -> str:
     if phase == FINISH:
         best = progress.get("best_metric") if progress else "?"
         baseline = progress.get("baseline_metric") if progress else "?"
-        return (f"[AR Phase: FINISH] Done. Best {primary_metric}: {best} (baseline: {baseline}). "
-                f"Write .ar_state/ranking.md summary. Report to user.")
+        return (f"[AR Phase: FINISH] Done. Best {primary_metric}: {best} "
+                f"(baseline: {baseline}). Report auto-generated at "
+                f".ar_state/report.md. Summarize for user; do not write any "
+                f"files.")
 
     return f"[AR Phase: {phase}] Unknown phase."

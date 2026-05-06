@@ -26,7 +26,7 @@ from failure_extractor import format_for_stdout
 from phase_machine import (
     write_phase, compute_next_phase, get_active_item,
     get_guidance, auto_rollback, load_progress, edit_marker_path,
-    pending_settle_path, parse_last_json_line,
+    pending_settle_path, parse_last_json_line, FINISH,
 )
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -107,6 +107,20 @@ def _post_settle(task_dir: str, decision: str, settled_id: str) -> None:
     marker = edit_marker_path(task_dir)
     if os.path.exists(marker):
         os.remove(marker)
+
+    # FINISH is a one-way terminal transition — generate the deterministic
+    # report.md (summary tables + inline SVG curve) here so it's on disk
+    # before the FINISH guidance announces its path.
+    if next_phase == FINISH:
+        try:
+            from report import write_report
+            rp = write_report(task_dir)
+            if rp:
+                print(f"[PIPELINE] Report written: "
+                      f"{os.path.relpath(rp, task_dir)}")
+        except Exception as e:
+            print(f"[PIPELINE] Report generation failed: {e}",
+                  file=sys.stderr)
 
     progress = load_progress(task_dir) or {}
     rounds = progress.get("eval_rounds", 0)

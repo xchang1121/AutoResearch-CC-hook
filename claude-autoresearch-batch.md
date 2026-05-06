@@ -656,7 +656,7 @@ claude
     ├── progress.json          ← baseline_metric / best_metric / rounds
     ├── plan.md                ← agent 优化历史
     ├── history.jsonl          ← 每轮 keep/discard 决策
-    └── ranking.md             ← 最终排名
+    └── report.md              ← 最终报告 (含 SVG 曲线，由 pipeline 自动生成)
 ```
 
 每个 op 在 `batch_progress.json` 里 `cases.<op>.task_dir` 字段记录了这个绝对路径。一句话收齐所有优化后的 kernel：
