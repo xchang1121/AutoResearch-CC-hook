@@ -1,7 +1,7 @@
 """Manifest loading + progress JSON I/O for the batch runner.
 
 Workspace convention:
-    <workspace_dir>/
+    <batch_dir>/
         manifest.yaml | manifest.json    # user-authored
         batch_progress.json              # written here
         batch.log                        # written here
@@ -44,16 +44,16 @@ def _load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def find_manifest(workspace_dir: Path) -> Path:
+def find_manifest(batch_dir: Path) -> Path:
     """Return path to manifest.yaml or manifest.json, preferring YAML."""
-    yaml_path = workspace_dir / "manifest.yaml"
+    yaml_path = batch_dir / "manifest.yaml"
     if yaml_path.exists():
         return yaml_path
-    json_path = workspace_dir / "manifest.json"
+    json_path = batch_dir / "manifest.json"
     if json_path.exists():
         return json_path
     raise ManifestError(
-        f"no manifest.yaml or manifest.json in {workspace_dir}"
+        f"no manifest.yaml or manifest.json in {batch_dir}"
     )
 
 
@@ -69,7 +69,7 @@ def load_manifest(manifest_path: Path) -> dict:
     return data
 
 
-def resolve_cases(workspace_dir: Path, manifest: dict, mode: str) -> list[dict]:
+def resolve_cases(batch_dir: Path, manifest: dict, mode: str) -> list[dict]:
     """Apply the <op_name>_{ref,kernel}.py naming convention and return resolved
     case dicts. Pre-flight check that every referenced file exists.
 
@@ -86,7 +86,7 @@ def resolve_cases(workspace_dir: Path, manifest: dict, mode: str) -> list[dict]:
     ref_dir_raw = manifest.get("ref_dir")
     if not ref_dir_raw:
         raise ManifestError("manifest.ref_dir is required")
-    ref_dir = (workspace_dir / ref_dir_raw).resolve()
+    ref_dir = (batch_dir / ref_dir_raw).resolve()
     if not ref_dir.is_dir():
         raise ManifestError(f"ref_dir not found: {ref_dir}")
 
@@ -95,7 +95,7 @@ def resolve_cases(workspace_dir: Path, manifest: dict, mode: str) -> list[dict]:
         kernel_dir_raw = manifest.get("kernel_dir")
         if not kernel_dir_raw:
             raise ManifestError("kernel_dir required when mode=ref-kernel")
-        kernel_dir = (workspace_dir / kernel_dir_raw).resolve()
+        kernel_dir = (batch_dir / kernel_dir_raw).resolve()
         if not kernel_dir.is_dir():
             raise ManifestError(f"kernel_dir not found: {kernel_dir}")
 
@@ -115,14 +115,14 @@ def resolve_cases(workspace_dir: Path, manifest: dict, mode: str) -> list[dict]:
 
         ref_path = ref_dir / f"{op_name}_ref.py"
         if not ref_path.is_file():
-            raise ManifestError(f"{ref_path.relative_to(workspace_dir)} not found")
+            raise ManifestError(f"{ref_path.relative_to(batch_dir)} not found")
 
         kernel_path: Path | None = None
         if kernel_dir is not None:
             kernel_path = kernel_dir / f"{op_name}_kernel.py"
             if not kernel_path.is_file():
                 raise ManifestError(
-                    f"{kernel_path.relative_to(workspace_dir)} not found"
+                    f"{kernel_path.relative_to(batch_dir)} not found"
                 )
 
         cases.append({
@@ -134,18 +134,18 @@ def resolve_cases(workspace_dir: Path, manifest: dict, mode: str) -> list[dict]:
     return cases
 
 
-def load_progress(workspace_dir: Path) -> dict:
-    path = workspace_dir / PROGRESS_FILENAME
+def load_progress(batch_dir: Path) -> dict:
+    path = batch_dir / PROGRESS_FILENAME
     if not path.exists():
-        return {"workspace_dir": str(workspace_dir.resolve()), "cases": {}}
+        return {"batch_dir": str(batch_dir.resolve()), "cases": {}}
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
         raise ManifestError(f"corrupt progress file at {path}: {e}")
 
 
-def save_progress(workspace_dir: Path, progress: dict) -> None:
-    path = workspace_dir / PROGRESS_FILENAME
+def save_progress(batch_dir: Path, progress: dict) -> None:
+    path = batch_dir / PROGRESS_FILENAME
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(progress, indent=2), encoding="utf-8")
     os.replace(tmp, path)
@@ -202,17 +202,17 @@ def merge_cases(progress: dict, resolved_cases: list[dict],
     return progress, dropped
 
 
-def update_case(workspace_dir: Path, op_name: str, **fields: Any) -> None:
+def update_case(batch_dir: Path, op_name: str, **fields: Any) -> None:
     """Atomic update of one case's fields. Reloads progress file on each call
     so concurrent edits (e.g. by hand) aren't clobbered."""
-    progress = load_progress(workspace_dir)
+    progress = load_progress(batch_dir)
     case = progress.get("cases", {}).get(op_name)
     if case is None:
         raise ManifestError(f"unknown op_name: {op_name}")
     if "status" in fields and fields["status"] not in VALID_STATUSES:
         raise ManifestError(f"invalid status: {fields['status']}")
     case.update(fields)
-    save_progress(workspace_dir, progress)
+    save_progress(batch_dir, progress)
 
 
 def now_iso() -> str:

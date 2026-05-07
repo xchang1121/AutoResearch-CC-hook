@@ -1,19 +1,19 @@
-"""Auto-discover op names in a workspace by the <op>_ref.py / <op>_kernel.py
+"""Auto-discover op names in a batch dir by the <op>_ref.py / <op>_kernel.py
 naming convention, and optionally write/update the manifest's ops list.
 
 Usage:
     # Just print the discovered ops (one per line, sorted):
-    python .autoresearch/scripts/batch/discover.py <workspace_dir>
+    python .autoresearch/scripts/batch/discover.py <batch_dir>
 
     # Bootstrap a fresh manifest from filesystem state (when no manifest exists):
-    python .autoresearch/scripts/batch/discover.py <workspace_dir> \\
+    python .autoresearch/scripts/batch/discover.py <batch_dir> \\
         --mode ref-kernel --dsl triton_ascend --write-manifest
 
     # Refresh the ops list of an existing manifest after adding/removing files:
-    python .autoresearch/scripts/batch/discover.py <workspace_dir> --write-manifest
+    python .autoresearch/scripts/batch/discover.py <batch_dir> --write-manifest
 
     # Filter:
-    python .autoresearch/scripts/batch/discover.py <workspace_dir> \\
+    python .autoresearch/scripts/batch/discover.py <batch_dir> \\
         --filter "*norm" --exclude "groupnorm"
 
 Pairing rules:
@@ -47,14 +47,14 @@ def _scan_dir(dir_path: Path, suffix: str) -> set[str]:
     return out
 
 
-def discover(workspace_dir: Path, mode: str, ref_dir: str, kernel_dir: str | None,
+def discover(batch_dir: Path, mode: str, ref_dir: str, kernel_dir: str | None,
              include_glob: str | None, exclude_globs: list[str]) -> list[str]:
-    ref_path = (workspace_dir / ref_dir).resolve()
+    ref_path = (batch_dir / ref_dir).resolve()
     ref_ops = _scan_dir(ref_path, "_ref")
 
     if mode == "ref-kernel":
         assert kernel_dir is not None
-        kern_path = (workspace_dir / kernel_dir).resolve()
+        kern_path = (batch_dir / kernel_dir).resolve()
         kern_ops = _scan_dir(kern_path, "_kernel")
 
         only_ref = ref_ops - kern_ops
@@ -89,15 +89,15 @@ def _has_pyyaml() -> bool:
         return False
 
 
-def write_manifest(workspace_dir: Path, mode: str, dsl: str, ref_dir: str,
+def write_manifest(batch_dir: Path, mode: str, dsl: str, ref_dir: str,
                    kernel_dir: str | None, ops: list[str]) -> Path:
-    """Create or update <workspace>/manifest.{yaml,json}.
+    """Create or update <batch_dir>/manifest.{yaml,json}.
 
     Preserves any extra fields already present in the file. Only mode/dsl/
     ref_dir/kernel_dir/ops are written from this call.
     """
-    yaml_path = workspace_dir / "manifest.yaml"
-    json_path = workspace_dir / "manifest.json"
+    yaml_path = batch_dir / "manifest.yaml"
+    json_path = batch_dir / "manifest.json"
 
     if yaml_path.exists():
         target = yaml_path
@@ -140,7 +140,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description="Auto-discover ops by <op>_ref.py / <op>_kernel.py convention."
     )
-    ap.add_argument("workspace_dir")
+    ap.add_argument("batch_dir")
     ap.add_argument("--mode", choices=mf.VALID_MODES,
                     help="ref-kernel or ref (overrides existing manifest)")
     ap.add_argument("--dsl", default="",
@@ -161,13 +161,13 @@ def main() -> int:
                     help="when not writing manifest: print as JSON array")
     args = ap.parse_args()
 
-    workspace_dir = Path(args.workspace_dir).resolve()
-    if not workspace_dir.is_dir():
-        sys.exit(f"workspace dir not found: {workspace_dir}")
+    batch_dir = Path(args.batch_dir).resolve()
+    if not batch_dir.is_dir():
+        sys.exit(f"batch dir not found: {batch_dir}")
 
     existing: dict = {}
     try:
-        manifest_path = mf.find_manifest(workspace_dir)
+        manifest_path = mf.find_manifest(batch_dir)
         existing = mf.load_manifest(manifest_path)
     except mf.ManifestError:
         pass
@@ -191,7 +191,7 @@ def main() -> int:
         kernel_dir_for_scan = kernel_dir
 
     ops = discover(
-        workspace_dir, mode, ref_dir, kernel_dir_for_scan,
+        batch_dir, mode, ref_dir, kernel_dir_for_scan,
         include_glob=args.filter or None,
         exclude_globs=list(args.exclude),
     )
@@ -201,7 +201,7 @@ def main() -> int:
                  "ref_dir / kernel_dir.")
 
     if args.write_manifest:
-        target = write_manifest(workspace_dir, mode, dsl, ref_dir,
+        target = write_manifest(batch_dir, mode, dsl, ref_dir,
                                 kernel_dir if mode == "ref-kernel" else None,
                                 ops)
         print(f"wrote {len(ops)} ops to {target.name}")

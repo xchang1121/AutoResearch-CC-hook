@@ -33,6 +33,9 @@ from urllib.request import Request, urlopen
 
 SCRIPTS_DIR = Path(__file__).resolve().parent   # .autoresearch/scripts/
 
+sys.path.insert(0, str(SCRIPTS_DIR))
+import hw_detect  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # worker subcommand
@@ -77,7 +80,46 @@ def _tail(path: Path, n: int) -> str:
         return f"(cannot read {path}: {e})"
 
 
+def _resolve_auto(args: argparse.Namespace) -> None:
+    """Resolve `auto` placeholders for --backend / --devices / --arch in
+    place. Order matters: backend first (devices/arch depend on it), then
+    devices (arch depends on the picked device), then arch.
+
+    Selection rules (also documented in hw_detect.auto_*):
+      backend auto → npu-smi only → 'ascend';  nvidia-smi only → 'cuda';
+                     both / neither → error (refuse to guess).
+      devices auto → list every card via npu-smi/nvidia-smi, drop those
+                     with HBM/mem > 1 GiB OR util > 5%, pick the
+                     lowest-id survivor (deterministic across re-runs).
+                     If all cards are busy → error (refuse to evict).
+      arch auto    → derive from `npu-smi info` row (Name column) or
+                     `nvidia-smi --query-gpu=name` for the picked device.
+
+    Each step prints a one-line note to stderr so the user sees what was
+    chosen. On any failure we exit with the HwDetectError message.
+    """
+    try:
+        if args.backend == "auto":
+            args.backend = hw_detect.auto_select_backend()
+            print(f"[auto] backend = {args.backend}", file=sys.stderr)
+
+        if args.devices == "auto":
+            picked = hw_detect.auto_select_device(args.backend)
+            args.devices = str(picked)
+            print(f"[auto] devices = {args.devices}", file=sys.stderr)
+
+        if args.arch == "auto":
+            # If --devices is a comma list we derive arch from the first id
+            # — all cards in one host are the same arch in practice.
+            first_dev = int(args.devices.split(",")[0])
+            args.arch = hw_detect.auto_select_arch(args.backend, first_dev)
+            print(f"[auto] arch    = {args.arch}", file=sys.stderr)
+    except hw_detect.HwDetectError as e:
+        sys.exit(f"auto-detect failed: {e}")
+
+
 def _worker_start(args: argparse.Namespace) -> int:
+    _resolve_auto(args)
     if args.bg:
         return _worker_start_daemon(args)
 
@@ -297,14 +339,24 @@ def _add_worker_subcommand(sub: argparse._SubParsersAction) -> None:
     mx.add_argument("--status", action="store_true",
                     help="Curl /api/v1/status on --host:--port.")
 
-    p.add_argument("--backend", default="ascend",
-                   choices=["ascend", "cuda", "cpu"],
-                   help="Hardware backend (default: ascend).")
-    p.add_argument("--arch", default="ascend910b4",
+    p.add_argument("--backend", default="auto",
+                   choices=["ascend", "cuda", "cpu", "auto"],
+                   help="Hardware backend (default: auto). 'auto' picks "
+                        "ascend if npu-smi is in PATH, cuda if nvidia-smi "
+                        "is in PATH; if both/neither are present, fails "
+                        "and asks for an explicit value.")
+    p.add_argument("--arch", default="auto",
                    help="Arch string, e.g. ascend910b3 / a100 / x86_64 "
-                        "(default: ascend910b4).")
-    p.add_argument("--devices", default="0",
-                   help="Comma-separated device IDs, e.g. '2,5' (default: 0).")
+                        "(default: auto). 'auto' derives the arch from "
+                        "`npu-smi info` (Name column) or `nvidia-smi "
+                        "--query-gpu=name` for the picked device.")
+    p.add_argument("--devices", default="auto",
+                   help="Comma-separated device IDs, e.g. '2,5' (default: "
+                        "auto). 'auto' enumerates all cards, drops those "
+                        "with HBM/mem > 1 GiB or util > 5%%, and picks the "
+                        "LOWEST-id idle card (deterministic across re-runs "
+                        "— important for a long-running daemon). If every "
+                        "card is busy, fails rather than evicting one.")
     p.add_argument("--host", default=None,
                    help="Bind / probe address. Defaults to 0.0.0.0 for "
                         "--start (all interfaces) and 127.0.0.1 for "

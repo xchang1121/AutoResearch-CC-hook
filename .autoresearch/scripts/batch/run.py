@@ -1,12 +1,12 @@
 """Batch driver for /autoresearch.
 
-Loads a manifest from <workspace_dir>/manifest.{yaml,json}, resolves the op
+Loads a manifest from <batch_dir>/manifest.{yaml,json}, resolves the op
 list against the <op_name>_{ref,kernel}.py naming convention, then drives each
 op end-to-end via headless `claude --print`. Streams stdout to console and
 batch.log, updates batch_progress.json after every op.
 
 Usage:
-    python .autoresearch/scripts/batch/run.py <workspace_dir> \\
+    python .autoresearch/scripts/batch/run.py <batch_dir> \\
         --mode {ref-kernel,ref} [--dsl triton_ascend] \\
         [--devices N | --worker-url host:port] \\
         [--max-rounds 30] [--eval-timeout 120] [--timeout-min 180] \\
@@ -141,10 +141,10 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
-def acquire_lock(workspace_dir: Path) -> Path:
+def acquire_lock(batch_dir: Path) -> Path:
     """Prevent two run.py instances racing on the same batch_progress.json.
     Stale locks (PID gone) are auto-cleared; live locks abort with a hint."""
-    lock = workspace_dir / LOCK_FILENAME
+    lock = batch_dir / LOCK_FILENAME
     if lock.exists():
         try:
             pid = int(lock.read_text(encoding="utf-8").strip())
@@ -152,7 +152,7 @@ def acquire_lock(workspace_dir: Path) -> Path:
             pid = -1
         if pid > 0 and _pid_alive(pid):
             sys.exit(
-                f"\nanother batch run is active on this workspace "
+                f"\nanother batch run is active on this batch dir "
                 f"(pid={pid}, lock={lock}).\n"
                 f"if you're sure no run.py is running, remove {lock} and retry.\n"
             )
@@ -169,7 +169,7 @@ def release_lock(lock: Path) -> None:
 
 
 def recover_stale_running(progress: dict) -> int:
-    """Demote any 'running' cases to 'error'. We hold the workspace lock by
+    """Demote any 'running' cases to 'error'. We hold the batch dir lock by
     the time this is called, so anything still 'running' is an orphan from a
     previous run.py that died (SIGKILL, OOM, machine reboot)."""
     cases = progress.get("cases", {})
@@ -189,7 +189,7 @@ def recover_stale_running(progress: dict) -> int:
 def build_prompt(case: dict, mode: str, dsl: str, hw_arg: str,
                  max_rounds: int, eval_timeout: int) -> str:
     """Quote every value-bearing flag with shlex.quote so paths with
-    spaces (e.g. workspace under `C:\\Users\\Foo Bar\\...`, or
+    spaces (e.g. batch dir under `C:\\Users\\Foo Bar\\...`, or
     `--output-dir "my tasks"`) reach /autoresearch as one argv each.
     `hw_arg` is constructed by the caller from already-validated CLI
     flags — pass through unchanged."""
@@ -230,7 +230,7 @@ def env_with_no_proxy() -> dict[str, str]:
     return env
 
 
-def run_one(workspace_dir: Path, case: dict, args: argparse.Namespace,
+def run_one(batch_dir: Path, case: dict, args: argparse.Namespace,
             mode: str, dsl: str, hw_arg: str, log_fp) -> int:
     op = case["op_name"]
     repo_root = mf.repo_root()
@@ -240,7 +240,7 @@ def run_one(workspace_dir: Path, case: dict, args: argparse.Namespace,
 
     started = time.time()
     started_iso = mf.now_iso()
-    mf.update_case(workspace_dir, op,
+    mf.update_case(batch_dir, op,
                    status="running",
                    started_at=started_iso,
                    finished_at=None,
@@ -340,7 +340,7 @@ def run_one(workspace_dir: Path, case: dict, args: argparse.Namespace,
     # early-stop heuristic creep back in). Truth lives in .ar_state/.phase.
     td = mf.find_recent_task_dir(op, since_ts=started - 5)
     if td is None:
-        mf.update_case(workspace_dir, op,
+        mf.update_case(batch_dir, op,
                        status="error",
                        finished_at=mf.now_iso(),
                        rc=proc.returncode,
@@ -359,7 +359,7 @@ def run_one(workspace_dir: Path, case: dict, args: argparse.Namespace,
         if interrupted:
             note += "; interrupted"
 
-    mf.update_case(workspace_dir, op,
+    mf.update_case(batch_dir, op,
                    status=final_status,
                    task_dir=str(task_dir.resolve()),
                    finished_at=mf.now_iso(),
@@ -392,9 +392,20 @@ def filter_queue(progress: dict, args: argparse.Namespace) -> list[dict]:
     return out
 
 
-def print_summary(workspace_dir: Path, total_elapsed: float,
-                  ok: int, fail: int, skipped: int) -> None:
-    progress = mf.load_progress(workspace_dir)
+def print_summary(batch_dir: Path, total_elapsed: float,
+                  hw_arg: str) -> None:
+    """Compact end-of-batch report + concrete next-step commands.
+
+    Status lines: just done / error counts (skip / pending only shown when
+    nonzero). Speedup distribution collapses into a single line — regress
+    cases are part of `done`, not called out separately.
+
+    Next-step commands echo back enough of the original invocation that
+    the user can paste directly: batch dir path + the hardware flag we
+    were called with. mode / dsl are read from the manifest by run.py so
+    we don't repeat them.
+    """
+    progress = mf.load_progress(batch_dir)
     cases = progress.get("cases", {})
     counts = {"done": 0, "error": 0, "skip": 0, "pending": 0, "running": 0}
     speedups: list[float] = []
@@ -410,25 +421,56 @@ def print_summary(workspace_dir: Path, total_elapsed: float,
 
     print()
     print("=" * 72)
-    print(f"[batch done] elapsed={total_elapsed/60:.1f}min  "
-          f"ok={ok}  fail={fail}  skipped={skipped}")
-    print(f"           total cases: done={counts['done']}  error={counts['error']}  "
-          f"skip={counts['skip']}  pending={counts['pending']}  running={counts['running']}")
+    print(f"[batch done] elapsed={total_elapsed/60:.1f}min")
+
     if speedups:
         import statistics
-        improved = sum(1 for s in speedups if s > 1.05)
-        onpar = sum(1 for s in speedups if 0.95 <= s <= 1.05)
-        regr = sum(1 for s in speedups if s < 0.95)
-        print(f"           speedup: median={statistics.median(speedups):.2f}x  "
-              f"best={max(speedups):.2f}x  worst={min(speedups):.2f}x  "
-              f"(n={len(speedups)})")
-        print(f"           improved={improved}  on-par={onpar}  regress={regr}")
+        speed_note = (f"  (median {statistics.median(speedups):.2f}x, "
+                      f"best {max(speedups):.2f}x, "
+                      f"worst {min(speedups):.2f}x; "
+                      f"{len(speedups)} with metric)")
+    else:
+        speed_note = ""
+    print(f"  done : {counts['done']}{speed_note}")
+    print(f"  error: {counts['error']}")
+    if counts["skip"]:
+        print(f"  skip : {counts['skip']}")
+    if counts["pending"]:
+        print(f"  pending: {counts['pending']}")
+
+    # Resolve the batch dir path the way the user is most likely to type it
+    # (relative to repo root if it's under there; absolute otherwise).
+    repo_root = mf.repo_root()
+    try:
+        ws_str = str(batch_dir.relative_to(repo_root))
+    except ValueError:
+        ws_str = str(batch_dir)
+
+    suggestions: list[tuple[str, str]] = []
+    if counts["error"]:
+        suggestions.append((
+            f"retry {counts['error']} errored ops",
+            f"python .autoresearch/scripts/batch/run.py {ws_str} "
+            f"{hw_arg} --retry-errored",
+        ))
+    if counts["pending"]:
+        suggestions.append((
+            f"resume {counts['pending']} pending ops",
+            f"python .autoresearch/scripts/batch/run.py {ws_str} {hw_arg}",
+        ))
+
+    if suggestions:
+        print()
+        print("next steps:")
+        for label, cmd in suggestions:
+            print(f"  {label}:")
+            print(f"    {cmd}")
     print("=" * 72)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Batch driver for /autoresearch.")
-    ap.add_argument("workspace_dir", help="dir containing manifest.yaml/json")
+    ap.add_argument("batch_dir", help="dir containing manifest.yaml/json")
     ap.add_argument("--mode", choices=mf.VALID_MODES,
                     help="ref-kernel or ref (overrides manifest.mode)")
     ap.add_argument("--dsl", default="",
@@ -455,12 +497,12 @@ def main() -> int:
                     help="extra arg to pass to claude (repeatable)")
     args = ap.parse_args()
 
-    workspace_dir = Path(args.workspace_dir).resolve()
-    if not workspace_dir.is_dir():
-        sys.exit(f"workspace dir not found: {workspace_dir}")
+    batch_dir = Path(args.batch_dir).resolve()
+    if not batch_dir.is_dir():
+        sys.exit(f"batch dir not found: {batch_dir}")
 
     try:
-        manifest_path = mf.find_manifest(workspace_dir)
+        manifest_path = mf.find_manifest(batch_dir)
     except mf.ManifestError as e:
         sys.exit(str(e))
 
@@ -492,16 +534,16 @@ def main() -> int:
         health_check_worker(worker_url)
 
     try:
-        cases = mf.resolve_cases(workspace_dir, manifest_data, mode)
+        cases = mf.resolve_cases(batch_dir, manifest_data, mode)
     except mf.ManifestError as e:
         sys.exit(f"manifest validation failed: {e}")
 
-    lock_path = acquire_lock(workspace_dir)
+    lock_path = acquire_lock(batch_dir)
     try:
-        progress = mf.load_progress(workspace_dir)
+        progress = mf.load_progress(batch_dir)
         demoted = recover_stale_running(progress)
         progress, dropped = mf.merge_cases(progress, cases, mode, dsl)
-        mf.save_progress(workspace_dir, progress)
+        mf.save_progress(batch_dir, progress)
         if demoted:
             print(f"[batch] demoted {demoted} stale 'running' op(s) "
                   f"from a previous run -> error")
@@ -519,10 +561,10 @@ def main() -> int:
             queue = queue[: args.limit]
 
         print(f"[batch {datetime.now().isoformat(timespec='seconds')}] "
-              f"workspace={workspace_dir}  mode={mode}  dsl={dsl}  {hw_arg}\n"
+              f"batch_dir={batch_dir}  mode={mode}  dsl={dsl}  {hw_arg}\n"
               f"[batch] queue size: {len(queue)}  rounds={args.max_rounds}")
 
-        log_path = workspace_dir / mf.LOG_FILENAME
+        log_path = batch_dir / mf.LOG_FILENAME
         log_fp = log_path.open("a", encoding="utf-8", buffering=1)
 
         succeeded = failed = skipped = 0
@@ -531,7 +573,7 @@ def main() -> int:
         try:
             for i, case in enumerate(queue, 1):
                 op = case["op_name"]
-                current = filter_queue(mf.load_progress(workspace_dir), args)
+                current = filter_queue(mf.load_progress(batch_dir), args)
                 if not any(c["op_name"] == op for c in current):
                     print(f"[{i}/{len(queue)}] {op}: status changed underfoot, skipping")
                     skipped += 1
@@ -541,7 +583,7 @@ def main() -> int:
                       f"elapsed_total={(time.time()-total_started)/60:.1f}min")
 
                 try:
-                    rc = run_one(workspace_dir, case, args, mode, dsl, hw_arg, log_fp)
+                    rc = run_one(batch_dir, case, args, mode, dsl, hw_arg, log_fp)
                 except KeyboardInterrupt:
                     print("\n[batch] Ctrl-C — current op recorded, stopping.")
                     rc_final = 130
@@ -565,8 +607,7 @@ def main() -> int:
         finally:
             log_fp.close()
 
-        print_summary(workspace_dir, time.time() - total_started,
-                      succeeded, failed, skipped)
+        print_summary(batch_dir, time.time() - total_started, hw_arg)
         if rc_final:
             return rc_final
         return 0 if failed == 0 else 1

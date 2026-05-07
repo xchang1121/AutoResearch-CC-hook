@@ -1,10 +1,10 @@
-"""Print a human-readable report of <workspace>/batch_progress.json.
+"""Print a human-readable report of <batch_dir>/batch_progress.json.
 
 Designed for the "after the batch is done, what happened?" view — distinct
 from monitor.py which reads ar_tasks/ live state. Static, fast, copy-pasteable.
 
 Usage:
-    python .autoresearch/scripts/batch/summarize.py <workspace_dir>
+    python .autoresearch/scripts/batch/summarize.py <batch_dir>
 """
 from __future__ import annotations
 
@@ -20,17 +20,17 @@ import manifest as mf
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("workspace_dir")
+    ap.add_argument("batch_dir")
     args = ap.parse_args()
 
-    workspace_dir = Path(args.workspace_dir).resolve()
-    if not workspace_dir.is_dir():
-        sys.exit(f"workspace dir not found: {workspace_dir}")
+    batch_dir = Path(args.batch_dir).resolve()
+    if not batch_dir.is_dir():
+        sys.exit(f"batch dir not found: {batch_dir}")
 
-    progress = mf.load_progress(workspace_dir)
+    progress = mf.load_progress(batch_dir)
     cases = progress.get("cases", {})
     if not cases:
-        print(f"no cases recorded in {workspace_dir / mf.PROGRESS_FILENAME}")
+        print(f"no cases recorded in {batch_dir / mf.PROGRESS_FILENAME}")
         return 1
 
     by_status: dict[str, list[tuple[str, dict]]] = {
@@ -41,7 +41,7 @@ def main() -> int:
 
     total = len(cases)
     print(f"batch summary  ({datetime.now().isoformat(timespec='seconds')})")
-    print(f"workspace  {workspace_dir}")
+    print(f"batch_dir  {batch_dir}")
     print(f"mode={progress.get('mode', '?')}  dsl={progress.get('dsl', '?')}")
     print("─" * 60)
     print(f"  total:    {total}")

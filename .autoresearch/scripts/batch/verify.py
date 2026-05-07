@@ -1,4 +1,4 @@
-"""Pre-flight verification for batch workspaces.
+"""Pre-flight verification for batch directories.
 
 Two tiers:
   Tier 1 (default, no hardware needed):
@@ -14,12 +14,12 @@ Two tiers:
     - Only meaningful for --mode ref-kernel; --mode ref has no kernel to compare
 
 Each op is run in its own subprocess so import errors / device state in one op
-don't poison the others. Results land in <workspace>/verify_results.json.
+don't poison the others. Results land in <batch_dir>/verify_results.json.
 
 Usage:
-    python .autoresearch/scripts/batch/verify.py <workspace_dir>             # Tier 1
-    python .autoresearch/scripts/batch/verify.py <workspace_dir> --full      # Tier 1 + Tier 2
-    python .autoresearch/scripts/batch/verify.py <workspace_dir> --only op1,op2
+    python .autoresearch/scripts/batch/verify.py <batch_dir>             # Tier 1
+    python .autoresearch/scripts/batch/verify.py <batch_dir> --full      # Tier 1 + Tier 2
+    python .autoresearch/scripts/batch/verify.py <batch_dir> --only op1,op2
 """
 from __future__ import annotations
 
@@ -370,12 +370,94 @@ def _print_table(results: dict, mode: str, full: bool) -> None:
         print(f"  {op:<{op_w}}  {t1r:<6}  {t1k:<7}  {t2:<6}  {ok:<3}  {msg}")
 
 
+def run_verification(batch_dir: Path, *, mode: str | None = None,
+                     full: bool = False, only: str = "",
+                     atol_override: float | None = None,
+                     rtol_override: float | None = None) -> int:
+    """Run the verification loop programmatically (so prepare.py and other
+    scripts can call us without subprocessing). Returns the same exit code
+    main() would: 0 if everything passed, 1 if any FAIL/ERROR. All output
+    still goes to stdout for the caller to surface."""
+    batch_dir = Path(batch_dir).resolve()
+    if not batch_dir.is_dir():
+        sys.exit(f"batch dir not found: {batch_dir}")
+
+    try:
+        manifest_path = mf.find_manifest(batch_dir)
+        manifest_data = mf.load_manifest(manifest_path)
+    except mf.ManifestError as e:
+        sys.exit(str(e))
+
+    mode = mode or manifest_data.get("mode")
+    if not mode:
+        sys.exit("--mode is required (also accepted as `mode:` in manifest)")
+    if mode not in mf.VALID_MODES:
+        sys.exit(f"--mode must be one of {mf.VALID_MODES}, got {mode!r}")
+
+    atol = (atol_override if atol_override is not None
+            else float(manifest_data.get("correctness_atol", DEFAULT_ATOL)))
+    rtol = (rtol_override if rtol_override is not None
+            else float(manifest_data.get("correctness_rtol", DEFAULT_RTOL)))
+
+    try:
+        cases = mf.resolve_cases(batch_dir, manifest_data, mode)
+    except mf.ManifestError as e:
+        sys.exit(f"manifest validation failed: {e}")
+
+    only_set = {s.strip() for s in (only or "").split(",") if s.strip()}
+    if only_set:
+        cases = [c for c in cases if c["op_name"] in only_set]
+        if not cases:
+            sys.exit("--only filtered out all ops")
+
+    if full and mode == "ref":
+        print("note: --full has no effect in --mode ref (no kernel to compare)")
+
+    print(f"verify  batch_dir={batch_dir}  mode={mode}  "
+          f"tier={'1+2' if full else '1'}  ops={len(cases)}  "
+          f"tols: atol={atol:g}  rtol={rtol:g}")
+    print()
+
+    results: dict = {}
+    t0 = time.time()
+    for i, case in enumerate(cases, 1):
+        op = case["op_name"]
+        sys.stdout.write(f"  [{i:>3}/{len(cases)}] {op} ... ")
+        sys.stdout.flush()
+        rec = _verify_one(case, mode, full=full, atol=atol, rtol=rtol)
+        results[op] = rec
+        ok = _summary_status(rec, mode, full=full)
+        sys.stdout.write(f"{ok}\n")
+        sys.stdout.flush()
+
+    out_path = batch_dir / VERIFY_RESULTS
+    out_path.write_text(json.dumps({
+        "mode": mode, "full": full, "atol": atol, "rtol": rtol,
+        "results": results,
+    }, indent=2), encoding="utf-8")
+
+    print()
+    _print_table(results, mode, full=full)
+    print()
+
+    n_pass = sum(1 for op in results
+                 if _summary_status(results[op], mode, full) == "P")
+    n_fail = sum(1 for op in results
+                 if _summary_status(results[op], mode, full) == "F")
+    n_err = sum(1 for op in results
+                if _summary_status(results[op], mode, full) == "E")
+    print(f"  total={len(results)}  pass={n_pass}  fail={n_fail}  "
+          f"error={n_err}  elapsed={time.time()-t0:.1f}s")
+    print(f"  results: {out_path}")
+    return 0 if (n_fail == 0 and n_err == 0) else 1
+
+
 def main() -> int:
     if len(sys.argv) >= 2 and sys.argv[1] == "--tier-worker":
         return _worker_main()
 
-    ap = argparse.ArgumentParser(description="Pre-flight verify for batch workspaces.")
-    ap.add_argument("workspace_dir")
+    ap = argparse.ArgumentParser(description="Pre-flight verify for batch directories.")
+    ap.add_argument("batch_dir")
     ap.add_argument("--mode", choices=mf.VALID_MODES,
                     help="ref-kernel or ref (overrides manifest.mode)")
     ap.add_argument("--full", action="store_true",
@@ -394,83 +476,12 @@ def main() -> int:
                          f"default ({DEFAULT_RTOL}).")
     args = ap.parse_args()
 
-    workspace_dir = Path(args.workspace_dir).resolve()
-    if not workspace_dir.is_dir():
-        sys.exit(f"workspace dir not found: {workspace_dir}")
-
-    try:
-        manifest_path = mf.find_manifest(workspace_dir)
-        manifest_data = mf.load_manifest(manifest_path)
-    except mf.ManifestError as e:
-        sys.exit(str(e))
-
-    mode = args.mode or manifest_data.get("mode")
-    if not mode:
-        sys.exit("--mode is required (also accepted as `mode:` in manifest)")
-    if mode not in mf.VALID_MODES:
-        sys.exit(f"--mode must be one of {mf.VALID_MODES}, got {mode!r}")
-
-    # Resolve tolerances: CLI > manifest > default. Same defaults as
-    # autoresearch's loader, so a no-flag run agrees with /autoresearch's
-    # eval byte-for-byte.
-    atol = (args.correctness_atol
-            if args.correctness_atol is not None
-            else float(manifest_data.get("correctness_atol", DEFAULT_ATOL)))
-    rtol = (args.correctness_rtol
-            if args.correctness_rtol is not None
-            else float(manifest_data.get("correctness_rtol", DEFAULT_RTOL)))
-
-    try:
-        cases = mf.resolve_cases(workspace_dir, manifest_data, mode)
-    except mf.ManifestError as e:
-        sys.exit(f"manifest validation failed: {e}")
-
-    only = {s.strip() for s in (args.only or "").split(",") if s.strip()}
-    if only:
-        cases = [c for c in cases if c["op_name"] in only]
-        if not cases:
-            sys.exit(f"--only filtered out all ops")
-
-    if args.full and mode == "ref":
-        print("note: --full has no effect in --mode ref (no kernel to compare)")
-
-    print(f"verify  workspace={workspace_dir}  mode={mode}  "
-          f"tier={'1+2' if args.full else '1'}  ops={len(cases)}  "
-          f"tols: atol={atol:g}  rtol={rtol:g}")
-    print()
-
-    results: dict = {}
-    t0 = time.time()
-    for i, case in enumerate(cases, 1):
-        op = case["op_name"]
-        sys.stdout.write(f"  [{i:>3}/{len(cases)}] {op} ... ")
-        sys.stdout.flush()
-        rec = _verify_one(case, mode, full=args.full, atol=atol, rtol=rtol)
-        results[op] = rec
-        ok = _summary_status(rec, mode, full=args.full)
-        sys.stdout.write(f"{ok}\n")
-        sys.stdout.flush()
-
-    out_path = workspace_dir / VERIFY_RESULTS
-    out_path.write_text(json.dumps({
-        "mode": mode,
-        "full": args.full,
-        "atol": atol,
-        "rtol": rtol,
-        "results": results,
-    }, indent=2), encoding="utf-8")
-
-    print()
-    _print_table(results, mode, full=args.full)
-    print()
-
-    n_pass = sum(1 for op in results if _summary_status(results[op], mode, args.full) == "P")
-    n_fail = sum(1 for op in results if _summary_status(results[op], mode, args.full) == "F")
-    n_err = sum(1 for op in results if _summary_status(results[op], mode, args.full) == "E")
-    print(f"  total={len(results)}  pass={n_pass}  fail={n_fail}  error={n_err}  "
-          f"elapsed={time.time()-t0:.1f}s")
-    print(f"  results: {out_path}")
-    return 0 if (n_fail == 0 and n_err == 0) else 1
+    return run_verification(
+        Path(args.batch_dir),
+        mode=args.mode, full=args.full, only=args.only,
+        atol_override=args.correctness_atol,
+        rtol_override=args.correctness_rtol,
+    )
 
 
 if __name__ == "__main__":

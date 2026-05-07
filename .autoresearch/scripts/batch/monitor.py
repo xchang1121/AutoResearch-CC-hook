@@ -1,18 +1,19 @@
 """Live monitor for the batch run.
 
-Two modes (the user picks one per invocation):
-    python .autoresearch/scripts/batch/monitor.py <workspace_dir>            # one-shot snapshot
-    python .autoresearch/scripts/batch/monitor.py <workspace_dir> --watch    # auto-refresh
-    python .autoresearch/scripts/batch/monitor.py <workspace_dir> --dashboard
+    python .autoresearch/scripts/batch/monitor.py <batch_dir>
+        # auto-refreshing snapshot (default; Ctrl-C to stop)
+    python .autoresearch/scripts/batch/monitor.py <batch_dir> --dashboard
         # exec autoresearch's own dashboard.py on the active task (full TUI)
 
-Snapshot view shows:
+The view shows:
   - queue counts + visual progress bar
   - active task: phase, rounds, baseline/best/speedup, heartbeat age
   - active task: latest 3 history.jsonl decisions + plan.md head
   - tail of batch.log
   - speedup distribution across done ops
   - errored ops summary
+
+For a static, copy-pasteable end-of-batch report use summarize.py.
 """
 from __future__ import annotations
 
@@ -93,12 +94,12 @@ def tail_lines(path: Path, n: int = 8) -> list[str]:
         return []
 
 
-def render(workspace_dir: Path, progress: dict, active: dict | None,
+def render(batch_dir: Path, progress: dict, active: dict | None,
            log_tail: list[str]) -> str:
     out: list[str] = []
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     out.append(f"━━━ batch monitor  {now} ━━━")
-    out.append(f"workspace  {workspace_dir}")
+    out.append(f"batch_dir  {batch_dir}")
     mode = progress.get("mode", "?")
     dsl = progress.get("dsl", "?")
     out.append(f"mode={mode}  dsl={dsl}")
@@ -119,6 +120,29 @@ def render(workspace_dir: Path, progress: dict, active: dict | None,
                f"error={counts['error']:3d}  skip={counts['skip']:3d}  "
                f"pending={counts['pending']:3d}  running={counts['running']:3d}")
     out.append(f"        [{bar}]")
+
+    # Cumulative elapsed across reboots/sessions (per-op timestamps in
+    # batch_progress.json). done = sum(finished_at - started_at) for ops
+    # that finished; current_op = (now - started_at) for the running op.
+    done_secs = 0.0
+    running_secs = 0.0
+    now_dt = datetime.now()
+    for v in cases.values():
+        s = v.get("started_at")
+        f = v.get("finished_at")
+        if not s:
+            continue
+        try:
+            s_dt = datetime.fromisoformat(s)
+            if f:
+                done_secs += (datetime.fromisoformat(f) - s_dt).total_seconds()
+            elif v.get("status") == "running":
+                running_secs += (now_dt - s_dt).total_seconds()
+        except (TypeError, ValueError):
+            pass
+    total_secs = done_secs + running_secs
+    out.append(f"elapsed done={done_secs/60:.1f}min  current_op={running_secs/60:.1f}min  "
+               f"total={total_secs/60:.1f}min ({total_secs/3600:.2f}h)")
     out.append("")
 
     if active:
@@ -213,20 +237,18 @@ def clear_screen() -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("workspace_dir")
-    ap.add_argument("--watch", action="store_true",
-                    help="refresh on a loop instead of one-shot")
+    ap.add_argument("batch_dir")
     ap.add_argument("-n", "--interval", type=int, default=15,
-                    help="refresh interval in seconds (with --watch)")
+                    help="refresh interval in seconds (default: 15)")
     ap.add_argument("--dashboard", action="store_true",
                     help="exec autoresearch's dashboard.py on the active task")
     ap.add_argument("--task-dir", default="",
                     help="for --dashboard: explicit task_dir (default: most recent)")
     args = ap.parse_args()
 
-    workspace_dir = Path(args.workspace_dir).resolve()
-    if not workspace_dir.is_dir():
-        sys.exit(f"workspace dir not found: {workspace_dir}")
+    batch_dir = Path(args.batch_dir).resolve()
+    if not batch_dir.is_dir():
+        sys.exit(f"batch dir not found: {batch_dir}")
 
     if args.dashboard:
         if args.task_dir:
@@ -247,24 +269,21 @@ def main() -> int:
         except Exception:
             pass
 
-    log_path = workspace_dir / mf.LOG_FILENAME
+    log_path = batch_dir / mf.LOG_FILENAME
 
     def render_once() -> str:
-        progress = mf.load_progress(workspace_dir)
+        progress = mf.load_progress(batch_dir)
         active_dir = mf.find_active_task_dir()
         active = task_state(active_dir) if active_dir else None
         log_tail = tail_lines(log_path, n=6)
-        return render(workspace_dir, progress, active, log_tail)
-
-    if not args.watch:
-        print(render_once())
-        return 0
+        return render(batch_dir, progress, active, log_tail)
 
     try:
         while True:
             body = render_once()
             footer = (f"\n(refresh every {args.interval}s; Ctrl-C to stop  |  "
-                      f"full TUI: monitor.py --dashboard)")
+                      f"full TUI: monitor.py --dashboard  |  "
+                      f"static report: summarize.py)")
             clear_screen()
             print(body + footer, flush=True)
             time.sleep(args.interval)
