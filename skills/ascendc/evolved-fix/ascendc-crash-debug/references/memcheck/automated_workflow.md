@@ -1,24 +1,24 @@
-# AscendC Memcheck Automation Workflow Guide
+# AscendC Memcheck 自动化工作流指南
 
-## Overview
+## 概述
 
-Step 1-3 of `run_memcheck_pre.sh` script automating AscendC memory detection workflow:
+`run_memcheck_pre.sh` 脚本自动化执行 AscendC 内存检测工作流的第 1-3 步：
 
-1. **Compiled**: operator compiled using the Sanitizer option
-2. **Installation**: installation of operator packages to `code_base_dir/custom_output_dir` directory
-3. **Run MemCheck**: perform mssanitizer memcheck testing
+1. **编译**：使用 sanitizer 选项编译算子
+2. **安装**：安装算子包到 `code_base_dir/custom_output_dir` 目录
+3. **运行 MemCheck**：执行 mssanitizer memcheck 检测
 
-## Fast start.
+## 快速开始
 
-### 1. Prepare configuration file.
+### 1. 准备配置文件
 
-Copy template from skill directory to current working directory:
+从技能目录复制模板到当前工作目录：
 
 ```bash
 cp scripts/memcheck_input.json.template memcheck_input.json
 ```
 
-Edit `memcheck_input.json` to complete the required parameters:
+编辑 `memcheck_input.json`，填写必要的参数：
 
 ```json
 {
@@ -42,96 +42,96 @@ Edit `memcheck_input.json` to complete the required parameters:
 }
 ```
 
-### 2. Copy running scripts
+### 2. 拷贝并运行脚本
 
-Copy script from the skill directory to the current path and execute:
+从技能目录拷贝脚本到当前路径并执行：
 
 ```bash
 cp scripts/run_memcheck_pre.sh .
 ./run_memcheck_pre.sh
 ```
 
-### 3. View Results
+### 3. 查看结果
 
-Output results saved in `code_base_dir/memcheck_output/` directory:
+输出结果保存在 `code_base_dir/memcheck_output/` 目录：
 
 ```
 code_base_dir/memcheck_output/
-├── status.txt              # Summary of status of implementation
+├── status.txt              # 执行状态摘要
 ├── build/
-│   ├── build.log           # Compile Log
-│   ├── build_errors.log    # Compile Error Log
-│   └── package_path.txt    # Path to Compile Product
+│   ├── build.log           # 编译日志
+│   ├── build_errors.log    # 编译错误日志
+│   └── package_path.txt    # 编译产物路径
 ├── install/
-│   ├── install.log         # Install Log
-│   └── install_errors.log  # Install Error Log
+│   ├── install.log         # 安装日志
+│   └── install_errors.log  # 安装错误日志
 ├── memcheck/
-│   ├── memcheck.log        # Memcheck Log
-│   ├── ascendc_memcheck_report_raw.txt  # Original report
-│   └── mindstudio_sanitizer_log/        # mssanitizer Log
-└── timestamp.txt           # Time stamp for execution
+│   ├── memcheck.log        # Memcheck 日志
+│   ├── ascendc_memcheck_report_raw.txt  # 原始报告
+│   └── mindstudio_sanitizer_log/        # mssanitizer 日志
+└── timestamp.txt           # 执行时间戳
 ```
 
-## Detailed description
+## 详细说明
 
-### configuration file Parameters
+### 配置文件参数
 
-| Field Path | Annotations | Whether necessary | Default value | Example: |
+| 字段路径 | 说明 | 是否必需 | 默认值 | 示例 |
 |---------|------|---------|--------|------|
-| `operator.name` | Name of operator | Yes. | - | `"sparse_flash_attention_enhance"` |
-| `paths.code_base_dir` | Code Library Directory (includes build.sh) | Yes. | - | `"/home/user/code/training/ascendc"` |
-| `testing.test_script_dir` | ST Test Script Absolute Path | Yes | - | `"/home/user/code/training/ascendc/.../tests/st"` |
-| `testing.test_script_exe` | ST Test Script Execution | Yes | - | `"pytest test_npu_xxx.py"` |
-| `environment.device_type` | NPU device type | Yes. | - | `"ascend910b"` |
-| `environment.cann_env` | CANN Environment Path | Yes. | - | `"/home/user/pkg/cann/latest"` |
-| `compilation.sanitizer_options` | Compile Options | Yes | `"-sanitizer;-g"` | `"-sanitizer;-g"` |
-| `memcheck.log_level` | Log Level | Yes | `"3"` | `"3"` |
-| `memcheck.slog_print_to_stdout` | Standard Output Switches | Yes | `"true"` | `"true"` |
-| `memcheck.timeout` | Timeout (sec) | Yes | `600` | `600` |
-| `options.rebuild` | Renumbered or not | Yes | `true` | `true` |
-| `installation.load_environment` | Whether to load operator environment | Yes | `true` | `true` |
+| `operator.name` | 算子名称 | 是 | - | `"sparse_flash_attention_enhance"` |
+| `paths.code_base_dir` | 代码库根目录（包含 build.sh） | 是 | - | `"/home/user/code/training/ascendc"` |
+| `testing.test_script_dir` | ST 测试脚本绝对路径 | 否 | - | `"/home/user/code/training/ascendc/.../tests/st"` |
+| `testing.test_script_exe` | ST 测试脚本执行方式 | 否 | - | `"pytest test_npu_xxx.py"` |
+| `environment.device_type` | NPU 设备类型 | 是 | - | `"ascend910b"` |
+| `environment.cann_env` | CANN 环境路径 | 是 | - | `"/home/user/pkg/cann/latest"` |
+| `compilation.sanitizer_options` | 编译选项 | 否 | `"-sanitizer;-g"` | `"-sanitizer;-g"` |
+| `memcheck.log_level` | 日志级别 | 否 | `"3"` | `"3"` |
+| `memcheck.slog_print_to_stdout` | 标准输出开关 | 否 | `"true"` | `"true"` |
+| `memcheck.timeout` | 超时时间（秒） | 否 | `600` | `600` |
+| `options.rebuild` | 是否重新编译 | 否 | `true` | `true` |
+| `installation.load_environment` | 是否加载算子环境 | 否 | `true` | `true` |
 
-### command line Parameters
+### 命令行参数
 
 ```bash
 ./run_memcheck_pre.sh [options]
 ```
 
-| Parameters | Annotations |
+| 参数 | 说明 |
 |------|------|
-| `-h, --help` | Show help information |
-| `-c, --config FILE` | configuration file path (default: `./memcheck_input.json`) |
-| `--skip-build` | Skip Compiler Steps |
-| `--keep-build` | Keep Build Directory |
-| `--verbose` | Show Detailed Output |
+| `-h, --help` | 显示帮助信息 |
+| `-c, --config FILE` | 配置文件路径（默认：`./memcheck_input.json`） |
+| `--skip-build` | 跳过编译步骤 |
+| `--keep-build` | 保留构建目录 |
+| `--verbose` | 显示详细输出 |
 
-### Use Example
+### 使用示例
 
-#### Example 1: Use default configuration
+#### 示例 1：使用默认配置
 
 ```bash
 ./run_memcheck_pre.sh
 ```
 
-#### Example 2: Specify configuration file
+#### 示例 2：指定配置文件
 
 ```bash
 ./run_memcheck_pre.sh --config /path/to/my_config.json
 ```
 
-#### Example 3: Skip Compiled (Accompiled)
+#### 示例 3：跳过编译（已有编译产物）
 
 ```bash
 ./run_memcheck_pre.sh --skip-build
 ```
 
-#### Example 4: Detailed output mode
+#### 示例 4：详细输出模式
 
 ```bash
 ./run_memcheck_pre.sh --verbose
 ```
 
-#### Example 5: Grouping Options
+#### 示例 5：组合选项
 
 ```bash
 ./run_memcheck_pre.sh \
@@ -139,110 +139,110 @@ code_base_dir/memcheck_output/
   --verbose
 ```
 
-## Workflow
+## 工作流程
 
-### Full workflow (3 steps)
+### 完整工作流程（3 步）
 
-1. **Compiled operator**
-   - Load CANN Environment: `source <cann_env>/bin/setenv.bash`
-   - Enter code directory: `cd <code_base_dir>`
-   - Execute Compiled: `bash build.sh -n <op_name> -c <device> -p <cann_env> --ops-compile-options "<sanitizer_opts>"`
-   - Check compiler (.run files)
-   - Save compiler path to `memcheck_output/build/package_path.txt`
+1. **编译算子**
+   - 加载 CANN 环境：`source <cann_env>/bin/setenv.bash`
+   - 进入代码目录：`cd <code_base_dir>`
+   - 执行编译：`bash build.sh -n <op_name> -c <device> -p <cann_env> --ops-compile-options "<sanitizer_opts>"`
+   - 检查编译产物（.run 文件）
+   - 保存编译产物路径到 `memcheck_output/build/package_path.txt`
 
-2. **Installed operator**
-   - Find compiler: Find.run files from `code_base_dir/output` directory
-   - Create/cleanup installation directory: `code_base_dir/custom_output_dir/`
-   - Execute installation: `./output/<package>.run --install-path=<code_base_dir/custom_output_dir>`
-   - Load operator Environment (optional): `source <code_base_dir>/custom_output_dir/vendors/omni_training_custom_ops/bin/set_env.bash`
+2. **安装算子**
+   - 查找编译产物：从 `code_base_dir/output` 目录查找 .run 文件
+   - 创建/清理安装目录：`code_base_dir/custom_output_dir/`
+   - 执行安装：`./output/<package>.run --install-path=<code_base_dir/custom_output_dir>`
+   - 加载算子环境（可选）：`source <code_base_dir>/custom_output_dir/vendors/omni_training_custom_ops/bin/set_env.bash`
 
-3. **Run MemCheck**
-   - Set log environment variable:
+3. **运行 MemCheck**
+   - 设置日志环境变量：
      - `ASCEND_GLOBAL_LOG_LEVEL=<log_level>`
      - `ASCEND_SLOG_PRINT_TO_STDOUT=<slog_print>`
-   - Enter ST directory (extract from `test_script_dir` absolute path)
-   - Implementation: `mssanitizer --tool=memcheck <test_script_exe>`
-   - Collect output and log file
-   - Generate status report:
-     - Statistics ERRO and WARNING Number
-     - Show pre-5 errors/warnings
-     - Check the test results.
+   - 进入 ST 目录（从 `test_script_dir` 绝对路径提取）
+   - 执行：`mssanitizer --tool=memcheck <test_script_exe>`
+   - 收集输出和日志文件
+   - 生成状态报告：
+     - 统计 ERROR 和 WARNING 数量
+     - 显示前 5 条错误/警告
+     - 检查测试结果
 
-### Skip compile workflow
+### 跳过编译的工作流程
 
-When using `--skip-build` or `rebuild=false` in configuration file:
+当使用 `--skip-build` 或配置文件中 `rebuild=false` 时：
 
-1. **Skip compile**: direct to existing compilers
-2. **Install operator**: Search and install existing operator packages from `code_base_dir/output` to `code_base_dir/custom_output_dir`
-3. **Run MemCheck**: perform memory testing
+1. **跳过编译**：直接使用现有的编译产物
+2. **安装算子**：从 `code_base_dir/output` 查找现有算子包并安装到 `code_base_dir/custom_output_dir`
+3. **运行 MemCheck**：执行内存检测
 
-## Output file description
+## 输出文件说明
 
 ### status.txt
 
-Summary of the status of implementation, including:
-- Implementation time
-- configuration file Path
-- Implementation status of steps (success/failure/jump)
-- List of Output File Paths
+执行状态摘要，包含：
+- 执行时间
+- 配置文件路径
+- 各步骤执行状态（成功/失败/跳过）
+- 输出文件路径列表
 
 ### build/
 
-Compile related logs:
-- `build.log`: Full compilation output
-- `build_errors.log`: Compile error message (if compilation fails)
-- `package_path.txt`: Absolute Path to Compiled Product
+编译相关日志：
+- `build.log`：完整的编译输出
+- `build_errors.log`：编译错误信息（如果编译失败）
+- `package_path.txt`：编译产物的绝对路径
 
 ### install/
 
-Install related logs:
-- `install.log`: Full installation output
-- `install_errors.log`: Install error message (if installation fails)
+安装相关日志：
+- `install.log`：完整的安装输出
+- `install_errors.log`：安装错误信息（如果安装失败）
 
 ### memcheck/
 
-Memcheck Related Document:
-- `memcheck.log`: Full memcheck output (copy from raw_report)
-- `ascendc_memcheck_report_raw.txt`: Original Memcheck Report
-- Detailed logs generated by the `mindstudio_sanitizer_log/`:mssanitizer tool
+Memcheck 相关文件：
+- `memcheck.log`：完整的 memcheck 输出（从 raw_report 复制）
+- `ascendc_memcheck_report_raw.txt`：原始 memcheck 报告
+- `mindstudio_sanitizer_log/`：mssanitizer 工具生成的详细日志
 
-## Error Handling
+## 错误处理
 
-The script will exit and return the non-zero-state code in the following cases:
+脚本会在以下情况退出并返回非零状态码：
 
-1. configuration file does not exist or format error
-2. Cann Environment Script does not exist
-3. No code catalogue or compiled script exists
-4. Compiled failed
-5. Installation Failed
-6. Test directory does not exist
-7. Memcheck failed (as appropriate)
+1. 配置文件不存在或格式错误
+2. CANN 环境脚本不存在
+3. 代码目录或编译脚本不存在
+4. 编译失败
+5. 安装失败
+6. 测试目录不存在
+7. Memcheck 执行失败（根据情况）
 
-Each failure saves the complete error message in the log.
+每次失败都会在日志中保存完整的错误信息。
 
-## common issue
+## 常见问题
 
-### Q: How do you change the compilation options?
+### Q: 如何更改编译选项？
 
-A: Edit `compilation.sanitizer_options` fields from configuration file.
+A: 编辑配置文件中的 `compilation.sanitizer_options` 字段。
 
 ```json
 {
   "compilation": {
-    "sanitizer_options": "-sanitizer;-g"  // Use full debug information
+    "sanitizer_options": "-sanitizer;-g"  // 使用完整调试信息
   }
 }
 ```
 
-### Q: How can only run MemCheck, not recompilation?
+### Q: 如何只运行 MemCheck，不重新编译？
 
-A: Set `rebuild=false` using `--skip-build` parameters or in configuration file.
+A: 使用 `--skip-build` 参数或在配置文件中设置 `rebuild=false`。
 
 ```bash
 ./run_memcheck_pre.sh --skip-build
 ```
 
-or
+或
 
 ```json
 {
@@ -252,41 +252,41 @@ or
 }
 ```
 
-### Q: Where are the products kept?
+### Q: 产物保存在哪里？
 
-A: All outputs are stored in the `code_base_dir/memcheck_output/` directory. The operator package is installed in the `code_base_dir/custom_output_dir/` directory.
+A: 所有输出保存在 `code_base_dir/memcheck_output/` 目录。算子包安装在 `code_base_dir/custom_output_dir/` 目录。
 
-### Q: How do you view Memcheck's results?
+### Q: 如何查看 Memcheck 结果？
 
-A: View `code_base_dir/memcheck_output/memcheck/ascendc_memcheck_report_raw.txt` files.
+A: 查看 `code_base_dir/memcheck_output/memcheck/ascendc_memcheck_report_raw.txt` 文件。
 
-### Q: What depends on the script?
+### Q: 脚本需要什么依赖？
 
-A: Scripts require:
+A: 脚本需要：
 - Bash 3.2+
-- Python 3.6+ (for interpretation of JSON)
-- CANN Environment
-- mssanitizer tool (usually provided by CANN)
+- Python 3.6+（用于解析 JSON）
+- CANN 环境
+- mssanitizer 工具（通常由 CANN 提供）
 
-### Q: Why does testing scripts use absolute paths?
+### Q: 测试脚本为什么使用绝对路径？
 
-A: The use of absolute paths avoids a relative path calculation error, especially when performing scripts in different directories. configuration file uses `test_script_dir` to specify an absolute path to the test directory, and `test_script_exe` to specify an order (usually a pytest command) to be executed under this directory.
+A: 使用绝对路径可以避免相对路径计算错误，特别是在不同目录执行脚本时更可靠。配置文件中使用 `test_script_dir` 指定测试目录绝对路径，`test_script_exe` 指定在该目录下执行的命令（通常为 pytest 命令）。
 
-### Q: What is the use of `memcheck.timeout` parameters?
+### Q: `memcheck.timeout` 参数有什么用？
 
-A: This parameter is defined in configuration file and is used to set the time limit (in seconds) for Memcheck execution, by default 600 seconds (10 minutes). The process may be terminated if the execution time exceeds the set value.
+A: 此参数在配置文件中定义，用于设置 Memcheck 执行的超时时间（单位：秒），默认 600 秒（10 分钟）。如果执行时间超过设定值，进程可能被终止。
 
-### Q: How does installation fail?
+### Q: 安装失败如何处理？
 
-A: Script cleans up old installation directories and re-installs. If it fails:
-1. Check `code_base_dir/memcheck_output/install/install.log` for detailed errors
-2. Check if there's any remaining files in the catalogue.
-3. Manually clear `code_base_dir/custom_output_dir/` directory
-4. Rerun Script
+A: 脚本会先清理旧安装目录，然后重新安装。如果失败：
+1. 检查 `code_base_dir/memcheck_output/install/install.log` 了解详细错误
+2. 检查是否还有残留文件占用目录
+3. 手动清理 `code_base_dir/custom_output_dir/` 目录
+4. 重新运行脚本
 
-### Q: How do you disable the automatic loading of operator environment?
+### Q: 如何禁用自动加载算子环境？
 
-A: Set `installation.load_environment` in configuration file as `false`:
+A: 在配置文件中设置 `installation.load_environment` 为 `false`：
 
 ```json
 {
@@ -296,65 +296,65 @@ A: Set `installation.load_environment` in configuration file as `false`:
 }
 ```
 
-## Distinction from manual execution
+## 与手动执行的区别
 
-| Item | Manually execute | Automation Script |
+| 项目 | 手动执行 | 自动化脚本 |
 |------|---------|-----------|
-| Configure | Set command line parameters manually each time | Management through JSON configuration file |
-| Compile | Manually execute build.sh | Automatically execute and check results |
-| Install | Manually search for installation packages and specify paths | Automatically search and install to a fixed path |
-| Environment | Manually load several times | Automatically load necessary environments according to configuration |
-| Log | Dispersive Save | Centralize to `code_base_dir/memcheck_output` |
-| Error Handling | Need manual check. | Automatically detect and report |
-| Test script path | Manually calculate relative/absolute paths | Use absolute path to automatically enter the test directory |
-| Install Path Management | Need to specify absolute paths manually | Fixed on `code_base_dir/custom_output_dir/` |
-| Summary of results | Require manual statistics | Automatically generate ERRO/WARNING |
+| 配置 | 每次手动设置命令行参数 | 通过 JSON 配置文件管理 |
+| 编译 | 手动执行 build.sh | 自动执行并检查结果 |
+| 安装 | 手动查找安装包并指定路径 | 自动查找并安装到固定路径 |
+| 环境 | 手动加载多次 | 根据配置自动加载必要环境 |
+| 日志 | 分散保存 | 集中管理到 `code_base_dir/memcheck_output` |
+| 错误处理 | 需要手动检查 | 自动检测并报告 |
+| 测试脚本路径 | 需要手动计算相对/绝对路径 | 使用绝对路径，自动进入测试目录 |
+| 安装路径管理 | 需要手动指定绝对路径 | 固定安装在 `code_base_dir/custom_output_dir/` |
+| 结果摘要 | 需要手动统计 | 自动生成 ERROR/WARNING 数量摘要 |
 
-## Next steps
+## 后续步骤
 
-After the script is finished, continue step 4-7:
+脚本完成后，继续执行第 4-7 步：
 
-1. **Analysis error output**: View ERRO and WARDING in memcheck report
-2. **Location source code**: based on call stack location problem code
-3. **Root analysis**: analytical error
-4. **Generating report**: Create detailed memory detection report
+1. **分析错误输出**：查看 memcheck 报告中的 ERROR 和 WARNING
+2. **定位源代码**：根据调用栈定位问题代码
+3. **根因分析**：分析错误原因
+4. **生成报告**：创建详细的内存检测报告
 
-For further information, please refer to the main document [`SKILL.md`] (./SKILL.md).
+详细步骤请参考主文档 [`SKILL.md`](./SKILL.md)。
 
-## Skills and recommendations
+## 技巧和建议
 
-### 1. Manage configuration file using version control
+### 1. 使用版本控制管理配置文件
 
-Create a different configuration file for a different operator or test scenario:
+为不同的算子或测试场景创建不同的配置文件：
 
 ```bash
 cp scripts/memcheck_input.json.template memcheck_input_op1.json
 cp scripts/memcheck_input.json.template memcheck_input_op2.json
 ```
 
-### 2. Custom Timeout
+### 2. 定制超时时间
 
-For large operator or complex test case, adjust `memcheck.timeout` parameters:
+对于大型算子或复杂测试用例，调整 `memcheck.timeout` 参数：
 
 ```json
 {
   "memcheck": {
-    "timeout": 1200  // 20 min
+    "timeout": 1200  // 20 分钟
   }
 }
 ```
 
-### 3. Debug Mode
+### 3. 调试模式
 
-View detailed execution using `--verbose`:
+使用 `--verbose` 查看详细执行过程：
 
 ```bash
 ./run_memcheck_pre.sh --verbose
 ```
 
-### 4. Batch Test
+### 4. 批量测试
 
-Multioperator test (create test script) in conjunction with script:
+结合脚本进行多算子测试（创建测试脚本）：
 
 ```bash
 #!/bin/bash
@@ -365,54 +365,54 @@ for config in memcheck_input_*.json; do
 done
 ```
 
-### 5. Environmental management
+### 5. 环境管理
 
-- Set `load_environment: false` if you do not want scripts to automatically load operator environment
-- The compilation environment (CANN) and the operator environment are managed separately, without interference
+- 如果不希望脚本自动加载算子环境，设置 `load_environment: false`
+- 编译环境（CANN）和算子环境会分别管理，互不干扰
 
-### 6. Clear old version
+### 6. 清理旧版本
 
-If a version of the operator package is no longer needed:
+如果不再需要某个版本的算子包：
 
 ```bash
-# Manually delete specified custom_output_dir directory
+# 手动删除指定的 custom_output_dir 目录
 rm -rf /path/to/code/base/custom_output_dir
 
-# or modify the code_base_dir configuration to a different code directory
+# 或修改 code_base_dir 配置指向不同的代码目录
 ```
 
-## Contents
+## 目录说明
 
-### skill Directory Structure
+### 技能目录结构
 
 ```
 ascendc-crash-debug/
 ├── scripts/
-│   ├── memcheck_input.json.template    # configuration fileTemplates
-│   ├── run_memcheck_pre.sh             # Automation Script
-│   └── parse_plog.py                   # plog Log Resolution Script
+│   ├── memcheck_input.json.template    # 配置文件模板
+│   ├── run_memcheck_pre.sh             # 自动化脚本
+│   └── parse_plog.py                   # plog 日志解析脚本
 └── references/
     └── memcheck/
-        ├── automated_workflow.md       # This document - Automation workflow guide
-        ├── README.md                   # User Use Guide
-        └── mssanitizer_guide.md        # msSanitizer Tool Original Document
+        ├── automated_workflow.md       # 本文档 - 自动化工作流指南
+        ├── README.md                   # 用户使用指南
+        └── mssanitizer_guide.md        # msSanitizer 工具原始文档
 ```
 
-## Support and feedback
+## 支持和反馈
 
-If you have a problem, please check:
+如遇问题，请检查：
 
-1. Whether configuration file format is correct (JSON syntax)
-2. All required parameters have been completed
-3. CanN Environmental Path Correct
-4. Whether NPU device is available
-5. error message in log file
-6. Is there another process to use the operator package installation path
-7. Test whether Script Directory exists
-8. Tests if script names match configuration
+1. 配置文件格式是否正确（JSON 语法）
+2. 所有必需参数是否已填写
+3. CANN 环境路径是否正确
+4. NPU 设备是否可用
+5. 日志文件中的错误信息
+6. 是否有其他进程占用算子包安装路径
+7. 测试脚本目录是否存在
+8. 测试脚本名称是否与配置一致
 
 ---
 
-**Document version**: 2.4
-**Final update**: 2026-05-16
-**Applicable version**: ascendc-crash-debug skill (memcheck submodule)
+**文档版本**: 2.4
+**最后更新**: 2026-05-16
+**适用版本**: ascendc-crash-debug skill (memcheck 子模块)

@@ -1,6 +1,6 @@
 ---
 name: triton-ascend-ascend-hardware-constraints
-description: "AscendHardware constraints andcompilerLimit speed check. CoverCUBE/VECStorage level budget calculation methodology,bishengIR compilerKnown limitations,strided accessPerformance characteristics. They apply to allTriton Ascend operatorGenerate and debug scenes."
+description: "Ascend 硬件约束与编译器限制速查。涵盖 CUBE/VEC 存储层级预算计算方法、bishengIR 编译器已知限制、strided access 性能特征。适用于所有 Triton Ascend 算子生成和调试场景。"
 category: fundamental
 version: "1.0.0"
 metadata:
@@ -10,78 +10,78 @@ metadata:
   operator_type: "all"
 ---
 
-# Ascend Hardware Containment and compiler Limit
+# Ascend 硬件约束与编译器限制
 
-> Depending on the specific size of the hardware for the different models, operator is generated with simultaneous input into the hardware information document, and the volume values in the formula below refer to that document.
+> 不同型号的硬件具体容量不同，算子生成时会同步传入硬件信息文档，以下公式中的容量值请参考该文档。
 
-## 1. Storage level budget
+## 1. 存储层级预算
 
-### CUBE Path (matmul / tl.dot)
+### CUBE 路径（matmul / tl.dot）
 
-Matmul data walk L0A/L0B/L0C,**without going through UB**:
+Matmul 数据走 L0A/L0B/L0C，**不经过 UB**：
 
-| Buffer zone | Purpose | A binding formula |
+| 缓冲区 | 用途 | 约束公式 |
 |--------|------|---------|
-| L0A | A file (m0 × k0) | 'm0 × k0 × size (A.dtype) ≤ L0A capacity ' |
-| L0B | Right Matrix B file (k0 × n0) | `k0 × n0 × size (B.dtype) ≤ L0B capacity ' |
-| L0C | Result C file (m0 × n0), supports add-up | `m0 × n0 × size (C.dtype) ≤ L0C capacity ' |
+| L0A | 左矩阵 A tile (m0 × k0) | `m0 × k0 × sizeof(A.dtype) ≤ L0A容量` |
+| L0B | 右矩阵 B tile (k0 × n0) | `k0 × n0 × sizeof(B.dtype) ≤ L0B容量` |
+| L0C | 结果 C tile (m0 × n0)，支持累加 | `m0 × n0 × sizeof(C.dtype) ≤ L0C容量` |
 
-**Example of calculation**(in the case of a hardware L0A = 64KB):
-- fp16 (2 bytes/elements): can accommodate 32K elements → BLONK_M=128, BLONK_K=256
-- fp32 (4 bytes/elements): can accommodate 16K elements → BLONK_M=128, BLONK_K=128
+**计算示例**（以某硬件 L0A = 64KB 为例）：
+- fp16（2 字节/元素）：可容纳 32K 个元素 → BLOCK_M=128, BLOCK_K=256 恰好填满
+- fp32（4 字节/元素）：可容纳 16K 个元素 → BLOCK_M=128, BLOCK_K=128 恰好填满
 
-When selecting the size of the tile, ensure that the three buffer zones are open. fp32 is two times the size of fp16 and needs to be reduced accordingly.
+选择 tile 尺寸时，确保三个缓冲区都不超限。fp32 占用是 fp16 的 2 倍，需相应缩小 tile。
 
-### VEC Path (element-wise / reduce /norm)
+### VEC 路径（element-wise / reduce / norm）
 
-vectorOperating data go.UB:
+向量运算数据走 UB：
 
-| Buffer zone | Purpose | A binding formula |
+| 缓冲区 | 用途 | 约束公式 |
 |--------|------|---------|
-| UB | All active tensor and intermediate variables | `BLOCK_SIZE × sizeof(dtype) ×ActivetensorNumber× multi_buffercoefficient≤ UBCapacity` |
+| UB | 所有活跃 tensor 和中间变量 | `BLOCK_SIZE × sizeof(dtype) × 活跃tensor数 × multi_buffer系数 ≤ UB容量` |
 
-compilerEnable`auto-multi-buffer`After that, the actual occupancy rate is based on2~3Double.kernelintermediate variable in (e.g.`tl.where`And the temporary buffers that are created are also occupied.UBThe actual occupancy will be significantly higher.`BLOCK_SIZE × sizeof(dtype) ×Number of inputs`.
+编译器启用 `auto-multi-buffer` 后，实际占用约为基础量的 2~3 倍。kernel 中的中间变量（如 `tl.where` 产生的临时缓冲）也占用 UB，实际占用会显著高于 `BLOCK_SIZE × sizeof(dtype) × 输入数`。
 
-**tile selection policy**: Starts with a larger BLONK_SIZE, downgrades when `ub overflow` compiles.
+**tile 选择策略**：从较大 BLOCK_SIZE 开始尝试，遇到 `ub overflow` 编译错误时逐级缩小。
 
-## 2. bishengir compiler known limits
+## 2. bishengIR 编译器已知限制
 
-### 2.1 Range() borders cannot be mixed with runtime variables
+### 2.1 range() 边界不可混用运行时变量
 
 ```python
-# compiler crash (bishengIR SIGABRT)
+# 编译器崩溃（bishengIR SIGABRT）
 for k in range(start_n, start_m + BLOCK, BLOCK_K):
     ...
 ```
 
-`start_n`, `start_m` is the runtime value, `BLOCK`, `BLOCK_K` is the `tl.constexpr`. This hybrid use leads to an internal error in compiler.
+`start_n`、`start_m` 是运行时值，`BLOCK`、`BLOCK_K` 是 `tl.constexpr`。这种混合用法会导致编译器内部错误。
 
-**Hiding scheme**: using the full constexpr's range, skipping the invalid trajectories with runtime if:
+**规避方案**：使用全 constexpr 的 range，在循环体内用运行时 if 跳过无效迭代：
 
 ```python
-for k in range(0, N, BLOCK_K):  # N and BLOCK_K Both. constexpr
-    # Optional: runtime condition skips invalid block
+for k in range(0, N, BLOCK_K):  # N 和 BLOCK_K 都是 constexpr
+    # 可选：运行时条件跳过无效块
     ...
 ```
 
-### 2.2 Complex Mask + tl. where to cause HiVM error
+### 2.2 复杂 mask + tl.where 导致 HiVM 错误
 
-compiler backend may report `hivm.hir.vsel: Unsupported op for finding the root alloc` when the embedded mask group is brought into `tl.where`.
+当嵌套 mask 组合传入 `tl.where` 时，编译器后端可能报 `hivm.hir.vsel: Unsupported op for finding the root alloc`。
 
-**Hiding scheme**: replace tl.where with multiplication, multiplying the data after converting the bool mask to float:
+**规避方案**：用乘法替代 tl.where，将 bool mask 转为 float 后与数据相乘：
 
 ```python
-# Trigger hivm.hir.vsel error
+# 触发 hivm.hir.vsel 错误
 a = tl.where(tri_mask & bounds_mask, a, 0.0)
 
-# Quest: mask spin float after multiplying
+# 规避：mask 转 float 后相乘
 a = a * tri_mask.to(tl.float16) * bounds_mask.to(tl.float16)
 ```
 
-## 3. The performance cost of Strided memory access
+## 3. Strided memory access 的性能代价
 
-Ascend hardware has significant performance penalties for non-continuous memory access. When Kernel 's core path consists of memory access mode of stride > 1 (e.g. slided window for popling, spaced solution sampling), Triton 's generation of codes requires element-by-component or block gather, while CANN's original operator may use a proprietary mode of hardware data moving units (MTEs) that can be several dozen times different in performance.
+Ascend 硬件对非连续内存访问有显著性能惩罚。当 kernel 的核心路径包含 stride > 1 的内存访问模式（如 pooling 的滑窗、dilated convolution 的间隔采样），Triton 生成的代码需要逐元素或小块 gather，而 CANN 原生算子可能使用硬件数据搬运单元（MTE）的专用模式，性能差距可达数十倍。
 
-**Recommendation**:
-- Prioritizes the data in host to a continuous layout (e. g. `F.pad`+contigous view) and then to a continuous load processing
-- K-dimensional alignment of matmul at 512B to increase bandwidth utilization
+**建议**：
+- 优先将数据在 host 侧重排为连续布局（如 `F.pad` + contiguous view），再用连续 load 处理
+- matmul 的 K 维度按 512B 对齐可提升带宽利用率

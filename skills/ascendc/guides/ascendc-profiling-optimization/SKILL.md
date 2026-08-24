@@ -1,6 +1,6 @@
 ---
 name: ascendc-profiling-optimization
-description: "AscendC programing to optimise action: VEC/MTE/CUBE/SCALAR sound, Bank condition, double buffer, L2 Cache, and inter-nuclear load imbalance. This applies to a scenario where operator is already correct but not performing adequately."
+description: "AscendC profiling 到优化动作的决策表：VEC/MTE/CUBE/SCALAR bound、bank conflict、double buffer、L2 cache 和核间负载不均衡。适用于算子已经正确但性能不足的场景。"
 category: guide
 version: "1.0.0"
 metadata:
@@ -10,77 +10,77 @@ metadata:
   operator_patterns: "all"
 ---
 
-# AscendC profiling and Optimization
+# AscendC 性能分析与优化
 
-Use this skill after operator has passed correctness verification. Do not rewrite when there are still accuracy errors, crashes, or ABI problems; use `ascendc-precision-debug` or `ascendc-crash-debug` to compress to a verifiable version.
+在算子已经通过正确性验证后使用本 skill。不要在仍有精度错误、崩溃或 ABI 问题时做性能改写；先用 `ascendc-precision-debug` 或 `ascendc-crash-debug` 收敛到可验证版本。
 
-## 1. Profiling signal to optimize action
+## 1. Profiling 信号到优化动作
 
-| Main signal | Common bottlenecks | Priority Action |
+| 主要信号 | 常见瓶颈 | 优先动作 |
 |---|---|---|
-| Victor's share is high. | vector calculation limit | Merge UB calculation phase, reduce Cast, replace high-cost vector sequence |
-| MTE2 High Time | GM to UB movement restricted | Increase single handling particle size, check 32B alignment, enable double buffer |
-| MTE3 High Time | UB to GM write back restricted | Reduce the number of intermediate returns and write the final results as soon as possible. |
-| Cube ratio high | Matrix Calculating Limited | Raise L1/L0 reuse, keep emilogue integration |
-| Scalar's share is high | Indexing and start-up expenses restricted | Move cycle nonvariant to host tilling, remove common Shape fast path |
-| There's a big difference in time-consuming nuclear systems. | block/tail distribution uneven | Recheck `blockDim`, each nuclear length and tail formulae |
-| UB Bank confidence high | UB Visit to Conflict | Adjust LocalTensor Offset, Slide or Padding |
+| Vector 占比高 | 向量计算受限 | 融合 UB 内计算阶段，减少 Cast，替换高开销向量序列 |
+| MTE2 时间高 | GM 到 UB 搬运受限 | 增大单次搬运粒度，检查 32B 对齐，启用 double buffer |
+| MTE3 时间高 | UB 到 GM 写回受限 | 减少中间写回，尽量一次写出最终结果 |
+| Cube 占比高 | 矩阵计算受限 | 提升 L1/L0 复用，保留 epilogue 融合 |
+| Scalar 占比高 | 索引和启动开销受限 | 将循环不变量移到 host tiling，拆出常见 shape 快路径 |
+| 核间耗时差异大 | block/tail 分配不均 | 重新检查 `blockDim`、每核长度和 tail 公式 |
+| UB bank conflict 高 | UB 访问冲突 | 调整 LocalTensor 偏移、stride 或 padding |
 
 ## 2. Vector Bound
 
-Priority check:
+优先检查：
 
-- Whether multiple UB computing stages can be completed before one `CopyOut`.
-- Whether there is a duplication between fp16/bf16 and fp32 Cast.
-- Whether sensitive mathematical links are raised to accuracy only in the necessary position.
-- Whether `where`, Compare, Multiplication Mask introduces additional temporary tensor.
-- Reduction uses the current SDK more suitable vector to contract API instead of scalar loop.
+- 多个 UB 计算阶段是否可以在一次 `CopyOut` 前完成。
+- fp16/bf16 与 fp32 之间是否存在重复 Cast。
+- 敏感数学链路是否只在必要位置升精度。
+- `where`、比较、乘法 mask 是否引入额外临时张量。
+- reduction 是否使用当前 SDK 中更合适的向量归约 API，而不是 scalar loop。
 
-If the syntax requires an intermediate result of fp32, do not change to fp16 for speed.
+如果参考语义要求 fp32 中间结果，不要为了速度直接改成 fp16 计算。
 
 ## 3. MTE Bound
 
-Check order:
+检查顺序：
 
-1. Whether the number of elements of `DataCopy` is large enough to cover the cost of DMA setup each time.
-2. Whether the GM address and the UB address satisfy as much as possible the 32B alignment.
-3. Whether the non-matched path uses `DataCopyPad` only in tail or special Shape.
-4. Whether the Queue Depth leads to MTE2 and Vector serial execution.
-5. Enter if there is a cross file reuse that you can read less than once.
+1. 每次 `DataCopy` 的元素数是否足够大，可以摊薄 DMA setup 开销。
+2. GM 地址和 UB 地址是否尽量满足 32B 对齐。
+3. 非对齐路径是否只在 tail 或特殊 shape 中使用 `DataCopyPad`。
+4. 队列深度是否导致 MTE2 和 Vector 串行执行。
+5. 输入是否存在跨 tile 复用，可以少读一次 GM。
 
-The goal is to allow overlap between removal and calculation. If the trail still shows a line, check the queue pairing and dependency, and then dial file size.
+double buffer 的目标是让搬运和计算重叠。若 trace 仍显示串行，先检查队列配对和依赖，再调 tile size。
 
 ## 4. Scalar Bound
 
-Small Shape, Broadcast, index/gather class operator is easily dominated by scalar index costs.
+小 shape、broadcast、index/gather 类算子容易被 scalar 索引开销主导。
 
-Usual handling:
+常用处理：
 
-- In the host tilling, it is expected to be a general transition.
-- Create a special fast path for contiguous, scalar Broadcast, last-dim Broadcast.
-- For small workload lower `blockDim` to avoid over-starting nuclear.
-- Avoids double-counting of `div/mod` chains in Kernel; changes to tasking if necessary.
+- 在 host tiling 中预计算 stride product、shape flag、公共偏移。
+- 为 contiguous、scalar broadcast、last-dim broadcast 建立专门快路径。
+- 对很小 workload 降低 `blockDim`，避免启动过多核。
+- 避免在 kernel 内重复计算 `div/mod` 链；必要时改变任务划分。
 
 ## 5. Bank Conflict
 
-When profiling points to a UB bank or a bank-group condition:
+当 profiling 指向 UB bank 或 bank-group conflict：
 
-- Let HF LocalTensor's initial offset at least staggered 32B.
-- Avoids reading and writing hotspot operations in the same UB area.
-- Reconfirmation of the units of vector repecat stride, block stride.
-- Padding will increase UB occupancy, only if the conflict returns more than the loss of capacity.
+- 让高频 LocalTensor 的起始偏移至少错开 32B。
+- 避免读写热点操作数落在同一段 UB 区域。
+- 重新确认 vector repeat stride、block stride 的单位。
+- padding 会增加 UB 占用，只在冲突收益大于容量损失时使用。
 
-## 6. L2 and Cache Policy
+## 6. L2 与缓存策略
 
-Cache hint is only used when the data is available for reuse:
+cache hint 只在存在数据复用时使用：
 
-- Read-only input that is read over and over again allows the normal cache policy to be enabled.
-- One-time streaming data should not contaminate L2.
-- Mathmul-like operator gives priority to reducing GM access through L1/L0 reuse.
+- 多次读取的只读输入可以启用普通缓存策略。
+- 一次性 streaming 数据不应污染 L2。
+- matmul-like 算子优先通过 L1/L0 复用减少 GM 访问。
 
-## 7. Batch optimization of discipline
+## 7. 批量优化纪律
 
-Only one performance assumption is changed for each round of the batch:
+批跑时每轮只改一个性能假设：
 
 ```text
 op:
@@ -92,19 +92,19 @@ speedup/regression:
 next action:
 ```
 
-Do not mix tolerance changes, dtype over-cover contractions and kernel optimizations in the same round. If an optimisation raises only single sape but significantly retreats most sapes, it should retreat or break into a sape-specific path.
+不要把 tolerance 修改、dtype 覆盖收缩和 kernel 优化混在同一轮。若一个优化只提升单个 shape 但显著回退多数 shape，应回退或拆成 shape-specific 路径。
 
-## 8. Sample feedback and narrow path
+## 8. 样本反馈与窄路径
 
-Sample-by-sample performance tables can be used to locate degradation paths, but not to disguise nudity Shape ad hocization as a generic kernel optimization. A narrow path is considered only when a dtype, rank, playout, calibration or numerical distribution pattern clearly dominates total consumption, and the common path rewriting risks are higher.
+逐样本性能表可以用来定位退化路径，但不要把裸 shape 特化伪装成通用 kernel 优化。只有在某个 dtype、rank、layout、broadcast、对齐或数值分布模式明确主导总耗时，且通用路径重写风险较高时，才考虑窄路径。
 
-- Priority is given to the conditions as semantic rules: dtype, rank, contigouous, same-shape, last-dim mode, alignment, special value pattern; nudity Shape constant is used only as a cover for temporary diagnosis or known input to the collection.
-- A narrow path must remain fully sape-covered, cannot shrink dtype/layout support, cannot bypass correctness verification.
-- Each time a narrow path is introduced, with a comparison of the full and sample-by-sampling indicators; if the total indicator is not good, the rolling back should be done even if the individual sample is faster.
-- If the narrow path stabilizes the gains clearly, then consider moving it up to the generic tilling, kernel branch or host dispatch rule, instead of continuing to stack more naked sapep judgments.
-- The library can only be used as a proxy for degradation pathways or as a performance reference; it is suitable to save dtype conversions, complex broadcasts, mini-prescriptions or unusual distributions of special values, at equal cost to the completion of the AscendC generic optimization.
+- 优先把条件写成语义规则：dtype、rank、contiguous、same-shape、last-dim broadcast、对齐状态、特殊数值模式；裸 shape 常量只作为临时诊断或已知输入集合的兜底手段。
+- 窄路径必须保持全 shape 覆盖，不能收缩 dtype/layout 支持，不能绕开正确性验证。
+- 每次只引入一条窄路径，并同时比较全量指标和逐样本指标；如果总指标不优，即使单个样本变快也应回滚。
+- 若窄路径稳定收益明显，再考虑把它上升为通用 tiling、kernel 分支或 host dispatch 规则，而不是继续堆叠更多裸 shape 判断。
+- 库实现旁路只能作为退化路径替代或性能上界参照；它适合救 dtype 转换、复杂广播、极小规约或特殊值分布异常的场景，不等价于完成了 AscendC 通用优化。
 
-It's recommended that narrow path conditions be written as " semantics" instead of a full sape write to die:
+推荐把窄路径条件写成“语义谓词”，而不是把完整输入 shape 写死：
 
 ```cpp
 static bool IsLargeSameShapeInt8(const at::Tensor& a, const at::Tensor& b) {
@@ -130,14 +130,14 @@ static bool IsLastDimBroadcastHalf(const at::Tensor& x,
 
 at::Tensor op(const at::Tensor& x, const at::Tensor& y) {
   if (IsLargeSameShapeInt8(x, y)) {
-    // The library realizes that only the clearly degraded mode is covered by the bypass, and the rest of the input remains on the AscendC main path.
+    // 库实现旁路只覆盖明确退化的模式，其余输入仍走 AscendC 主路径。
     return at::maximum(x, y);
   }
   return launch_ascendc_kernel(x, y);
 }
 ```
 
-A special value mode should also be written as a semantic condition. For example, all-zero, all-NaN, education security, single-segment can have a fast path, but the output semantic integrity must be ensured:
+特殊数值模式也应写成语义条件。例如 all-zero、all-NaN、identity segment、single-segment 可以有快路径，但必须保证输出语义完整：
 
 ```cpp
 if (is_all_zero && op_is_multiplicative_or_activation_zero_preserving) {
@@ -149,29 +149,29 @@ if (is_same_size_resize && input.scalar_type() == output_dtype) {
 }
 ```
 
-### 8.1 Degrade from per-shape to general subbarrel
+### 8.1 从 per-shape 退化到通用分桶
 
-Per-shape Optimizes the correct way to open it not by "writes which is which is which is which is which is which." First, the slow sample is attributed to a reusable semantic sub-bin. The common sub-barrel includes:
+per-shape 优化的正确打开方式不是“哪个 shape 慢就写哪个 shape”，而是先把慢样本归因到可复用的语义分桶。常见分桶包括：
 
-| Degraded sample characteristics | More general sub-barrel conditions | Common handling |
+| 退化样本特征 | 更通用的分桶条件 | 常见处理 |
 |---|---|---|
-| It's so big, same-shape int8/uint8 elementwise slow | Integral dtype, same-shape, contigouous, Numel | Avoid fp32 round-trip, add native integer path or library sidewalk |
-| rank higher half/ bf16 element by element operator | No, no-float dtype, rank > = 4, contigouous, no radio | tile tile, reduce past buffer, dtype special path if necessary |
-| `(N, D)` and `(D,)` slow broadcast | Last-dim Broadcast, Bias contigouous, D alignment or close alignment | Most bordercast mode, line-repeated small input in kernel |
-| Little D, slow down. | Reduction dim small, row many. | Multiple batches, or bypassing resynchronisation with scalar Statutes |
-| Non last-dim Statute Slow | "Reduce Axis in discontinuity, stride, big." | Conversion of layout, subaxis specific paths, or use of libraries to achieve degradation pathways |
-| index/scatter/gather Specific case slow | Indexing to a continuum, activity reduce, single security | DataCopy, Divisions Merge, Avoid Atoms, or Read rewrite |
-| The special value sample is very slow | all-zero,all-NaN,constant,identity segment | Semantic speed path directly fills, copies or skips calculations |
+| 单个超大 same-shape int8/uint8 elementwise 很慢 | integral dtype、same-shape、contiguous、numel 很大 | 避免 fp32 round-trip，增加 native integer path 或库旁路 |
+| rank 较高的 half/bf16 逐元素算子慢 | non-float dtype、rank >= 4、contiguous、无广播 | 调大 tile，减少 cast buffer，必要时 dtype 专门路径 |
+| `(N, D)` 与 `(D,)` 广播慢 | last-dim broadcast、bias contiguous、D 对齐或接近对齐 | host 侧标记 broadcast 模式，kernel 中按行复用小输入 |
+| 小 D 规约慢 | reduction dim 很小、row 数很多 | 合批多行，或用标量规约绕开重同步 |
+| 非 last-dim 规约慢 | reduce axis 不连续、stride 大 | 先转化布局、分轴专门路径，或使用库实现作为退化路径 |
+| index/scatter/gather 特定 case 慢 | 索引形成连续段、identity reduce、single segment | 连续 DataCopy、分段合并、避免原子或读改写 |
+| 特殊值样本极慢 | all-zero、all-NaN、constant、identity segment | 语义快路径直接填充、拷贝或跳过计算 |
 
-Recommended process:
+推荐流程：
 
-1. First press `gen_us / reference_us` or absolutely time-consuming to find the dominant sample.
-2. Slow sample records dtype, rank, contigouous, bruadcast, reduce axis, Numel, alignment, special value distribution.
-3. Finds a common condition that explains many slow samples and then writes host dispatch or Tiling Mode.
-4. If only one sample is to be explained, the conditions are to be written in the narrowest synonym, and the model it represents is to be described in the note, rather than specifying the shape.
-5. Only one new drum is activated each time to observe whether the full sample has been slowed down.
+1. 先按 `gen_us / reference_us` 或绝对耗时找出主导样本。
+2. 对慢样本记录 dtype、rank、contiguous、broadcast、reduce axis、numel、对齐、特殊值分布。
+3. 找到能解释多个慢样本的共同条件，再写 host dispatch 或 tiling mode。
+4. 如果只能解释一个样本，先把条件写成最窄语义谓词，并在注释中说明它代表的模式，而不是说明具体 shape。
+5. 每次只启用一个新分桶，观察全量样本是否被拖慢。
 
-host side encodes semantic subbins into tilling mode, avoids recurring analysis of Shape:
+host 侧可以把语义分桶编码成 tiling mode，避免 device 端反复解析 shape：
 
 ```cpp
 enum class ElemMode : int32_t {
@@ -207,7 +207,7 @@ tiling.inner = x.size(x.dim() - 1);
 tiling.total = x.numel();
 ```
 
-deviceend reuse Mode select light branch:
+device 端再用 mode 选择轻量分支：
 
 ```cpp
 if (tiling->mode == static_cast<int32_t>(ElemMode::kSameShapeContiguous)) {
@@ -219,41 +219,41 @@ if (tiling->mode == static_cast<int32_t>(ElemMode::kSameShapeContiguous)) {
 }
 ```
 
-When a full Shape constant must be used for the time being, it should be wrapped behind a more exterior synonym and protected only as a background:
+当必须暂时用完整 shape 常量时，应把它包在更外层的语义谓词后面，并且只作为兜底保护：
 
 ```cpp
 static bool IsKnownPathologicalLarge5DHalf(const at::Tensor& x) {
   if (x.scalar_type() != at::kHalf || !x.is_contiguous() || x.dim() != 5) {
     return false;
   }
-  // Only serve as the end of a fixed input pool; the following should be replaced with the rank/numel/tile mode rule.
+  // 只作为固定输入集合中的兜底；后续应替换成 rank/numel/tile 模式规则。
   return x.numel() > (1 << 22) && x.size(3) % 32 != 0;
 }
 ```
 
-## 9. Commonly reusable optimisation paradigm
+## 9. 常见可复用优化范式
 
-The more stable pattern of benefits from the optimal record of multiple categories of elementwise, reduction, index, nonmalization and geometry operator is as follows:
+从多类 elementwise、reduction、index、normalization 和 geometry 算子的优化记录中，收益较稳定的范式如下：
 
-- **Remove redundant conversion and constant calculations**: delete fp32 add-zero copy, repeat `ToF32/FromF32`, useless `Muls/Adds`, dead branch and unused TQe. If dtype meets the computational requirements, enter LocalTensor as the source of operator.
-- **Integration of adjacent vector phase**: replace `Muls+Add` with `Mad`, merge intermediate steps of softplus/action, or merge scale, bias, cast from epilogue before last writing.
-- **The length of the UB budget**:tie should be calculated by dtype, scratch Butcher, queue depth and double buffering requirements; the benefits usually come from reduced tile times, but to prevent UB spills and queue capacity from crowding out each other.
-- **Leaves removal and calculation overlap**: give priority to try Que depth 2/3, double/triple buffer, advance CopyIn next file, and reduce handwritten `SetFlag/WaitFlag`. If you line up only at the same stage, adding buffer depth will not automatically yield benefits.
-- **Synchronization only where necessary**: Where the Statute or scalar can be used after rereading `PipeBarrier`, it is usually lighter than the flag of the event. Check that subsequent reading and writing do not depend on trans-current water before deleting sync.
-- **Quantified small work units**: narrow lines softmax, argmax, Cross entropy, Foreach and SwigLU small lines, common gain from combining multiple rows/tensor to a UB file or a kernel call, with low start-up, synchronization and Copyout costs.
-- **Replace scalar with a continuous block for reading and writing**: in index /gather/scatter/resize, the return is usually much greater than fine-tuning when it is possible to change `GetValue/SetValue` to a batch of DataCopy, a continuous CopyOut, group grouping light, or writing back after UB has been saved.
-- **Move index algorithms out of the inner layer**: move `div/mod`, profile, row base, w-table base, security base, fixed dimension judgement to the beginning of a host tilling, Init or watch; use an incremental amount of asfset and int32 counters as far as possible.
-- **Models using special values and structures**: all-zero, all-NaN, single-segment, sustainability security, Same-size reze, two-class cross enterprise, small reducation, etc., can have independent fast paths, but conditions must come from semantics rather than accidental Shape.
-- **Reduced GM round-trip and intermediate writeback**: priority caches when input, gamma, cos/sin, row Cache, partial subs are available in UB; final results are written as much as possible to avoid the middle tensor writing GM first and read back.
-- **Rational choice of scalar or vector's Statute**: little last-dim hardware vector's Statute may be flooded with synchronous costs, but scalar's cumulative costs are faster; vector Reduce is preferred in large, multi-line or bulk Statutes.
-- **There is also a performance assumption for the clean-up of dead codes**: deletion of unused include, members, intry, helper, Mode branch sometimes reduces the compilation product and improves the schedule, but should be validated as a low-risk step rather than as a substitute for real bottleneck optimization.
+- **去掉冗余转换和恒等计算**：删除 fp32 add-zero copy、重复 `ToF32/FromF32`、无用 `Muls/Adds`、死分支和不用的 TQue。若 dtype 已经满足计算要求，直接以输入 LocalTensor 作为算子源。
+- **融合相邻向量阶段**：把 `Muls+Add` 改为 `Mad`，把 softplus/activation 的中间步骤合并，或把 epilogue 中的 scale、bias、cast 合并到最后一次写出前完成。
+- **按 UB 预算调 tile**：tile 长度应按 dtype、scratch buffer 数、queue 深度和双缓冲需求计算；收益通常来自减少 tile 次数，但要防止 UB 溢出和队列容量互相挤占。
+- **让搬运和计算重叠**：优先尝试 queue depth 2/3、double/triple buffer、提前 CopyIn 下一 tile、减少手写 `SetFlag/WaitFlag`。若只是同一阶段串行排队，增加 buffer 深度不会自动带来收益。
+- **只在必要处同步**：规约或标量回读后能用 `PipeBarrier` 的地方，通常比成对事件旗更轻。删除同步前要确认后续读写确实没有跨流水依赖。
+- **批量化小工作单元**：窄行 softmax、argmax、cross entropy、foreach 和 SwiGLU 小行场景，常见收益来自把多行/多 tensor 合到一个 UB tile 或一次 kernel call，摊薄启动、同步和 CopyOut 成本。
+- **用连续块替代标量读写**：index/gather/scatter/resize 中，能把 `GetValue/SetValue` 改成批量 DataCopy、连续 CopyOut、成组 lane 更新或 UB 暂存后再写回时，收益通常远大于微调算术。
+- **把索引算术移出内层**：将 `div/mod`、stride product、row base、w-table base、segment base、固定维度判断移到 host tiling、Init 或 batch 开头；内层尽量用增量 offset 和 int32 计数器。
+- **利用特殊数值和结构模式**：all-zero、all-NaN、single-segment、identity segment、same-size resize、two-class cross entropy、small reduction 等模式可以有独立快路径，但条件必须来自语义而非偶然 shape。
+- **减少 GM 往返和中间写回**：能在 UB 中复用输入、gamma、cos/sin、row cache、partial sums 时，优先缓存；最终结果尽量一次写出，避免中间张量先写 GM 再读回。
+- **合理选择标量或向量规约**：很小 last-dim 上硬件向量规约可能被同步成本淹没，标量累加反而更快；大行、多行或可批量规约时再优先使用向量 Reduce。
+- **清理死代码也要有性能假设**：删除未使用 include、成员、entry、helper、mode 分支有时能缩小编译产物并改善调度，但应作为低风险小步验证，不要替代真正的瓶颈优化。
 
-### 9.1 Imputation of redundancy copy, cast and constants
+### 9.1 去冗余 copy、cast 和恒等计算
 
-Common bad tastes are used to unify dtype paths, and float input also does `Adds(x, 0)` or `Cast(float->float)` first. This will account for one more UB Buffer and one more vector pass.
+常见坏味道是为了统一 dtype 路径，float 输入也先做一次 `Adds(x, 0)` 或 `Cast(float->float)`。这会多占一个 UB buffer 和一次 vector pass。
 
 ```cpp
-// Poor: float32 path is also copied.
+// 较差：float32 路径也复制一遍。
 auto xLocal = xQ.DeQue<T>();
 auto xf = calcBuf.Get<float>();
 if constexpr (std::is_same_v<T, float>) {
@@ -262,7 +262,7 @@ if constexpr (std::is_same_v<T, float>) {
   Cast(xf, xLocal, RoundMode::CAST_NONE, count);
 }
 
-// Better: float32 directly uses input; nonfloat conversions.
+// 更好：float32 直接使用输入；非 float 才转换。
 auto xLocal = xQ.DeQue<T>();
 if constexpr (std::is_same_v<T, float>) {
   ComputeFloat(xLocal, count);
@@ -273,21 +273,21 @@ if constexpr (std::is_same_v<T, float>) {
 }
 ```
 
-Similarly, fixed coefficients can be prefolded in host or `Init` to avoid repetition of scalar multipliers per file:
+类似地，固定系数可以在 host 或 `Init` 中预折叠，避免每 tile 重复做标量乘加：
 
 ```cpp
-// Host/Init phase
+// host/Init 阶段
 tiling.effScale = scale * baseLog;
 tiling.effShift = shift * baseLog;
 
-// Kernel Phase
+// kernel 阶段
 Muls(tmp, x, tiling.effScale, count);
 Adds(tmp, tmp, tiling.effShift, count);
 ```
 
-### 9.2 Budget Selection by UB
+### 9.2 按 UB 预算选择 tile
 
-The length of the file should not only be input-sized, but also include dtype, scratch buffer, queue depth and double buffer. Experience, use the security budget and fine-tune the results by sample.
+tile 长度不要只看输入大小，还要把 dtype、scratch buffer、queue 深度和 double buffer 都算进去。经验上，先用安全预算，再按逐样本结果微调。
 
 ```cpp
 static int64_t AlignDown(int64_t x, int64_t align) {
@@ -298,13 +298,13 @@ int64_t PickTile(int64_t ubBytes, int64_t elemBytes,
                  int64_t inputBuffers, int64_t outputBuffers,
                  int64_t scratchBuffers, int64_t queueDepth) {
   int64_t buffers = (inputBuffers + outputBuffers) * queueDepth + scratchBuffers;
-  int64_t usableBytes = ubBytes * 8 / 10;  // Leave Queue and temporary object balances.
+  int64_t usableBytes = ubBytes * 8 / 10;  // 留出队列和临时对象余量。
   int64_t tile = usableBytes / (buffers * elemBytes);
   return std::max<int64_t>(256, AlignDown(tile, 256));
 }
 ```
 
-If a operator has both fp32 and fp16/bf16 paths, per-dtype file is usually required:
+如果一个算子同时有 fp32 和 fp16/bf16 路径，通常需要 per-dtype tile：
 
 ```cpp
 tiling.tileLength =
@@ -312,9 +312,9 @@ tiling.tileLength =
                          : PickTile(ubBytes, 2, 2, 1, 4, 2);
 ```
 
-### 9.3 Removal and calculation overlap
+### 9.3 搬运和计算重叠
 
-The key to the double/triple buffer is not "to increase the number of buffer," but the loop order really allows the next file to overlap with the current file Compute/CopyOut.
+double/triple buffer 的关键不是“把 buffer 数加大”，而是循环顺序真的允许下一 tile 的 CopyIn 与当前 tile 的 Compute/CopyOut 重叠。
 
 ```cpp
 constexpr int32_t BUFFER_NUM = 2;
@@ -332,11 +332,11 @@ for (int32_t i = 0; i < tileNum + BUFFER_NUM; ++i) {
 }
 ```
 
-If Compute is waiting for CopyIn to be finished, CopyOut is waiting for Compute to be finished, Trace will still show a string. Check the EnQue/DeQue sequence and event dependence of the queue and then adjust the file.
+若 Compute 里马上等待 CopyIn 完成、CopyOut 又马上等待 Compute 完成，trace 仍会显示串行。此时应先检查队列 EnQue/DeQue 顺序和事件依赖，再调整 tile。
 
-### 9.4 Synchronized noise reduction
+### 9.4 同步降噪
 
-After the Statute, just to make sure that vector's results are read back to scalar, `PipeBarrier` tends to be lighter than `SetFlag/WaitFlag`:
+规约后只需要保证向量结果对标量回读可见时，`PipeBarrier` 往往比成对 `SetFlag/WaitFlag` 更轻：
 
 ```cpp
 ReduceSum(sumLocal, xLocal, tmpBuf, count);
@@ -344,11 +344,11 @@ PipeBarrier<PIPE_V>();
 float sum = sumLocal.GetValue(0);
 ```
 
-Do not mechanically delete all syncs. If you follow up over the MTE/VEC/Scalar stream to read and write the same buffer, you still need to keep the correct queue sync or event sync.
+不要机械删除所有同步。若后续跨 MTE/VEC/Scalar 流水读写同一 buffer，仍需保留正确的队列同步或事件同步。
 
-### 9.5 Quantified rows and multiple outputs
+### 9.5 批量化小行和多输出
 
-The small lines softmax, argmax, cross enterprise, foreach type operator are often dominated by Kernel launch, barrier and CopyOut expenses. The results can be saved in UB and then rewritten.
+小行 softmax、argmax、cross entropy、foreach 类算子常被 kernel launch、barrier 和 CopyOut 开销支配。可以把多行结果攒在 UB 中，再一次写回。
 
 ```cpp
 constexpr int32_t ROW_BATCH = 16;
@@ -363,39 +363,39 @@ for (int32_t rb = 0; rb < rows; rb += ROW_BATCH) {
 }
 ```
 
-Foreach class Tensor [] operator uses the same simple mode for most inputs, giving priority to combining these inputs with a kernel call; only irregular or special values are diverted separately.
+foreach 类 Tensor[] 算子若大多数输入都走同一简单模式，优先考虑把这些输入合到一个 kernel 调用中；只有不规则或特殊值 tensor 单独分流。
 
-### 9.6 Replace scalar reading and writing with continuous blocks
+### 9.6 用连续块替代标量读写
 
-The index class operator is susceptible to degradation to each element `GetValue/SetValue`. When the index map forms a continuous segment on an axis, the continuous segment should be moved to UB and then written back in bulk.
+索引类算子容易退化成每元素 `GetValue/SetValue`。当索引映射在某个轴上形成连续段时，应先把连续段搬到 UB，再批量写回。
 
 ```cpp
-// Poor: Each element reads and writes individually.
+// 较差：每个元素单独读写。
 for (int32_t i = 0; i < count; ++i) {
   T v = xGm.GetValue(base + i);
   yGm.SetValue(outBase + i, v);
 }
 
-// Better: a continuous period of direct removal.
+// 更好：连续段直接搬运。
 DataCopy(local, xGm[base], count);
 DataCopy(yGm[outBase], local, count);
 ```
 
-For rather/scatter, you first identify the rank2, dim0, last-dim patterns, structure reducation, etc., and then write a blocked path for these modes; preserve the full semantics of the generic path.
+对 gather/scatter，先识别 rank2、dim0、last-dim contiguous、identity reduce 等模式，再为这些模式写块化路径；通用路径保留完整语义。
 
-### 9.7 Index algorithms
+### 9.7 索引算术外提
 
-The inner layer of geometry, resize, grid, scatter type operator `div/mod` and multi-level stide is very expensive. Turn the no-change item to the start of the watch or host tilling:
+几何、resize、grid、scatter 类算子的内层 `div/mod` 和多级 stride 乘加很贵。把不变项外提到 batch 开头或 host tiling：
 
 ```cpp
-// Poor: every output point in the inner layer doubles.
+// 较差：内层每个输出点都重复算。
 int64_t n = linear / (OH * OW);
 int64_t rem = linear % (OH * OW);
 int64_t oh = rem / OW;
 int64_t ow = rem % OW;
 int64_t inBase = ((n * C + c) * IH + h0) * IW;
 
-// Better: Move along lines, with only incremental updates in the inner layer.
+// 更好：按行推进，内层只增量更新。
 int64_t rowBase0 = ((n * C + c) * IH + h0) * IW;
 int64_t rowBase1 = ((n * C + c) * IH + h1) * IW;
 for (int32_t ow = owStart; ow < owEnd; ++ow) {
@@ -404,30 +404,30 @@ for (int32_t ow = owStart; ow < owEnd; ++ow) {
 }
 ```
 
-If sufficient range can be demonstrated, the counter and offset will be given priority to `uint32_t` / `int32_t` to reduce the pressure of 64-bit integer algorithms.
+计数器和偏移量如果能证明范围足够，优先用 `uint32_t` / `int32_t`，减少 64 位整数算术压力。
 
-### 9.8 Reuse UB data and reduce GM returns
+### 9.8 复用 UB 数据并减少 GM 往返
 
-The same line of data or coefficients are often required for operator in the same category. If UB capacity allows, pre-emption to a specific buffer:
+normalization、rotary、reduction 类算子常需要同一行数据或系数多次参与计算。若 UB 容量允许，优先缓存到专用 buffer：
 
 ```cpp
-// Pass 1: Read x, cumulative subsq, while cache x.
+// pass 1: 读 x，累计 sumsq，同时缓存 x。
 DataCopy(xLocal, xGm[rowBase], D);
 DataCopy(xCache, xLocal, D);
 ReduceSum(sumsq, Square(xLocal), tmp, D);
 
-// Pass 2: Directly reuse xCache, no longer read x from GM.
+// pass 2: 直接复用 xCache，不再从 GM 读 x。
 float rscale = Rsqrt(sumsq.GetValue(0) / D + eps);
 Muls(xLocal, xCache, rscale, D);
 Mul(outLocal, xLocal, gammaLocal, D);
 DataCopy(yGm[rowBase], outLocal, D);
 ```
 
-Cache whole lines may not work if D is small; if D is large, split file caches may squeeze out the necessary scratch. First, use the UB budget to decide whether to start.
+如果 D 很小，缓存整行可能不划算；如果 D 很大，分 tile 缓存可能挤掉必要 scratch。先按 UB 预算决定是否启用。
 
-### 9.9 scalar Path to the Statute
+### 9.9 小规约的标量路径
 
-The hardware vector statute is suitable for large or multi-line batch statutes; small last-dim may be flooded with synchronous and temporary buffer costs.
+硬件向量规约适合大行或多行批量规约；很小 last-dim 可能被同步和临时 buffer 成本淹没。
 
 ```cpp
 if (D <= 32) {
@@ -445,15 +445,15 @@ if (D <= 32) {
 }
 ```
 
-### 9.10 Numerical sensitive statutes and quantitative boundaries
+### 9.10 数值敏感规约与量化边界
 
-Reduction after `sqrt/div/round/cast` links, tile length and partial sum
-Trees are not just performance parameters, they change the last two ulps and then push the int8/uint8 quantitative results over.
-Half-integer boundary. The path is to be adjusted to one variable at a time and to record each candidate's file
-Hard-mismatch numbers; do not ignore integer output exact date because the overall MERE/MARE is very small.
+reduction 后接 `sqrt/div/round/cast` 的链路中，tile 长度和 partial sum
+树形不只是性能参数，也会改变最后一两 ulp，进而把 int8/uint8 量化结果推过
+半整数边界。调这类路径时要一次只改一个变量，并记录每个候选 tile 的
+hard-mismatch 数；不要因为总体 MERE/MARE 很小就忽略整数输出的 exact gate。
 
 ```cpp
-// The tile is not just an insinuation parameter; it changes the partial sum tree.
+// 规约 tile 不只是吞吐参数；它会改变 partial sum tree。
 constexpr uint32_t TILE = 256;
 for (uint64_t off = 0; off < dim; off += TILE) {
   uint32_t count = Min<uint64_t>(TILE, dim - off);
@@ -464,39 +464,39 @@ for (uint64_t off = 0; off < dim; off += TILE) {
 ReduceSum(total, partialBuf, reduceTmp, chunk);
 ```
 
-If a quantitative operator is only equal to a small number of elements `+/-1`, priority is given to:
+如果一个量化算子在少量元素上只差 `+/-1`，优先检查：
 
-- Whether the sum/amax tree shape differs from the reference path;
-- Scale is calculated by scalar or read back by vctor `Div/Muls`;
-- round Mode is consistent with reference, especially half-bundary;
-- Whether the order of clamp and past changed the NAN/ Inf or boundary values.
+- sum/amax 的规约树形是否和参考路径不同；
+- scale 是 scalar 算出来的，还是通过 vector `Div/Muls` 后回读的；
+- round mode 是否和参考一致，特别是 half-boundary；
+- clamp 和 cast 的顺序是否改变了 NaN/Inf 或边界值。
 
-Attention, matmul epilogue or volume inverse concentrate all failure points in small-value/
-Cancellation, `abs(out) < eps -> 0`, can only be used as a diagnostic tool, not as a direct means.
-Generic restoration. It often lowers the worst relative to error, but puts more non-zero values to zero.
-Makes the whole MERE or small-value mismatch variable. Only if the threshold comes from a clear semantic
-(e. g. full mask rows, padding contributions, known zero input segments) and also lower MERE/MARE
-It should only be kept with the number of mismatch.
+attention、matmul epilogue 或卷积反传里若失败点全部集中在 small-value /
+cancellation 区间，`abs(out) < eps -> 0` 只能作为诊断手段，不能直接当成
+通用修复。它经常能降低最坏相对误差（MARE），但会把更多非零小值压成零，
+导致整体 MERE 或 small-value mismatch 变差。只有当阈值来自明确语义
+（例如全 mask 行、padding 贡献、已知零输入段），并且同时降低 MERE/MARE
+与 mismatch 数时，才应保留。
 
-The special value branch avoids the temporary use of `inf/inf` and `0/0` algorithms in the AICore Scalar path
-NN; this type of writing may trigger an anomaly or instability on different compile/hardware combinations.
-NAN/ Inf, priority is given to the use of clear bit-pattern for writing, entering raw values for dissemination, or for special values
-Converts the envelope to a separate helper and validates it with a case that only covers special values.
+特殊值分支要避免在 AICore scalar 路径里临时用 `inf/inf`、`0/0` 等算术造
+NaN；这类写法可能触发运行异常，或在不同编译/硬件组合上不稳定。若语义确实
+要求 NaN/Inf，优先使用明确的 bit-pattern 写入、输入 raw 值传播，或把特殊值
+转换封装成单独 helper，并用只覆盖特殊值的 case 先验证。
 
-When handwritten scrolling, pooling, or scalar kernel type, paddy cross-border branch is not mechanical
-`continue` is followed by an equal value multiplied by 0. This is right for generic limited input, but is the right weight, the right weight, the right weight, the right weight, the right weight, the right weight, and the right value.
-The library achieves the possibility of retaining the number of actions on the other side of the peding position that includes NAN/ Inf
-`0 * inf -> NaN`This special value spreads.`mere=0/mare=0` but NaN maskIt's not consistent.
-Priority check if the padding branch skips a non-limited operation; terminological conditions are clearly disseminated during repair
-quiet-NAN, do not make NAN on an ad hoc basis with illegal arithmetic.
+手写卷积、池化或 stencil 类 scalar kernel 时，padding 越界分支不要机械地
+`continue` 后认为等价于乘以 0。对普通有限输入这是对的，但当权重、bias 或
+被 padding 位置对应的另一侧操作数含 NaN/Inf 时，库实现可能保留
+`0 * inf -> NaN` 这类特殊值传播。遇到 `mere=0/mare=0` 但 NaN mask 不一致，
+优先检查 padding 分支是否跳过了非有限操作数；修复时用语义条件传播明确的
+quiet-NaN，不要用非法算术临时制造 NaN。
 
-### 9.11 Boundaries cleared by dead code
+### 9.11 死代码清理的边界
 
-The deletion of the dead code reduces the sample, memory pressure or binary volume of the template, but it is not a major optimisation tool.
+删除死代码可以减少模板实例化、寄存器压力或二进制体积，但它不是主要优化手段。适合清理的对象包括：
 
-- Unattainable mode branch and entry.
-- Only member variables consumed in `Init` that are no longer used thereafter.
-- No longer use TQue/TBuf, include and helper.
-- The dead branch of `if constexpr` that is not related to the current dtype path.
+- 已不可达的 mode 分支和 entry。
+- 只在 `Init` 中消费、之后不再使用的成员变量。
+- 不再使用的 TQue/TBuf、include 和 helper。
+- 与当前 dtype 路径无关的 `if constexpr` 死分支。
 
-After cleaning, check whether CMake, register entry, host wrapper and Kernel entry are consistent and avoid deleting ABI or coverage together.
+清理后仍要检查 CMake、注册入口、host wrapper 和 kernel entry 是否一致，避免把 ABI 或覆盖范围一起删掉。

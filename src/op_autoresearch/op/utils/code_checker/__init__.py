@@ -1,14 +1,28 @@
-"""
-CodeChecker: code checker
+# Copyright 2025 Huawei Technologies Co., Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-Pure static check process (not calling LLM):
-1. st.parse
-Py_compile compilation check
-3. Import usability check
-4. Chinese text blending testing
-5. DSL/arch Compliance Testing (Anti-Facilitation: Each DSL has one _ComplianceCheck class,
-   Separate own own policy fields, ``CodeChecker.__init__`` no longer sense any
-   Policy for single DSL)
+"""
+CodeChecker: 代码检查器
+
+纯静态检查流程（不调用 LLM）：
+1. ast.parse 语法检查
+2. py_compile 编译检查
+3. import 可用性检查
+4. 中文文本混入检测
+5. DSL/arch 合规性检测（反作弊：每个 DSL 各一个 _ComplianceCheck 类，
+   各自独立 owns 自己的策略字段，``CodeChecker.__init__`` 不再感知任何
+   单 DSL 的策略 schema）
 """
 
 import re
@@ -210,22 +224,22 @@ def _match_torch_call_prefix(call_name: str) -> Optional[str]:
 
 
 def _fmt_calls(calls: List[tuple], limit: int = 5) -> str:
-    """Render ``[(line, name), ...]`` as `name (line line),... et al. (total N) '."""
-    summary = ", ".join(f"{name}(I don't think so.{line}Okay.)" for line, name in calls[:limit])
+    """Render ``[(line, name), ...]`` as ``name(第line行), ... 等（共 N 处）``."""
+    summary = ", ".join(f"{name}(第{line}行)" for line, name in calls[:limit])
     if len(calls) > limit:
-        summary += f" Wait (total) {len(calls)} (Places)"
+        summary += f" 等（共 {len(calls)} 处）"
     return summary
 
 
 @dataclass
 class CheckError:
-    """Check error message"""
+    """检查错误信息"""
     line: int
     error_type: str
     detail: str
     suggestion: str
     code_snippet: str
-    fix_strategy: str = "fix"  # "fix" or "rewrite"
+    fix_strategy: str = "fix"  # "fix" 或 "rewrite"
 
 
 # ===========================================================================
@@ -270,13 +284,13 @@ def _forbidden_compute_in_forward(forward_node, *, hard_etype, kernel_label,
             "line": hard_calls[0][0],
             "error_type": hard_etype,
             "detail": (
-                f"forward() It's working. {len(hard_calls)} Not allowed. torch High-level calculations API: "
-                f"{_fmt_calls(hard_calls)}.matrix multiplication/Volume/The central calculation of the subtotal must be "
-                f"{kernel_label} Domestically achieved."
+                f"forward() 中使用了 {len(hard_calls)} 个不允许的 torch 高层计算 API: "
+                f"{_fmt_calls(hard_calls)}。矩阵乘法/卷积/归一化等核心计算必须在 "
+                f"{kernel_label} 内实现。"
             ),
             "suggestion": (
-                f"Please move these core calculations in. {kernel_label},forward() I'm only in charge of preparing the input,"
-                f"Call kernel And sort out the output."
+                f"请将这些核心计算移入 {kernel_label}，forward() 仅负责准备输入、"
+                f"调用 kernel 和整理输出。"
             ),
             "code_snippet": "",
             "fix_strategy": "rewrite",
@@ -287,22 +301,22 @@ def _forbidden_compute_in_forward(forward_node, *, hard_etype, kernel_label,
                 "line": soft_calls[0][0],
                 "error_type": soft_etype,
                 "detail": (
-                    f"forward() It's working. {len(soft_calls)} individual torch Calculate API: "
-                    f"{_fmt_calls(soft_calls)}. Also uncalled {kernel_label},"
-                    f"The code is likely to work. torch API It's replaced. kernel Achieved."
+                    f"forward() 中使用了 {len(soft_calls)} 个 torch 计算 API: "
+                    f"{_fmt_calls(soft_calls)}。同时未调用 {kernel_label}，"
+                    f"代码很可能用 torch API 替代了 kernel 实现。"
                 ),
                 "suggestion": (
-                    "Use Kernel for the core calculation logic; simple operations (exp/relu/sum etc.) if only "
-                    "kernel processing can be retained, but kernel must bear the main calculation."
+                    "请将核心计算逻辑用 kernel 实现；简单操作（exp/relu/sum 等）若只是 "
+                    "kernel 的前后处理可保留，但必须有 kernel 承担主要计算。"
                 ),
                 "code_snippet": "",
                 "fix_strategy": "rewrite",
             })
         else:
             logger.warning(
-                f"CodeChecker compliance: forward() Called. {kernel_label}, also contains "
-                f"{len(soft_calls)} Locations torch Auxiliary calculations API: {_fmt_calls(soft_calls)}."
-                f"(IntegrationoperatorIt may be reasonable, only to record a warning)"
+                f"CodeChecker compliance: forward() 调用了 {kernel_label}，同时包含 "
+                f"{len(soft_calls)} 处 torch 辅助计算 API: {_fmt_calls(soft_calls)}。"
+                f"（融合算子可能合理，仅记录警告）"
             )
     return errors
 
@@ -422,15 +436,15 @@ class _TritonComplianceCheck(_KernelDSLComplianceCheck):
     soft_etype = "torch_api_without_kernel"
     kernel_label = "triton kernel"
     no_kernel_msg = (
-        "DSL is specified as {dsl}, but no kernel function for @triton.jit decoration was found in the code."
-        "The code may be achieved using the Torch upper API instead of Triton Kernel.",
-        "Make sure the code contains at least one kernel function for @triton.jit decorations."
-        "It is also called in ModelNew.forward() by the kernel [grid](...) syntax.")
+        "DSL 指定为 {dsl}，但代码中未找到任何 @triton.jit 装饰的 kernel 函数。"
+        "代码可能使用了 torch 高层 API 替代 triton kernel 实现。",
+        "请确保代码中包含至少一个 @triton.jit 装饰的 kernel 函数，"
+        "并在 ModelNew.forward() 中通过 kernel[grid](...) 语法调用它。")
     not_called_msg = (
-        "Triton Kernel function {kernels} defined, but no Kernel [grid] (...) was found in the code "
-        "form. The kernel function may be only decorative and actually calculated without a Triton.",
-        "In ModelNew.forward() or its supporting methods, please read:"
-        "Starts with kernel_name [grid_side] (...) syntax.")
+        "定义了 triton kernel 函数 {kernels}，但代码中未找到任何 kernel[grid](...) "
+        "形式的调用。kernel 函数可能只是装饰性的，实际计算未使用 triton。",
+        "请在 ModelNew.forward() 或其辅助方法中，"
+        "通过 kernel_name[grid_size](...) 语法启动 triton kernel。")
 
     def _find_kernels(self, tree, aliases):
         return _decorated_functions(tree, _is_triton_decorator, aliases)
@@ -461,16 +475,16 @@ class _TilelangComplianceCheck(_KernelDSLComplianceCheck):
     soft_etype = "torch_api_without_tilelang_kernel"
     kernel_label = "tilelang kernel"
     no_kernel_msg = (
-        "DSL is specified as {dsl}, but no kernel function for @tilelang.jit decoration was found in the code."
-        "The code may use the Torch upper API instead of the tilelang Kernel to achieve (torch degradation).",
-        "Make sure the code contains at least one kernel function for @tilelang.jit decorations."
-        "And in ModelNew.forward() call compiled kernel to perform the calculation.")
+        "DSL 指定为 {dsl}，但代码中未找到任何 @tilelang.jit 装饰的 kernel 函数。"
+        "代码可能使用了 torch 高层 API 替代 tilelang kernel 实现（torch 退化）。",
+        "请确保代码中包含至少一个 @tilelang.jit 装饰的 kernel 函数，"
+        "并在 ModelNew.forward() 中调用编译后的 kernel 执行计算。")
     not_called_msg = (
-        "The tilelang kernel function {kernels} was defined, but no kernel calls were found in the code."
-        "The kernel function may be only decorative and actually calculated without the tilelang (torch degradation).",
-        "Please call compiled tilelang Kernel in ModelNew.forward() to perform calculations, e. g. \n"
+        "定义了 tilelang kernel 函数 {kernels}，但代码中未找到任何 kernel 调用。"
+        "kernel 函数可能只是装饰性的，实际计算未使用 tilelang（torch 退化）。",
+        "请在 ModelNew.forward() 中调用编译后的 tilelang kernel 执行计算，例如：\n"
         "  kernel = my_kernel(M, N, K)\n  kernel(A, B, C)\n"
-        "Called with tilelang.compile: \n"
+        "或使用 tilelang.compile 编译后调用：\n"
         "  compiled = tilelang.compile(func, target='npuir')\n  compiled(A, B, C)")
 
     def _find_kernels(self, tree, aliases):
@@ -491,15 +505,15 @@ class _PyptoComplianceCheck(_KernelDSLComplianceCheck):
     hard_etype = "torch_api_instead_of_kernel"
     kernel_label = "pypto kernel"
     no_kernel_msg = (
-        "DSL is specified as {dsl}, but no @pypto.frontend.jit "
-        "(or @pypto.jit) Decorated Kernel, suspected to have replaced pypto directly with torch.",
-        "Please define Kernel in @pypto.frontend.jit, by pypto.* "
-        "operator completes the core calculation and calls the Kernel in ModelNew.forward().")
+        "DSL 指定为 {dsl}，但代码中未找到任何 @pypto.frontend.jit "
+        "（或 @pypto.jit）装饰的 kernel，疑似直接用 torch 实现替代了 pypto。",
+        "请用 @pypto.frontend.jit 定义 kernel，在 kernel 内通过 pypto.* "
+        "算子完成核心计算，并在 ModelNew.forward() 中调用该 kernel。")
     not_called_msg = (
-        "It defines pypto kernel (or its plant) {kernels},"
-        "But the entire file did not find any call for them, and the kernel may have just been set up and actually calculated to fall back on the torch.",
-        "Please actually call pypto kernel (or construct its plant function) in ModelNew.forward()"
-        "The core calculation is carried by Kernel, rather than using torch operator to produce the results directly.")
+        "定义了 pypto kernel（或其工厂）{kernels}，"
+        "但全文件未找到任何对它们的调用，kernel 可能只是摆设，实际计算落回了 torch。",
+        "请在 ModelNew.forward() 中实际调用 pypto kernel（或构造它的工厂函数），"
+        "由 kernel 承担核心计算，而不是用 torch 算子直接出结果。")
 
     def __init__(self):
         _p = _POLICY["pypto_compliance"]
@@ -541,8 +555,8 @@ class _PyptoComplianceCheck(_KernelDSLComplianceCheck):
 
 
 class _CatlassComplianceCheck(_ComplianceCheck):
-    """Ascendc_catlass Counterfeiting: toch.ops.catlass.xx
-    Call,forward() does not allow high-level torch hard operator (except for the legitimate Catlass call itself)."""
+    """ascendc_catlass 反作弊：ModelNew 中必须出现 torch.ops.catlass.xxx
+    调用，forward() 不允许 torch 高层硬算子（除合法的 catlass 调用本身）。"""
 
     name = "catlass_compliance"
 
@@ -584,11 +598,11 @@ class _CatlassComplianceCheck(_ComplianceCheck):
         if not has_catlass_call:
             errors.append(_err(
                 0, "no_catlass_call",
-                f"DSL Assign As {checker.dsl},but ModelNew.forward() None found in it "
-                f"{self._call_ns}.xxx form call."
-                f"The code may have been used. torch High level API Alternative catlass kernel Achieved.",
-                "Make sure you're through torch.ops.catlass. <op_name>(...) "
-                "Call Catlass Kernel instead of directly using the Torch high-level calculation API."))
+                f"DSL 指定为 {checker.dsl}，但 ModelNew.forward() 中未找到任何 "
+                f"{self._call_ns}.xxx 形式的调用。"
+                f"代码可能使用了 torch 高层 API 替代 catlass kernel 实现。",
+                "请确保 forward() 中通过 torch.ops.catlass.<op_name>(...) "
+                "调用 catlass kernel，而非直接使用 torch 高层计算 API。"))
 
         errors.extend(_forbidden_compute_in_forward(
             forward_node, hard_etype="torch_api_instead_of_kernel",
@@ -605,11 +619,11 @@ class _CatlassComplianceCheck(_ComplianceCheck):
 # compute gate (runtime_guard/), not by source spelling.
 _ASCENDC_PATTERN_MESSAGES: dict = {
     'torch_npu_builtin_compute': (
-        'AscendC wrapper calls the torch_npu.npu_* with the built-in operator at an equal value to the off-the-shelf NPU op.',
-        'Change to toch.ops.npu. <custom_op>(...) to a custom direct-invoke operator, core calculation written in ascendc_op.'),
+        'AscendC wrapper 调用了 torch_npu.npu_* 内置算子，等价于委托给现成 NPU op。',
+        '改为 torch.ops.npu.<custom_op>(...) 调用自定义 direct-invoke 算子，核心计算写在 ascendc_op 中。'),
     'aclnn_builtin_compute': (
-        'AscendC most example calls aclnn built-in high-level API.',
-        'Do not replace custom AscendC Kernel with aclnn built-in operator.'),
+        'AscendC host extension 调用了 aclnn 内置高层计算 API。',
+        '不要用 aclnn 内置算子代替自定义 AscendC kernel。'),
 }
 
 
@@ -737,8 +751,8 @@ class _AscendCComplianceCheck(_SourcePatternComplianceCheck):
 
 
 class _AutotuneComplianceCheck(_ComplianceCheck):
-    """Triton Series: ``@triton.autotune`` Decorators must contain ``restore_value``
-    Parameters (otherwise, benchmark runs across config pollution output)."""
+    """triton 系列：``@triton.autotune`` 装饰器必须包含 ``restore_value``
+    参数（否则 benchmark 重跑会跨 config 污染输出）。"""
 
     name = "autotune"
 
@@ -754,7 +768,7 @@ class _AutotuneComplianceCheck(_ComplianceCheck):
         )
 
     def applies(self, checker: "CodeChecker") -> bool:  # noqa: F821
-        # ``@triton.autotune`` is triton-specific -- tillang DSL does not go autotune.
+        # ``@triton.autotune`` 是 triton-specific —— tilelang DSL 不走 autotune。
         return checker.dsl.startswith("triton")
 
     def run(self, code: str, checker: "CodeChecker") -> List[Dict]:  # noqa: F821
@@ -784,17 +798,17 @@ class _AutotuneComplianceCheck(_ComplianceCheck):
                 "line": autotune_line,
                 "error_type": "autotune_missing_restore_value",
                 "detail": (
-                    "@triton.autotune Decorator lacks restore_value parameters."
-                    "Autumn benchmark repeats every config,"
-                    "Output between different configs can contaminate each other, leading to certification failure."
+                    "@triton.autotune 装饰器缺少 restore_value 参数。"
+                    "autotune benchmark 会对每个 config 反复执行 kernel，"
+                    "不同 config 之间的输出会互相污染，导致验证失败。"
                 ),
                 "suggestion": (
-                    "Add to @triton.autotune(...) a restore_value=['output pointer parameter']"
-                    "Lists all output pointer parameters for Kernel. For example: \n"
+                    "在 @triton.autotune(...) 中添加 restore_value=['输出指针参数名']，"
+                    "列出 kernel 的所有输出指针参数。例如：\n"
                     "  @triton.autotune(\n"
                     "      configs=[...],\n"
                     "      key=[...],\n"
-                    "      Restore_value=['output_ptr'], # must add \n"
+                    "      restore_value=['output_ptr'],  # 必须添加\n"
                     "  )"
                 ),
                 "code_snippet": "",
@@ -808,8 +822,8 @@ class _AutotuneComplianceCheck(_ComplianceCheck):
 
 
 class _A5ComplianceCheck(_ComplianceCheck):
-    """A5 (Ascend950) Hardware + triton_ascend: Ham tl.dot of kernel I have to.
-    Use Cube/Vector Promising interfaces (al.scope / al.fixpipe / bl.alloc)."""
+    """A5 (Ascend950) 硬件 + triton_ascend：含 tl.dot 的 kernel 必须
+    使用 Cube/Vector 亲和接口 (al.scope / al.fixpipe / bl.alloc)。"""
 
     name = "a5_compliance"
 
@@ -899,7 +913,7 @@ class _A5ComplianceCheck(_ComplianceCheck):
                     continue
                 func = node.func
 
-                # Direct namespace call: al. <method>(...) /bl. <method>(...)
+                # 直接命名空间调用：al.<method>(...) / bl.<method>(...)
                 if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
                     prefix = func.value.id
                     method = func.attr
@@ -912,8 +926,8 @@ class _A5ComplianceCheck(_ComplianceCheck):
                         if method == "alloc":
                             has_bl_alloc = True
 
-                # Chain call: al. <x>. <method>(...) - ``al.something.scope(...)``, for example.
-                # Be bound by the ``only_apis`` white list to avoid confusion with unrelated ``al.foo.bar()``.
+                # 链式调用：al.<x>.<method>(...) —— 例如 ``al.something.scope(...)``。
+                # 受 ``only_apis`` 白名单约束，避免和无关的 ``al.foo.bar()`` 混淆。
                 if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Attribute):
                     inner = func.value
                     if (isinstance(inner.value, ast.Name)
@@ -926,17 +940,17 @@ class _A5ComplianceCheck(_ComplianceCheck):
 
         errors: List[Dict] = []
 
-        # al.scope testing
+        # al.scope 检测
         if not has_al_scope:
             errors.append({
                 "line": 0,
                 "error_type": "a5_missing_scope",
                 "detail": (
-                    f"The target structure is {checker.arch}(A5 Hardware) but kernel Unused al.scope(core_mode=...) "
-                    "Division of Cube/Vector execution fields. The Cube and Vector nuclear requirements for A5 are organized separately through al.scope."
+                    f"目标架构为 {checker.arch}（A5 硬件），但 kernel 中未使用 al.scope(core_mode=...) "
+                    "划分 Cube/Vector 执行域。A5 的 Cube 和 Vector 核需要通过 al.scope 分别编排。"
                 ),
                 "suggestion": (
-                    "Please enable kinetic and programming in Kernel to enable Cube and Victor to calculate using al.scope to divide the calculation field, e. g. \n"
+                    "请在 kernel 中使能亲和编程写法实现kernel内的Cube和Vector计算，可以使用 al.scope 划分计算域，例如：\n"
                     "  with al.scope(core_mode=\"cube\"):\n"
                     "      acc = tl.dot(a, b)\n"
                     "      al.fixpipe(acc, dst_buf, ...)\n"
@@ -947,34 +961,34 @@ class _A5ComplianceCheck(_ComplianceCheck):
                 "code_snippet": ""
             })
 
-        # al.fixpipe test: only after entering al.scope makes sense
+        # al.fixpipe 检测：只有进入 al.scope 后 fixpipe 才有意义
         if has_al_scope and not has_fixpipe:
             errors.append({
                 "line": 0,
                 "error_type": "a5_missing_fixpipe",
                 "detail": (
-                    f"The target structure is {checker.arch}(A5 Hardware)kernel It's working. al.scope but not called al.fixpipe."
-                    "After the completion of the A5 Cube domain calculation, L0C data will normally be moved to UB/L1 by fixpipe."
+                    f"目标架构为 {checker.arch}（A5 硬件），kernel 使用了 al.scope 但未调用 al.fixpipe。"
+                    "A5 Cube 域计算完成后通常需要通过 fixpipe 将 L0C 数据搬运到 UB/L1。"
                 ),
                 "suggestion": (
-                    "Add al. fixpipe call after tl.dot in Cube scope to move the result to UB, e. g. \n"
+                    "如果使能了亲和编程写法，请在 Cube scope 内的 tl.dot 之后添加 al.fixpipe 调用，将结果搬运到UB，例如：\n"
                     "  al.fixpipe(acc, bl.to_buffer(c_ub, al.ascend_address_space.UB),\n"
                     "             al.FixpipeDMAMode.NZ2ND, al.FixpipeDualDstMode.ROW_SPLIT)"
                 ),
                 "code_snippet": ""
             })
 
-        # bl.alloc testing
+        # bl.alloc 检测
         if not has_bl_alloc:
             errors.append({
                 "line": 0,
                 "error_type": "a5_missing_bl_alloc",
                 "detail": (
-                    f"The target structure is {checker.arch}(A5 Hardware) but kernel Unused bl.alloc On the distribution film. buffer."
-                    "A5 Cube/Vector synergetic needs to be assigned to the BB or L1 Buffer area as a data exchange area."
+                    f"目标架构为 {checker.arch}（A5 硬件），但 kernel 中未使用 bl.alloc 分配片上 buffer。"
+                    "A5 Cube/Vector 协同需要在 UB 或 L1 上分配 buffer 作为数据交换区域。"
                 ),
                 "suggestion": (
-                    "Use the bl.alloc distribution when applying for buffer in kernel, if this allows pronunciation and programming, which can be distributed on UB, L1, L0C, L0A, L0B, e.g. \n"
+                    "如果使能了亲和编程写法，在 kernel 中申请使用 buffer的时候请使用 bl.alloc 分配 buffer，可以在UB、L1、L0C、L0A、L0B上分配，例如：\n"
                     "  c_ub = bl.alloc(tl.float32, (BLOCK_M, BLOCK_N), al.ascend_address_space.UB)\n"
                     "  c_l1 = bl.alloc(tl.float32, (BLOCK_M, BLOCK_N), al.ascend_address_space.L1)"
                 ),
@@ -990,14 +1004,14 @@ class _A5ComplianceCheck(_ComplianceCheck):
 
 class CodeChecker:
     """
-    code checker: Conduct rapid pure static checks after Code Generation and before Verifier Validation
+    代码检查器：在 Coder 生成代码后、Verifier 验证前，进行快速的纯静态检查
 
-    Checking process: ast.parse → py_compile → report validates →'s Chinese text blending test
-    → DSL/arch compliance testing. No LLM call, no extra cost.
+    检查流程：ast.parse → py_compile → import 验证 → 中文文本混入检测
+    → DSL/arch 合规性检测。不调用 LLM，零额外成本。
 
-    New per-DSL compliance check method: achieve a subcategory of ``_<dsl>ComplianceCheck``
-    (Definition of ``applies(checker) / run(code, checker)``), in ``_CHECKS`` column
-    Add a row to the table; do not add per-DSL fields or methods to the ``CodeChecker`` class.
+    新增 per-DSL 合规检查的方法：实现一个 ``_<dsl>ComplianceCheck`` 子类
+    （定义 ``applies(checker) / run(code, checker)``），在 ``_CHECKS`` 列
+    表里追加一行；不要在 ``CodeChecker`` 类体内添加 per-DSL 字段或方法。
     """
 
     # Class-level singleton instances of each compliance check. State is
@@ -1028,7 +1042,7 @@ class CodeChecker:
         self.backend = backend.lower() if backend else ""
         self.dsl = dsl.lower() if dsl else ""
         self.arch = arch.lower() if arch else ""
-        # ``config`` accepted for caller-signature command; policy is yaml.
+        # ``config`` accepted for caller-signature compat; policy 真源 is yaml.
         self.config = config or {}
         logger.info(
             f"CodeChecker initialized: backend={self.backend}, "
@@ -1058,7 +1072,7 @@ class CodeChecker:
         return _TORCH_CALL_PREFIXES
 
     # ------------------------------------------------------------------
-    # Main entrance
+    # 主入口
     # ------------------------------------------------------------------
 
     def _is_python_source(self, source_name: str) -> bool:
@@ -1076,26 +1090,26 @@ class CodeChecker:
 
     def check(self, code: str, task_info: Optional[dict] = None) -> Tuple[bool, str, List[Dict]]:
         """
-        Check the code (pure static check, do not call LLM)
+        检查代码（纯静态检查，不调用 LLM）
 
-        Check process (step 1-4 only for Python source; non-.py text source - directory DSL
-        C++/AscendC/CMake file - Go straight to Step 5, see ``_is_python_source``:
-        1. st.parse
-        Py_compile compilation check (implemented after adoption of grammar, capture of additional compilation issues)
-        3. Input usability check (executable when code is compiled)
-        4. Chinese text blending testing
-        5. DSL/arch Compliance Test: From every ``_CHECKS`` call on every check example
-           ``applies(self) / run(code, self)`` (executed only in the absence of syntax/compilation error)
+        检查流程（步骤 1-4 仅对 Python 源执行；非 .py 文本源——目录式 DSL 的
+        C++/AscendC/CMake 文件——直接跳到步骤 5，见 ``_is_python_source``）：
+        1. ast.parse 语法检查
+        2. py_compile 编译检查（语法通过后执行，捕获额外编译问题）
+        3. import 可用性检查（代码可编译时执行）
+        4. 中文文本混入检测
+        5. DSL/arch 合规性检测：遍历 ``_CHECKS`` 调用每个 Check 实例的
+           ``applies(self) / run(code, self)``（仅在无语法/编译错误时执行）
 
         Args:
-            Code: Code to check
-            task_info: Task information (``file``/``path`` for determining source type)
+            code: 要检查的代码
+            task_info: 任务信息（``file``/``path`` 用于判定源类型）
 
         Returns:
             Tuple[bool, str, List[Dict]]:
-                - Passed: Checked
-                - Error_message: formatted error message (for transmission to Coder)
-                - Errors: Detailed list of errors
+                - passed: 是否通过检查
+                - error_message: 格式化的错误信息（用于传递给 Coder）
+                - errors: 详细错误列表
         """
         task_info = task_info or {}
         self._source_path = str(task_info.get("file") or task_info.get("path") or "")
@@ -1105,8 +1119,8 @@ class CodeChecker:
             empty_err = {
                 "line": 0,
                 "error_type": "empty_code",
-                "detail": "The code is empty. It can't be checked.",
-                "suggestion": "Please generate a valid code",
+                "detail": "代码为空，无法进行检查",
+                "suggestion": "请生成有效的代码",
                 "code_snippet": "",
                 "fix_strategy": "rewrite"
             }
@@ -1114,8 +1128,8 @@ class CodeChecker:
 
         # Python-source gate via DSL adapter. Only ``ValueError`` from
         # the factory (unregistered DSL) is treated as "skip safely";
-        # ImportError / AttributeError / Other anomalies are supported - C-DSL adapter
-        # The real problem with yourself has to come out, not be silenced into "skip checker".
+        # ImportError / AttributeError / 其它异常都是支持-中-DSL adapter
+        # 自身的真问题，必须冒出来，不能被静默 swallow 成 "skip checker"。
         if self.dsl:
             from op_autoresearch.op.verifier.adapters.factory import get_dsl_adapter
             try:
@@ -1137,7 +1151,7 @@ class CodeChecker:
                 errors.extend(self._check_py_compile(code))       # Step 2: py_compile
             if not errors:
                 errors.extend(self._check_imports(code))          # Step 3: imports
-            errors.extend(self._check_stray_chinese(code))        # Step 4: Combining Chinese
+            errors.extend(self._check_stray_chinese(code))        # Step 4: 中文混入
 
         # Step 5: DSL/arch compliance. Each Check owns its applies()/run()
         # (AscendC scans the C++/AscendC text; the others parse Python).
@@ -1177,16 +1191,16 @@ class CodeChecker:
         return errors
 
     # ------------------------------------------------------------------
-    # Step 1: ast.parse syntax check
+    # Step 1: ast.parse 语法检查
     # ------------------------------------------------------------------
 
     def _check_python_syntax(self, code: str) -> List[Dict]:
         """
-        Use ast.parse() for syntax screening:
-        parenthesis does not match, indentation error, keyword spelling, etc.
+        使用 ast.parse() 进行语法检查：
+        括号不匹配、缩进错误、关键字拼写等。
 
-        Note: ast.parse will stop when the first SyntaxError is met.
-        Therefore, only the first error is returned here, and there may be other follow-up problems that need to be examined again after the restoration.
+        注意：ast.parse 遇到第一个 SyntaxError 就会停止，
+        因此这里只返回首个错误，后续可能还有其他问题需要在修复后再次检查。
         """
         errors = []
         try:
@@ -1198,19 +1212,19 @@ class CodeChecker:
             if 0 < line_num <= len(code_lines):
                 code_snippet = code_lines[line_num - 1].rstrip()
 
-            error_msg = e.msg or "Syntax Error"
+            error_msg = e.msg or "语法错误"
             if e.offset:
-                error_msg += f"(No.) {e.offset} Columns"
+                error_msg += f"（第 {e.offset} 列）"
 
             errors.append({
                 "line": line_num,
                 "error_type": "syntax_error",
-                "detail": f"Python Syntax Error: {error_msg}",
-                "suggestion": f"""Check number one. {line_num} Line Syntax:
-  - Checks if brackets, quotation marks match
-  - Check if indentation is correct
-  - Check if keyword spelling is correct
-  - Check for missing symbols like colons, commas, etc.""",
+                "detail": f"Python 语法错误: {error_msg}",
+                "suggestion": f"""请检查第 {line_num} 行的语法：
+  - 检查括号、引号是否匹配
+  - 检查缩进是否正确
+  - 检查关键字拼写是否正确
+  - 检查冒号、逗号等符号是否遗漏""",
                 "code_snippet": code_snippet,
                 "fix_strategy": "fix"
             })
@@ -1219,14 +1233,14 @@ class CodeChecker:
         return errors
 
     # ------------------------------------------------------------------
-    # Step 2: py_compile compiler
+    # Step 2: py_compile 编译检查
     # ------------------------------------------------------------------
 
     def _check_py_compile(self, code: str) -> List[Dict]:
         """
-        Use py_compile for compilation level checks.
-        More stringent than ast.parse, which captures some of the left-out compilation problems of st.parse
-        (e.g. SyntaxWarning Upgrading, Repeating Keyword Parameters, etc.).
+        使用 py_compile 进行编译级别检查。
+        比 ast.parse 更严格，能捕获部分 ast.parse 遗漏的编译问题
+        （如 SyntaxWarning 升级、重复关键字参数等）。
         """
         errors = []
         tmp_src = None
@@ -1238,8 +1252,8 @@ class CodeChecker:
                 f.write(code)
                 tmp_src = f.name
 
-            # Temporary files are written to the system temporary directory (Linux: /tmp, Windows: %TEMP%), which is not in the current working directory.
-            # Receives the.pyc output with a stand-alone temporary file and avoids writing to __pycache_ that leads to a question of permission.
+            # 临时文件写入系统临时目录（Linux: /tmp, Windows: %TEMP%），不在当前工作目录。
+            # 用独立的临时文件接收 .pyc 输出，避免往 __pycache__ 写入导致权限问题。
             fd, tmp_pyc = tempfile.mkstemp(suffix='.pyc')
             os.close(fd)
 
@@ -1259,11 +1273,11 @@ class CodeChecker:
             errors.append({
                 "line": line_num,
                 "error_type": "compile_error",
-                "detail": f"Python Compiler error: {error_str}",
-                "suggestion": f"""Check number one. {line_num} Code close to line:
-  - Checks if there is an illegitimate expression or grammar structure
-  - Checks whether variable or function names are valid
-  - Check if there's any. Python Uncompatible version""",
+                "detail": f"Python 编译错误: {error_str}",
+                "suggestion": f"""请检查第 {line_num} 行附近的代码：
+  - 检查是否有不合法的表达式或语法结构
+  - 检查变量名、函数名是否合法
+  - 检查是否有 Python 版本不兼容的写法""",
                 "code_snippet": code_snippet,
                 "fix_strategy": "fix"
             })
@@ -1281,7 +1295,7 @@ class CodeChecker:
         return errors
 
     # ------------------------------------------------------------------
-    # Step 3: Import usability check
+    # Step 3: import 可用性检查
     # ------------------------------------------------------------------
 
     # Runtime modules that live on the eval target (NPU host), NOT on
@@ -1322,12 +1336,12 @@ class CodeChecker:
 
     def _check_imports(self, code: str) -> List[Dict]:
         """
-        Checks if the module cited in the Import statement in the code is available.
+        检查代码中 import 语句引用的模块是否可用。
 
-        Extract all reports / from...import statements from the AST, use
-        iportlib.util.find_spec to verify the existence of the top layer module. ``_REMOTE_RUNTIME_MODULES``
-        The modules in the module skip -- they're only on the remote NPU rating machine, local orchestrator
-        The missing ones are not miswritten by Kernel.
+        通过 AST 提取所有 import / from ... import 语句，使用
+        importlib.util.find_spec 验证顶层模块是否存在。``_REMOTE_RUNTIME_MODULES``
+        里的模块跳过 —— 它们只在远端 NPU 测评机上有，本机 orchestrator
+        缺它们不算 kernel 写错。
         """
         errors = []
         try:
@@ -1342,8 +1356,8 @@ class CodeChecker:
             errors.append({
                 "line": line,
                 "error_type": "import_error",
-                "detail": f"Modules '{module_name}' Unable to import (this module does not exist in the environment)",
-                "suggestion": f"Please check the module name '{module_name}' Whether to spell correctly or confirm whether the module needs to be installed",
+                "detail": f"模块 '{module_name}' 无法导入（环境中不存在此模块）",
+                "suggestion": f"请检查模块名 '{module_name}' 是否拼写正确，或确认该模块是否需要安装",
                 "code_snippet": "",
                 "fix_strategy": "fix"
             })
@@ -1377,23 +1391,23 @@ class CodeChecker:
 
     @staticmethod
     def _is_module_available(module_name: str) -> bool:
-        """Check if the module is available in the current environment"""
+        """检查模块在当前环境中是否可用"""
         try:
             return importlib.util.find_spec(module_name) is not None
         except (ModuleNotFoundError, ValueError):
             return False
 
     # ------------------------------------------------------------------
-    # Step 4: Chinese text mixing detection - regex from op/config/code_checker.yaml
-    # _text.min_run/stream_text.unicode_ranges
+    # Step 4: 中文文本混入检测 —— regex 来自 op/config/code_checker.yaml
+    # 的 stray_text.min_run / stray_text.unicode_ranges
     # ------------------------------------------------------------------
 
     def _check_stray_chinese(self, code: str) -> List[Dict]:
         """
-        The Chinese text (LLM common issue) that is mixed in the detection code.
+        检测代码中混入的中文文本（LLM 常见问题）。
 
-        Rule: Continuous > = 3 characters appear outside the notes and strings and are considered to be mismixed into Chinese.
-        Only the real code is scanned by tokenize precisely stripping out the comments and strings.
+        规则：连续 >=3 个汉字出现在注释和字符串之外，视为误混入的中文描述。
+        通过 tokenize 精确剥离注释和字符串，只扫描真正的代码 token。
         """
         import io
         import tokenize
@@ -1418,10 +1432,10 @@ class CodeChecker:
                 errors.append({
                     "line": line_num,
                     "error_type": "stray_chinese_text",
-                    "detail": f"Code is mixed with Chinese text '{chinese_text}', suspected unannotated description in Chinese",
+                    "detail": f"代码中混入了中文文本 '{chinese_text}'，疑似未注释的中文描述",
                     "suggestion": (
-                        f"I don't think so. {line_num} For Chinese text containing non-coded text, delete or replace with an explanatory note (add at the beginning of the line) #)."
-                        f"Ignore this warning if you want to use a Chinese variable name."
+                        f"第 {line_num} 行包含非代码的中文文本，请删除或改为注释（在行首加 #）。"
+                        f"如果是有意使用的中文变量名，请忽略此警告。"
                     ),
                     "code_snippet": "",
                     "fix_strategy": "fix"
@@ -1433,31 +1447,31 @@ class CodeChecker:
         return errors
 
     # ------------------------------------------------------------------
-    # Format Output
+    # 格式化输出
     # ------------------------------------------------------------------
 
     def _format_errors(self, errors: List[Dict], code_lines: Optional[List[str]] = None) -> str:
-        """Format error message for easy transmission to Coder"""
+        """格式化错误信息，便于传递给 Coder"""
         if not errors:
             return ""
 
         lines = [
-            "# CodeChecker Static Check Report",
+            "## CodeChecker 静态检查报告",
             "",
-            f"**Found {len(errors)} One problem, please recreate the code after repair:**",
+            f"**发现 {len(errors)} 个问题，请修复后重新生成代码：**",
             ""
         ]
 
         for i, err in enumerate(errors, 1):
             error_line = err['line']
-            lines.append(f"### Problem {i}: I don't think so. {error_line} Okay. [{err.get('error_type', 'unknown')}]")
+            lines.append(f"### 问题 {i}: 第 {error_line} 行 [{err.get('error_type', 'unknown')}]")
             lines.append(f"  {err['detail']}")
 
             if code_lines is not None and error_line > 0:
                 start_line = max(1, error_line - 3)
                 end_line = min(len(code_lines), error_line + 3)
 
-                lines.append(f"  Context (No. {start_line}-{end_line} Line:")
+                lines.append(f"  上下文（第 {start_line}-{end_line} 行）：")
                 for ctx_line_num in range(start_line, end_line + 1):
                     ctx_line = code_lines[ctx_line_num - 1]
                     if ctx_line_num == error_line:
@@ -1465,26 +1479,26 @@ class CodeChecker:
                     else:
                         lines.append(f"      {ctx_line_num:4d} | {ctx_line}")
             elif err.get('code_snippet'):
-                lines.append(f"  Error Code: {err['code_snippet']}")
+                lines.append(f"  出错代码: {err['code_snippet']}")
 
             if err.get('suggestion'):
-                lines.append(f"  Recommendations:")
+                lines.append(f"  建议：")
                 for sug_line in err['suggestion'].strip().split('\n'):
                     lines.append(f"    {sug_line}")
 
             lines.append("")
 
-        lines.append("**Note: grammatical checks can only locate the first error at a time and there may be follow-up problems after repair. Please check the entire code carefully.**")
+        lines.append("**注意：语法检查每次只能定位到首个错误，修复后可能还有后续问题，请仔细检查整段代码。**")
 
         return "\n".join(lines)
 
     def get_check_summary(self, errors: List[Dict]) -> str:
-        """Get a check summary (short version for logs)"""
+        """获取检查摘要（简短版本，用于日志）"""
         if not errors:
-            return "code check passes."
+            return "代码检查通过"
 
         error_types = set(err.get("error_type", "unknown") for err in errors)
-        return f"Found {len(errors)} It's a question.: {', '.join(error_types)}"
+        return f"发现 {len(errors)} 个问题: {', '.join(error_types)}"
 
 
 # ---------------------------------------------------------------------------

@@ -1,3 +1,17 @@
+# Copyright 2025 Huawei Technologies Co., Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """TileLang NPUIR DSL adapter."""
 
 from typing import Any, Optional
@@ -23,18 +37,18 @@ except ImportError:
         if framework == "torch":
             code += "import torch\nimport torch_npu\nimport tilelang.language as T\n"
         return code
-
+    
     def get_impl_import(self, op_name: str, impl_func_name: str) -> str:
         """Return implementation function import."""
         return f"from {op_name}_tilelang_npuir_impl import {impl_func_name}\n"
-
+    
     def call_impl(self, impl_func_name: str, inputs: str, device_id: int,
-                  framework_adapter: Any, op_name: str,
-                  data_dir: Optional[str] = None,
+                  framework_adapter: Any, op_name: str, 
+                  data_dir: Optional[str] = None, 
                   framework_output: Optional[str] = None) -> str:
         """Return code string to call TileLang NPUIR implementation function."""
         return f"impl_output = {impl_func_name}(*{inputs})\n"
-
+    
     def benchmark_impl(self, impl_func_name: str, inputs: str,
                       warmup: int, runs: int, backend: str, op_name: str,
                       case_idx: int = 0, framework_model: Optional[str] = None,
@@ -43,34 +57,34 @@ except ImportError:
                       clear_l2_cache: bool = True,
                       framework: str = "torch") -> str:
         """Return code string to benchmark TileLang NPUIR implementation.
-
+        
         Args:
-            impl_func_name: achieve function name
-            inputs: Enter variable name
-            Warmup: warmup times
-            Runs: Effective run times
-            Back: backend type
-            Op_name: operator name
-            Case_idx: case index
-            ramework_model: framework Model Variable Name (optional)
-            framework_adapter: framework adapter (optional)
-            Data_id: deviceID (optional)
-            clear_l2_cache: Whether to clear L2 Cache (default True) before each iterative
-            ramework: framework type (\"toch\" or \"mindspore\")
+            impl_func_name: 实现函数名
+            inputs: 输入变量名
+            warmup: warmup 次数
+            runs: 有效运行次数
+            backend: 后端类型
+            op_name: 算子名称
+            case_idx: case 索引
+            framework_model: 框架模型变量名（可选）
+            framework_adapter: 框架适配器（可选）
+            device_id: 设备ID（可选）
+            clear_l2_cache: 是否在每次迭代前清除 L2 cache（默认 True）
+            framework: 框架类型 ("torch" 或 "mindspore")
         """
         if backend == "ascend":
             framework_arg = f', framework="{framework}"' if framework == "mindspore" else ""
-            # Performance test with profiler_npu to support L2 Cache cleanup
-            code = f"""        # dsl:tilelang_npuir
+            # 使用 profiler_npu 进行性能测试，支持 L2 cache 清除
+            code = f"""        # dsl：tilelang_npuir
         try:
             from op_autoresearch.op.verifier.profiler import profiler_npu
             patch_imported = True
         except ImportError:
             patch_imported = False
-
+        
         def tilelang_benchmark_fn():
             return {framework_model}(*{inputs})
-
+        
         if patch_imported:
             execution_time_us = profiler_npu(
                 tilelang_benchmark_fn,
@@ -95,20 +109,20 @@ except ImportError:
             method = "traditional_timing"
 """
         else:
-            # Non ascend backend, when using fax statistics
+            # 非 ascend 后端，使用传统计时
             sync_code = "torch.npu.synchronize()" if backend == "ascend" else ""
-            code = f"""        # dsl:tilelang_npuir
+            code = f"""        # dsl：tilelang_npuir
         import time
         start_time = time.time()
         for _ in range({warmup + runs}):
             framework_output = {framework_model}(*{inputs})
             {sync_code}
         end_time = time.time()
-        execution_time_ms = (end_time - start_time) * 1000 / {warmup + runs}  # Convert to milliseconds
+        execution_time_ms = (end_time - start_time) * 1000 / {warmup + runs}  # 转换为毫秒
         method = "traditional_timing"
 """
         return code
-
+    
     def get_special_setup_code(self, framework: str = "torch") -> str:
         """Return special setup code for tilelang_npuir."""
         return """import tilelang

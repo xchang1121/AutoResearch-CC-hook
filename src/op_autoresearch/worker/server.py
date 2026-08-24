@@ -65,7 +65,7 @@ async def lifespan(app: FastAPI):
                        reaped)
 
     logger.info(f"Initializing Worker Service: Backend={backend}, Arch={arch}, Devices={devices}")
-
+    
     timing = worker_timing()
     device_pool = DevicePool(devices, lease_ttl_s=timing.lease_ttl)
     device_pool.start_reaper(timing.lease_reap_interval)
@@ -119,11 +119,11 @@ async def verify(
 ):
     """
     Execute verification task.
-
+    
     Returns:
-        - Access: Verify success
-        -log: Execute Log
-        -artifices: the content of the JSON file generated during execution
+        - success: 验证是否成功
+        - log: 执行日志
+        - artifacts: 执行过程中生成的 JSON 文件内容
     """
     _require_worker()
     logger.info(f"[{task_id}] Received verification request for {op_name}")
@@ -172,14 +172,14 @@ async def generate_reference(
 ):
     """
     Execute task_desc and generate reference data.
-
-    For the CUDA-to-Asend conversion scenario: execute the Triton-CUDA code,
-    Saves the output as a reference data (.pt file) and returns with the base64 code.
-
+    
+    用于 CUDA-to-Ascend 转换场景：执行 Triton-CUDA 代码，
+    保存输出作为参考数据（.pt 文件），并以 base64 编码返回。
+    
     Returns:
-        -success: Successfully generate reference data
-        -log: Execute Log
-        -Reference_data: base64 encoded.pt file content
+        - success: 是否成功生成参考数据
+        - log: 执行日志
+        - reference_data: base64 编码的 .pt 文件内容
     """
     import base64
 
@@ -191,7 +191,7 @@ async def generate_reference(
             package_data, task_id, op_name,
             resolve_reference_timeout(timeout)
         )
-        # When successful, base64 encoding returns binary data; fail-time string.
+        # 成功时 base64 编码返回二进制数据；失败时空串。
         return {
             "success": success,
             "log": log,
@@ -210,13 +210,13 @@ async def profile_single_task(
 ):
     """
     Execute single task profiling (only measure task_desc performance, no base comparison).
-
-    A separate measure of the performance of a certain section of the code does not allow comparison.
-
+    
+    单独测量某段代码的执行性能，不进行 base vs generation 对比。
+    
     Returns:
-        - time_us: execution time (microseconds)
-        - Success.
-        -log: Execute Log
+        - time_us: 执行时间（微秒）
+        - success: 是否成功
+        - log: 执行日志
     """
     _require_worker()
     import json
@@ -236,11 +236,11 @@ async def get_doc(
     doc_name: str,
 ):
     """
-    Fetchs the contents of the document in the current environment of the worker.
+    获取 worker 当前环境中的文档内容。
 
-    Typical scenario:
-    - Server/agent does not have triton_ascend, but far away, worker does.
-    - Need to return filtered API documents based on remote real runtime
+    典型场景：
+    - server/agent 本地没有 triton_ascend，但远端 worker 有
+    - 需要基于远端真实运行时返回过滤后的 API 文档
     """
     if worker is None:
         raise HTTPException(status_code=503, detail="Worker not initialized")
@@ -336,16 +336,16 @@ async def status():
 
 @app.get("/api/v1/health")
 async def health():
-    """Non-construction of health expeditions - \"Daemon's requested path was still alive\"
-    Do not rob device:
+    """非阻塞健康探活 —— 验"daemon 接 verify 时的请求路径还活着"，但
+    不抢占设备：
 
-      - Try it with ``asyncio.Queue.get_nowait()``. Device, as soon as you can.
-        Put it back; empty queue (load) as healthy, unreported
-      - The whole handler press the worker. health_timeout timeout; timeout is only when the event cycle itself is stuck
+      - 用 ``asyncio.Queue.get_nowait()`` 试取一次 device，能取就立刻
+        放回；空队列（满载）当作 healthy（"忙不是坏"），不报 degraded
+      - 整个 handler 按 worker.health_timeout 超时；超时仅当事件循环本身卡了
 
-    /status verify only HTTP server online; /health walk through real Que operation
-    Paths that capture \"event loop\" or \"queue lock competition\".**
-    Blocking and waiting for device, so full-loading worker won't be miscalculated."""
+    /status 只验证 HTTP server 在线；/health 走一遍真实的 queue 操作
+    路径，能抓出"event loop 卡住"或"queue 锁竞争"那类故障。**不会**
+    阻塞等设备，所以满载 worker 不会被误判 degraded。"""
     import asyncio
     if worker is None:
         return {"status": "initializing", "healthy": False, "free": 0}
@@ -388,37 +388,37 @@ async def health():
     except asyncio.TimeoutError:
         base["error"] = (
             f"event loop unresponsive (>{timing.health_timeout}s) "
-            "— The cycle of events may be blocked"
+            "—— 事件循环可能阻塞"
         )
         logger.warning(
-            "Health probe timed out: event loop %s did not respond in seconds",
+            "健康探活超时：event loop %s 秒内未响应",
             timing.health_timeout,
         )
         return base
     except Exception as e:
-        base["error"] = f"Health detection is unusual:{type(e).__name__}: {e}"
-        logger.warning(f"Health detection is unusual:{e}")
+        base["error"] = f"健康探活异常：{type(e).__name__}: {e}"
+        logger.warning(f"健康探活异常：{e}")
         return base
 
 
 def start_server(host: Optional[str] = None, port: Optional[int] = None):
     """
-    Start OP_AUTORESEARCH WORker Service.
-
+    启动 OP_AUTORESEARCH Worker Service。
+    
     Args:
-        host: The listening address. You can use the WOrkER_HOST settings for environment variables.
-              - IPv4: \"0.0.0.0\" (all interfaces), \"127.0.0.1\" (local)
-              - IPv6: \"::\" (all interfaces, double bar), \": 1\" (local)
-              Default: \"0.0.0.0\"
-        port: Listen port. You can use the environment variable WORKER_PORT settings.
-              Default: 901
+        host: 监听地址。可从环境变量 WORKER_HOST 设置。
+              - IPv4: "0.0.0.0" (所有接口), "127.0.0.1" (本地)
+              - IPv6: "::" (所有接口，双栈), "::1" (本地)
+              默认: "0.0.0.0"
+        port: 监听端口。可从环境变量 WORKER_PORT 设置。
+              默认: 9001
     """
-    # Read configurations from environmental variables, parameters first
+    # 从环境变量读取配置，参数优先
     if host is None:
         host = os.environ.get("WORKER_HOST", "0.0.0.0")
     if port is None:
         port = int(os.environ.get("WORKER_PORT", "9001"))
-
+    
     logger.info(f"Starting Worker Service on {host}:{port}")
     uvicorn.run(app, host=host, port=port)
 

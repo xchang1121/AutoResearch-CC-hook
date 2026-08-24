@@ -1,42 +1,42 @@
-# SubAgent Selection Guide
+# 子Agent 选择指南
 
-## Select Logic
+## 选择逻辑
 
-1. **User specified**→ recognition by keyword
-2. **User not specified**→ with `ask_user` query
-3. **Called the previous second confirmation**→**has to**again `ask_user` confirms user selection
+1. **用户明确指定** → 根据关键词识别
+2. **用户未指定** → 使用 `ask_user` 询问
+3. **调用前二次确认** → **必须**再次 `ask_user` 确认用户选择
 
-## Keyword Recognition
+## 关键词识别
 
-1. "Evilve," "Evolutionary Search," "High Performance," → `call_evolve`.
-2. "With coder_only," "fast generation," → `call_coder_only`.
-3. "Adaptive_search", "Search the Tree" → `call_adaptive_search`
-4. "test performance," "profile," → `call_coder_only(task_type="profile")`.
+1. "用 evolve"、"进化搜索"、"高性能" → `call_evolve`
+2. "用 coder_only"、"快速生成" → `call_coder_only`
+3. "用 adaptive_search"、"树搜索" → `call_adaptive_search`
+4. "测试性能"、"profile" → `call_coder_only(task_type="profile")`
 
-## Ask User
+## 询问用户
 
-Use this helper when the generation mode is unclear:
-
-```python
-ask_user(message="Please select the generation method:\n1. coder_only - Quick Generate\n2. evolve - Evolution search (high performance)\n3. adaptive_search - Tree Search")
-```
-
-## Reconfirmation (required)
-
-**Before calling the sub-agent Agent, the user must be asked again to confirm:**
+用户未指定时：
 
 ```python
-ask_user(message="To be used [The way to choose] Generate kernelAre you sure about this?(y/n)")
+ask_user(message="请选择生成方式：\n1. coder_only - 快速生成\n2. evolve - 进化搜索（高性能）\n3. adaptive_search - 树搜索")
 ```
 
-- User reply "y"/ "yes"/ "confirm" → to execute call
-- User reply "n"/ "no"/ "cancell" or other way → requiring selection
+## 二次确认（必须）
 
-## SubAgent Arguments
+**在调用子Agent 前，必须再次询问用户确认：**
+
+```python
+ask_user(message="即将使用 [选择的方式] 生成 kernel，确认执行吗？(y/n)")
+```
+
+- 用户回复 "y"/"yes"/"确认" → 执行调用
+- 用户回复 "n"/"no"/"取消" 或其他方式 → 重新询问选择
+
+## 子Agent 参数
 
 1. `call_coder_only(task_code="...", op_name="relu", user_requirements="...")`
-   - task_type: "precise_only" (default) or "profile"
-   - Our_requirements: Kernel Optimizing Demand (optional; see note below)
+   - task_type: "precision_only"（默认）或 "profile"
+   - user_requirements: kernel 优化需求（可选，见下方说明）
 
 2. `call_evolve(task_code="...", op_name="relu", user_requirements="...")`
 
@@ -48,30 +48,30 @@ ask_user(message="To be used [The way to choose] Generate kernelAre you sure abo
 
 ---
 
-## Description of user_requirements parameters (important!)
+## user_requirements 参数说明（重要！）
 
-### Need to pass on user_requirements
+### 需要传递 user_requirements 的情况
 
-**Only "the requirements for kernel realization" need to be passed on to `user_requirements`**, which will be passed to son Agent, affecting the final kernel code:
+**只有"对 kernel 实现的要求"才需要传递 `user_requirements`**，这些需求会传递给子Agent，影响最终生成的 kernel 代码：
 
-1. Severation strategy: "Triple-separation in the core" and "Use the partition strategy."
-2. Hardware characteristics: "Use tensor core", "use shared memory"
+1. 切分策略: "核内进行二次切分"、"使用分块策略" 
+2. 硬件特性: "使用 tensor core"、"利用 shared memory"
 
 
-**Example:**
+**示例：**
 ```
-User: "Generate ReLU operatorWe're going to double-separate the core."
-   → call_coder_only(task_code="...", op_name="relu", user_requirements="Retract the core.")
+用户: "生成 ReLU 算子，核内进行二次切分"
+   → call_coder_only(task_code="...", op_name="relu", user_requirements="核内进行二次切分")
 ```
 
-### Do not need to pass on user_requirements
+### 不需要传递 user_requirements 的情况
 
-**Users did not transmit the request for the kernel generation**
-**"Dequisites for task code" does not transmit `user_requirements`**, but has been completed in front of the `call_op_task_builder` processing.
+**用户没有传递对kernel生成的要求**
+**"对 task 代码的要求"不传递 `user_requirements`**，而是前面已经通过 `call_op_task_builder` 处理完成了。
 
-## Prohibition of conduct
+## 禁止行为
 
-1. Automatically select when the user has not specified
-2. Incomplete code direct call sub-Agent
-3. Do not double confirm direct call sub-Agent
-4. **Show related needs (data type, Shape) into user_requirements**
+1. 用户未指定时自动选择
+2. 代码不完整直接调用子Agent
+3. 不进行二次确认直接调用子Agent
+4. **把 task 相关需求（数据类型、shape）放入 user_requirements**

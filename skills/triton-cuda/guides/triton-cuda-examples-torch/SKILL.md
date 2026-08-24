@@ -1,6 +1,6 @@
 ---
 name: triton-cuda-examples-torch
-description: "Full integration example of the Triton CUDA kernel under PyTorch framework, including standard operators such as vector_add, matmul, player_norm, softmax. This applies to the CUDA kernel creation scenario that requires reference to PyTorch operator packaging methods, torch.autograd. Function mode"
+description: "PyTorch 框架下 Triton CUDA 内核的完整集成示例，包括 vector_add、matmul、layer_norm、softmax 等标准算子实现。适用于需要参考 PyTorch 算子包装方式、torch.autograd.Function 实现模式的 CUDA 内核代码生成场景"
 category: example
 version: "1.0.0"
 metadata:
@@ -10,18 +10,18 @@ metadata:
   examples: "vector_add, matmul, layer_norm, softmax, double_kernel"
 ---
 
-# PyTorch + Triton CUDA Example Code
+# PyTorch + Triton CUDA 示例代码
 
-This Skill contains a full runable example code showing how Triton CUDA is used in PyTorch to write high performance kernel.
+本 Skill 包含完整的可运行示例代码，展示如何在 PyTorch 中使用 Triton CUDA 编写高性能 kernel。
 
-## Example List
+## 示例列表
 
-### 1. Victor Add (vector plus)
-**operator type**: Element-wise
-**Key points**:
-- The simplest example of Triton Kernel
-- 1-D Index and Mask
-- Standard five-step model
+### 1. Vector Add（向量加法）
+**算子类型**: Element-wise
+**关键点**:
+- 最简单的 Triton kernel 示例
+- 一维索引和 mask
+- 标准五步模式
 
 ```python
 import torch
@@ -30,7 +30,7 @@ import triton.language as tl
 
 @triton.jit
 def add_kernel(x_ptr, y_ptr, output_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
-    """Triton vectorAdd kernel, every program processed. BLOCK_SIZE An element"""
+    """Triton 向量相加内核，每个程序处理 BLOCK_SIZE 个元素"""
     pid = tl.program_id(axis=0)
     block_start = pid * BLOCK_SIZE
     offsets = block_start + tl.arange(0, BLOCK_SIZE)
@@ -54,11 +54,11 @@ class ModelNew(torch.nn.Module):
 ```
 
 ### 2. Softmax
-**operator type**:Reduce
-**Key points**:
-- Numeric stabilization (minus)
-- Line-by-line, grid mode loop
-- `tl.range` with `tl.num_programs`
+**算子类型**: Reduce
+**关键点**:
+- 数值稳定化（减去最大值）
+- 逐行处理，grid stride loop
+- `tl.range` 和 `tl.num_programs` 配合使用
 
 ```python
 import torch
@@ -79,7 +79,7 @@ def softmax_kernel(output_ptr, input_ptr, input_row_stride, output_row_stride,
         mask = col_offsets < n_cols
         row = tl.load(input_ptrs, mask=mask, other=-float('inf'))
 
-        # Numerical stability
+        # 数值稳定性
         row_minus_max = row - tl.max(row, axis=0)
         numerator = tl.exp(row_minus_max)
         denominator = tl.sum(numerator, axis=0)
@@ -104,12 +104,12 @@ class ModelNew(torch.nn.Module):
         return y
 ```
 
-### 3. Layer Norm
-**operator type**: Reduce + Element-wise
-**Key points**:
-- Multiple scans (average → variance → unified)
-- midpoint 32
-- Save statistics for backpropagation
+### 3. Layer Norm（层归一化）
+**算子类型**: Reduce + Element-wise
+**关键点**:
+- 多遍扫描（均值→方差→归一化）
+- float32 中间计算
+- 保存统计量供反向传播
 
 ```python
 import torch
@@ -126,7 +126,7 @@ def layer_norm_kernel(
     Y += row * stride
     X += row * stride
 
-    # Round one: Calculate the average
+    # 第一遍：计算均值
     _mean = tl.zeros([BLOCK_SIZE], dtype=tl.float32)
     for off in range(0, N, BLOCK_SIZE):
         cols = off + tl.arange(0, BLOCK_SIZE)
@@ -134,7 +134,7 @@ def layer_norm_kernel(
         _mean += a
     mean = tl.sum(_mean, axis=0) / N
 
-    # Second time: calculate the difference
+    # 第二遍：计算方差
     _var = tl.zeros([BLOCK_SIZE], dtype=tl.float32)
     for off in range(0, N, BLOCK_SIZE):
         cols = off + tl.arange(0, BLOCK_SIZE)
@@ -147,7 +147,7 @@ def layer_norm_kernel(
     tl.store(Mean + row, mean)
     tl.store(Rstd + row, rstd)
 
-    # Third: Normalization
+    # 第三遍：归一化
     for off in range(0, N, BLOCK_SIZE):
         cols = off + tl.arange(0, BLOCK_SIZE)
         mask = cols < N
@@ -177,12 +177,12 @@ class ModelNew(torch.nn.Module):
         return y
 ```
 
-### 4. MatMul (matrix multiplication)
-**operator type**: MatMul
-**Key points**:
-- Use `tl.dot` for matrix multiplication
-- 2D index calculation
-- Block_ptr Simplify Access
+### 4. MatMul（矩阵乘法）
+**算子类型**: MatMul
+**关键点**:
+- 使用 `tl.dot` 进行矩阵乘法
+- 2D 索引计算
+- block_ptr 简化访问
 
 ```python
 import torch
@@ -251,12 +251,12 @@ class ModelNew(torch.nn.Module):
         return c
 ```
 
-### 5. Double Kernel (double core call)
-**operator type**: Multi Kernel group
-**Key points**:
-- Call multiple Kernels in one forward
-- Intermediate results passed by tensor
-- Configure grid and block independently for each kernel
+### 5. Double Kernel（双内核调用）
+**算子类型**: 多 Kernel 组合
+**关键点**:
+- 在一个 forward 中调用多个 kernel
+- 中间结果通过 tensor 传递
+- 每个 kernel 独立配置 grid 和 block
 
 ```python
 import torch
@@ -290,28 +290,28 @@ class ModelNew(torch.nn.Module):
         BLOCK_SIZE = 1024
         grid = (triton.cdiv(n_elements, BLOCK_SIZE),)
 
-        # First kernel: ReLU
+        # 第一个 kernel: ReLU
         intermediate = torch.empty_like(x)
         first_kernel[grid](x, intermediate, n_elements, BLOCK_SIZE)
 
-        # Second Kernel: Square
+        # 第二个 kernel: Square
         output = torch.empty_like(x)
         second_kernel[grid](intermediate, output, n_elements, BLOCK_SIZE)
 
         return output
 ```
 
-## Universal Mode
+## 通用模式
 
-All examples follow the same structure:
+所有示例都遵循相同的结构：
 
-### Kernel definition
+### Kernel 定义
 ```python
 @triton.jit
 def kernel_name(
-    output_ptr, input_ptr,   # Input/Output Pointer
-    M, N, K,                  # shapeParameters
-    BLOCK_SIZE: tl.constexpr, # Compiler constant
+    output_ptr, input_ptr,   # 输入/输出指针
+    M, N, K,                  # 形状参数
+    BLOCK_SIZE: tl.constexpr, # 编译时常量
 ):
     pid = tl.program_id(0)
     offsets = ...
@@ -321,12 +321,12 @@ def kernel_name(
     tl.store(...)
 ```
 
-### ModelNew Class
+### ModelNew 类
 ```python
 class ModelNew(torch.nn.Module):
     def __init__(self):
         super().__init__()
-
+    
     def forward(self, *inputs):
         M, N = inputs[0].shape
         output = torch.empty_like(inputs[0])
@@ -335,53 +335,53 @@ class ModelNew(torch.nn.Module):
         return output
 ```
 
-## Key note
+## 关键注意事项
 
-### 1. tensor device and data type.
+### 1. 张量设备和数据类型
 ```python
-# Make sure that the output tensor is the same as the input device
-output = torch.empty_like(input_tensor)  # Recommendations
-# or
+# 确保输出张量与输入在同一设备
+output = torch.empty_like(input_tensor)  # 推荐
+# 或
 output = torch.empty(shape, dtype=input_tensor.dtype, device=input_tensor.device)
 ```
 
-### 2. Grid Configuration
+### 2. Grid 配置
 ```python
-# Simplicity: Direct calculation
+# 简单情况：直接计算
 grid = (triton.cdiv(n_elements, BLOCK_SIZE),)
 
-# 2D Situation
+# 2D 情况
 grid = (triton.cdiv(M, BLOCK_M), triton.cdiv(N, BLOCK_N))
 
-# Aitutune case: use llambda
+# autotune 情况：使用 lambda
 grid = lambda meta: (triton.cdiv(M, meta['BLOCK_SIZE_M']),)
 
-# Number of restricted procedures (line-by-line)
+# 限制程序数（逐行处理）
 grid = (min(n_rows, 32),)
 ```
 
-### 3. ModelNew Format Requirements
-- **Must**inherit `torch.nn.Module`
-- **Must**achieve the `forward` method
-- Output tensor with `torch.empty_like` or `torch.empty`
+### 3. ModelNew 格式要求
+- **必须**继承 `torch.nn.Module`
+- **必须**实现 `forward` 方法
+- 输出张量使用 `torch.empty_like` 或 `torch.empty`
 
-### 4. Parameter Transfer
+### 4. 参数传递
 ```python
-# Correct: all parameters passed as position parameters, keyword used
+# 正确：所有参数作为位置参数传递，constexpr 使用关键字
 kernel[grid](output, input, M, N, BLOCK_SIZE=1024)
 
-# Error: Non-constexpr arguments use keywords
+# 错误：非 constexpr 参数使用关键字
 kernel[grid](output=output, input=input)
 ```
 
-## Validate correctness
+## 验证正确性
 ```python
-# Compare to PyTorch Native
+# 与 PyTorch 原生实现对比
 x = torch.randn(128, 256, device='cuda', dtype=torch.float16)
 output_triton = model_new(x)
 output_torch = torch.nn.functional.softmax(x, dim=-1)
 
-# Check discrepancies
+# 检查差异
 diff = (output_triton - output_torch).abs().max()
 print(f"Max difference: {diff.item()}")
 assert diff < 1e-3, "Results mismatch!"

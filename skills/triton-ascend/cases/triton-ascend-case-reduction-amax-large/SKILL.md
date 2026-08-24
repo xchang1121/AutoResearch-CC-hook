@@ -1,6 +1,6 @@
 ---
 name: triton-ascend-case-reduction-amax-large
-description: "Non-reduce axis small and reduce axis large-scale alignment optimization: mapping reduce axis to multiple cores (rather than conventional non-reduce axis), using atomic operation cross-line components to contract, avoiding ultra-UB by a secondary split, and applying to the return scenario of extreme sape ratio (M<N <N like 16×262144)"
+description: "非reduce轴很小、reduce轴很大的归约优化：将reduce轴映射到多核（而非常规的非reduce轴），使用原子操作跨线程块归约，通过二次切分避免超UB，适用于极端shape比例（M<<N如16×262144）的归约场景"
 category: case
 version: "1.0.0"
 metadata:
@@ -9,36 +9,36 @@ metadata:
   hardware: "Atlas A2, Atlas A3"
 ---
 
-# Large-scale Amax contract optimization (reduce axis mapping multiple cores)
+# 大规模 Amax 归约优化（reduce轴映射多核）
 
-## Task characteristics
-- **Data size**(16,262144), nonreduce axis small, reduce axis large
-- **Strategy**: mapping reduce axis to polynucleus, using atomic operations
+## 任务特征
+- **数据尺寸**：(16, 262144)，非reduce轴很小，reduce轴很大
+- **策略**：将reduce轴映射到多核，使用原子操作
 
-## Optimizing 1: Cut Policy Adjustments
+## 优化 1：切分策略调整
 
 ```python
-# Error: Simple way: nonreduce axis map multiple core
+# 错误：简单方式：非reduce轴映射多核
 grid = lambda meta: (triton.cdiv(M, meta['BLOCK_SIZE_M']),)
 
-# Correct: Optimization: reduce axis map multiple cores
+# 正确：优化方式：reduce轴映射多核
 grid = lambda meta: (triton.cdiv(N, meta['BLOCK_SIZE_N']),)
 
-# Retract columns within Kernel
+# Kernel内对列进行二次切分
 for n_start in range(0, BLOCK_SIZE_N, SUB_BLOCK_SIZE_N):
     n_offsets = pid * BLOCK_SIZE_N + n_start + tl.arange(0, SUB_BLOCK_SIZE_N)
 ```
 
-## Optimizing 2: Atomic Operations
+## 优化 2：原子操作
 
-### Option I: Atom Operations in Cycle
+### 方案一：循环内原子操作
 ```python
 for m_start in range(0, M, BLOCK_SIZE_M):
     row_min = tl.min(curr_min, 1)
     tl.atomic_min(output_ptrs, row_min, mask=mmask)
 ```
 
-### Option II: Outer-cycle atomic operations
+### 方案二：循环外原子操作
 ```python
 all_row_min = tl.full((M,), float('inf'), dtype=tl.float32)
 for m_start in range(0, M, BLOCK_SIZE_M):
@@ -47,19 +47,19 @@ for m_start in range(0, M, BLOCK_SIZE_M):
 tl.atomic_min(output_ptrs, all_row_min)
 ```
 
-## Optimization 3: Configure
+## 优化 3：配置
 
 ```python
 @triton.autotune(
     configs=[
-        # Grid = 32 < 40, UB full
+        # grid=32<40, UB用满
         triton.Config({'BLOCK_SIZE_M': 8, 'BLOCK_SIZE_N': 8192, 'SUB_BLOCK_SIZE_N': 1024}),
         triton.Config({'BLOCK_SIZE_M': 16, 'BLOCK_SIZE_N': 8192, 'SUB_BLOCK_SIZE_N': 512}),
     ],
     key=[...],
-    restore_value=['out_ptr0'],  # autotune I have to. restore_value
+    restore_value=['out_ptr0'],  # autotune 必须加 restore_value
 )
 ```
 
-### Summary
-When the nonreduce axis is small and the reduce axis is large, reduce axis is mapped to multiple cores and combined with atomic operations to avoid exceeding the UB by a secondary split.
+### 总结
+非reduce轴很小、reduce轴很大时，将reduce轴映射到多核并结合原子操作，通过二次切分避免超出UB。

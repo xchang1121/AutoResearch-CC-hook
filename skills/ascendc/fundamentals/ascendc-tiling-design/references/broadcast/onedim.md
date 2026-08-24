@@ -1,46 +1,46 @@
-# Broadcast - OneDim Branch
+# Broadcast - OneDim 分支
 
-> **Applicable scene**: All dimensions of the axis are combined into one dimension, essentially Elementwise (part input may be scalar dim=1)
+> **适用场景**: 合轴后所有维度合为一维，本质是 Elementwise（部分输入可能是标量 dim=1）
 
 ---
 
-## I. SPECIFIC STATE
+## 一、分支特征
 
-| Features | Annotations |
+| 特征 | 说明 |
 |------|------|
-| **Post-axis dimensions** | 1-D |
-| **Broadcasting mode** | scalar input prioritizes the TensorScalar interface (Adds/ Muls, etc.) and Duplicate expands when no corresponding interface |
-| **Data continuity** | All data continuum, linear processing |
-| **Calculated** | 1D vector equal to output |
+| **合轴后维度** | 1 维 |
+| **广播方式** | 标量输入优先用 TensorScalar 接口（Adds/Muls 等），无对应接口时 Duplicate 展开 |
+| **数据连续性** | 所有数据连续，线性处理 |
+| **计算结果** | 与输出等长的 1D 向量 |
 
 ---
 
-## II. Buffer Planning
+## 二、Buffer 规划
 
 ```cpp
-// LiveNum = all survival nodes (input + output + middle buffer)
-// maxDtypeBytes = the largest dtype bytes in the calculation diagram
+// aliveNum = 所有存活节点数（输入 + 输出 + 中间 buffer）
+// maxDtypeBytes = 计算图中最大 dtype 字节数
 
 pipe->InitBuffer(buf, ubFormer * maxDtypeBytes * aliveNum);
 ```
 
 ---
 
-## III. Tiling Parameter Calculation
+## 三、Tiling 参数计算
 
-### 3.1 UB Cut
+### 3.1 UB 切分
 
 ```cpp
-// UB, go DB, 128B alignment.
+// 先分 UB，开 DB，128B 对齐
 int64_t ubFormerByte = (ubSize - extraSize) / aliveNum;
 int64_t ubFormer = (ubFormerByte / CACHE_LINE) * CACHE_LINE / maxDtypeBytes;
 // CACHE_LINE = 128
 ```
 
-### 3.2 Polynuclear cut
+### 3.2 多核切分
 
 ```cpp
-int64_t dimLength = outputDims[0];  //   When the axes close   1 V
+int64_t dimLength = outputDims[0];  // 合轴后只有 1 维
 
 int64_t ubOuter = ceil(dimLength / ubFormer);
 int64_t ubTail = dimLength % ubFormer;  // 0 → ubFormer
@@ -49,22 +49,22 @@ int64_t blockTail = ubOuter % blockFormer;  // 0 → blockFormer
 int64_t blockNum = ceil(ubOuter / blockFormer);
 ```
 
-### 3.3 MNA
+### 3.3 多核优化
 
-When blockNum is less than half the coreNum, reducing ubFormer doubles the core:
+当 blockNum 不足 coreNum 一半时，缩小 ubFormer 使核数翻倍：
 
 ```cpp
 if (blockNum < coreNum / 2 && ubFormer * maxDtypeBytes * aliveNum > 8 * 1024) {
-    // Try reassigning by coreNum/2
+    // 尝试按 coreNum/2 重新分配
     int64_t dimPerCore = dimLength * 2 / coreNum;
     int64_t alignDimPerCore = ceil_align(dimPerCore * maxDtypeBytes, CACHE_LINE) / maxDtypeBytes;
     ubFormer = min(ubFormer, alignDimPerCore);
 
-    // Lower limit: 8KB per core after DB
+    // 下限：开 DB 后每核至少 8KB
     int64_t lowestUbFormer = (8 * 1024 / aliveNum / CACHE_LINE) * CACHE_LINE / maxDtypeBytes;
     ubFormer = max(ubFormer, lowestUbFormer);
 
-    // Recalculate subnucleic parameters
+    // 重新计算分核参数
     ubOuter = ceil(dimLength / ubFormer);
     blockFormer = ceil(ubOuter / coreNum);
     blockNum = ceil(ubOuter / blockFormer);
@@ -73,28 +73,28 @@ if (blockNum < coreNum / 2 && ubFormer * maxDtypeBytes * aliveNum > 8 * 1024) {
 
 ---
 
-## IV. KERNEL IMPLEMENTS
+## 四、Kernel 实现要点
 
-### 4.1 Data flows
+### 4.1 数据流
 
 ```
 GM → DataCopyPad → UB [ubFormer]
   ↓
-  scalarInput: Priority TensorScalar Interface(s)Adds/Subs/Muls Wait, no need to move in.
-           If there's no match, TensorScalar It's the interface. It's the interface. Duplicate Expand Asvector + TensorTensor Interface
-  NotscalarInput: DataCopyPad(inputGm, curLen)
+  标量输入: 优先用 TensorScalar 接口（Adds/Subs/Muls 等），无需搬入
+           若无对应 TensorScalar 接口，才用 Duplicate 展开为向量 + TensorTensor 接口
+  非标量输入: DataCopyPad(inputGm, curLen)
   ↓
-Compute (Add/Mul/Sub/... Element by Elements)
+Compute (Add/Mul/Sub/... 逐元素)
   ↓
 UB → DataCopyPad → GM
 ```
 
-### 4.2 scalar input detection
+### 4.2 标量输入检测
 
-An input after the axis is dim=1 →, which is scalar. Marked with scalarFlag bitmap:
+合轴后某个输入 dim=1 → 该输入是标量。用 scalarFlag 位图标记：
 
 ```cpp
-// Host Side
+// Host 侧
 int32_t scalarFlag = 0;
 for (int i = 0; i < inputNum; i++) {
     if (dims[i][0] == 1) {
@@ -103,7 +103,7 @@ for (int i = 0; i < inputNum; i++) {
 }
 ```
 
-### 4.3 Core code template
+### 4.3 核心代码模板
 
 ```cpp
 __aicore__ inline void Process()
@@ -115,14 +115,14 @@ __aicore__ inline void Process()
         int64_t curLen = (i == blockLoopNum - 1 && GetBlockIdx() == blockNum - 1)
                          ? ubTail : ubFormer;
 
-        // CopyIn: non-scalar input with DataCopyPad
+        // CopyIn：非标量输入用 DataCopyPad
         DataCopyPad(input0Local, input0Gm[offset], {1, curLen * sizeof(T), 0, 0});
 
-        // Compute: scalar input priority for TensorScalar interface
+        // Compute：标量输入优先用 TensorScalar 接口
         if (scalarFlag & (1 << 1)) {
-            // Mode 1 (recommended): Directly for the TensorScalar interface
+            // 方式1（推荐）：有对应 TensorScalar 接口时直接用
             Adds(outputLocal, input0Local, scalar1, curLen);
-            // Method 2 (dip): no matching for TensorScalar interface
+            // 方式2（兜底）：无对应 TensorScalar 接口时 Duplicate + TensorTensor
             // Duplicate<T>(input1Local, scalar1, curLen);
             // CustomOp(outputLocal, input0Local, input1Local, curLen);
         } else {
@@ -138,15 +138,15 @@ __aicore__ inline void Process()
 }
 ```
 
-> **scalar handles priority**: Adds /Subs/Muls/Divs et al. TensorScalar interface > Duplicate + TensorTensor interface.
-> The TensorScalar interface saves the Duplicate operation and a Buffer with better performance.
+> **标量处理优先级**：Adds/Subs/Muls/Divs 等 TensorScalar 接口 > Duplicate + TensorTensor 接口。
+> TensorScalar 接口省掉 Duplicate 操作和一个 Buffer，性能更优。
 
 ---
 
-## V. common issue
+## 五、常见问题
 
-| Problem | Reason | Solutions |
+| 问题 | 原因 | 解决方案 |
 |------|------|---------|
-| scalar input result error | scalarFlag Calculator Error | Check if the dims [i][0] are 1 after combining the axes |
-| Low utilization of nuclear weapons | ubFormer is too big to block Num. | Enable multi-nuclear optimization (bbFormer) |
-| Non-match data error | DataCopy does not support non-matching | Use DataCopyPad |
+| 标量输入结果错误 | scalarFlag 计算错误 | 检查合轴后 dims[i][0] 是否为 1 |
+| 核利用率低 | ubFormer 太大导致 blockNum 太少 | 启用多核优化（缩小 ubFormer） |
+| 非对齐数据错误 | DataCopy 不支持非对齐 | 使用 DataCopyPad |

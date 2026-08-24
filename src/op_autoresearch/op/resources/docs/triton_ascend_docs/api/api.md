@@ -1,8 +1,8 @@
-# Triton API Reference Manual
+# Triton API 参考手册
 
-This document provides detailed references to the Triton Core API, including functional signatures, parameter descriptions and examples of use.
+本文档提供 Triton 核心 API 的详细参考，包括函数签名、参数说明和使用示例。
 
-## 1. kernel decorator
+## 1. 内核装饰器
 
 ### @triton.jit
 ```python
@@ -10,277 +10,277 @@ This document provides detailed references to the Triton Core API, including fun
 def kernel_function(...):
     pass
 ```
-- **Fact**: Compile the Python function into the hardware kernel
-- **Constraint**: `return`, `break`, `continue` statements cannot be used inside the function
+- **作用**: 将 Python 函数编译为硬件内核
+- **约束**: 函数内部不能使用 `return`、`break`、`continue` 语句
 
-## 2. Program ID and Grid API
+## 2. 程序 ID 与网格 API
 
 ### tl.program_id(axis)
 ```python
 pid = tl.program_id(axis)  # axis: 0, 1, or 2
 ```
-- **Parameters**: `axis` - dimensional axis (0, 1, 2)
-- **Return**: Current program ID on this axis
-- **Use**: Determine the data range of the current block
+- **参数**: `axis` - 维度轴 (0, 1, 2)
+- **返回**: 当前程序在该轴上的 ID
+- **用途**: 确定当前程序块处理的数据范围
 
 ### tl.num_programs(axis)
 ```python
 num_pids = tl.num_programs(axis)  # axis: 0, 1, or 2
 ```
-- **Parameters**: `axis` - dimensional axis (0, 1, 2)
-- **Return**: total number of programs on this axis
-- **Use**: Calculate grid size and boundary conditions
+- **参数**: `axis` - 维度轴 (0, 1, 2)
+- **返回**: 该轴上的总程序数
+- **用途**: 计算网格大小和边界条件
 
 ### triton.cdiv(a, b)
 ```python
 grid_size = triton.cdiv(total_elements, block_size)
 ```
-- **Parameters**: `a`, `b` - divided and divided
-- **Return**: remove the division result upwards
-- **Use**: host side to calculate start-up grid size
+- **参数**: `a`, `b` - 被除数和除数
+- **返回**: 向上取整的除法结果
+- **用途**: host侧使用，计算启动网格大小
 
-## 3. Memory Operation API
+## 3. 内存操作 API
 
 ### tl.load(pointer, mask=None, other=None, boundary_check=None)
 ```python
 data = tl.load(ptr + offsets, mask=mask, other=0.0)
 ```
-- **Parameters**:
-  - `pointer`: Memory pointer
-  - `mask`: Boolean mask, True indicates a valid position
-  - `other`: Default value when mask is False
-  - `boundary_check`: Border check dimensions (0, 1) or None
-- **Return**: tensor data loaded
-- **Use**: Load data from global memory
+- **参数**:
+  - `pointer`: 内存指针
+  - `mask`: 布尔掩码，True 表示有效位置
+  - `other`: 掩码为 False 时的默认值
+  - `boundary_check`: 边界检查维度 (0, 1) 或 None
+- **返回**: 加载的张量数据
+- **用途**: 从全局内存加载数据
 
 ### tl.store(pointer, value, mask=None, boundary_check=None)
 ```python
 tl.store(ptr + offsets, result, mask=mask)
 ```
-- **Parameters**:
-  - `pointer`: Memory pointer
-  - `value`: Value to store
-  - `mask`: Boolean mask, True indicates a valid position
-  - `boundary_check`: Border check dimensions (0, 1) or None
-- **Use**: Store data to global memory
+- **参数**:
+  - `pointer`: 内存指针
+  - `value`: 要存储的值
+  - `mask`: 布尔掩码，True 表示有效位置
+  - `boundary_check`: 边界检查维度 (0, 1) 或 None
+- **用途**: 将数据存储到全局内存
 
 ### tl.make_block_ptr(base, shape, strides, offsets, block_shape, order)
 ```python
 block_ptr = tl.make_block_ptr(
-    base=ptr,                    # Base pointer
-    shape=(M, N),                # Full Matrixshape
-    strides=(stride_m, stride_n), # Step length
-    offsets=(start_m, start_n),   # Current block offset
-    block_shape=(BLOCK_M, BLOCK_N), # Blocksshape
-    order=(1, 0)                 # Memory Layout Order
+    base=ptr,                    # 基础指针
+    shape=(M, N),                # 完整矩阵形状
+    strides=(stride_m, stride_n), # 步长
+    offsets=(start_m, start_n),   # 当前块偏移
+    block_shape=(BLOCK_M, BLOCK_N), # 块形状
+    order=(1, 0)                 # 内存布局顺序
 )
 ```
-- **Parameters**:
-  - `base`: Base memory pointer
-  - `shape`: shape full of tensor
-  - `strides`: The length of each dimension
-  - `offsets`: Initial offset of current block
-  - `block_shape`: Size of current block
-  - `order`: Memory layout order (1,0) for line main order
-- **Return**: block refers to the elephant
-- **Use**: Efficient access to 2D data blocks
+- **参数**:
+  - `base`: 基础内存指针
+  - `shape`: 完整张量的形状
+  - `strides`: 每个维度的步长
+  - `offsets`: 当前块的起始偏移
+  - `block_shape`: 当前块的大小
+  - `order`: 内存布局顺序 (1, 0) 表示行主序
+- **返回**: 块指针对象
+- **用途**: 高效访问 2D 数据块
 
 ### tl.advance(ptr, offsets)
 ```python
 block_ptr = tl.advance(block_ptr, (BLOCK_M, 0))
 ```
-- **Parameters**:
-  - `ptr`: Block pointer
-  - `offsets`: Offset of dimensions
-- **Return**: block pointer after moving
-- **Pilot**: Move Block Pointer to Next Location
+- **参数**:
+  - `ptr`: 块指针
+  - `offsets`: 各维度的偏移量
+- **返回**: 移动后的块指针
+- **用途**: 移动块指针到下一个位置
 
-## 4. tensor Create & Operation API
+## 4. 张量创建与操作 API
 
 ### tl.arange(start, end)
 ```python
 offsets = tl.arange(0, BLOCK_SIZE)
 ```
-- **Parameters**: `start`, `end` - Start and end values
-- **Return**: Continuous integer series
-- **Use**: Create Index Sequence
+- **参数**: `start`, `end` - 起始和结束值
+- **返回**: 连续整数序列
+- **用途**: 创建索引序列
 
 ### tl.zeros(shape, dtype)
 ```python
 accumulator = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 ```
-- **Parameters**:
-  - `shape`: tensorZ1XQ
-  - `dtype`: data type
-- **Return**: Zero tensor
+- **参数**:
+  - `shape`: 张量形状
+  - `dtype`: 数据类型
+- **返回**: 全零张量
 
 ### tl.full(shape, value, dtype)
 ```python
 ones = tl.full((M, N), 1.0, dtype=tl.float32)
 ```
-- **Parameters**:
-  - `shape`: tensorZ1XQ
-  - `value`: Filling value
-  - `dtype`: data type
-- **Return**: fill tensor with specified values
+- **参数**:
+  - `shape`: 张量形状
+  - `value`: 填充值
+  - `dtype`: 数据类型
+- **返回**: 填充指定值的张量
 
 ### tl.cast(input, dtype)
 ```python
 float_data = tl.cast(int_data, tl.float32)
 ```
-- **Parameters**:
-  - `input`: Enter tensor
-  - `dtype`: Target data type
-- **Return**: tensor after type conversion
+- **参数**:
+  - `input`: 输入张量
+  - `dtype`: 目标数据类型
+- **返回**: 类型转换后的张量
 
-## 5. Mathematics Operations API
+## 5. 数学运算 API
 
 ### tl.cdiv(a, b)
 ```python
 result = tl.cdiv(offset, BLOCK_SIZE)
 ```
-- **Parameters**: `a`, `b` - divided and divided
-- **Return**: Take the division result up ⌈a/ b⌉
-- **Practice**: internal use in Kernel, calculation of upward decomposition result, equivalent to `(a + b - 1) // b`
+- **参数**: `a`, `b` - 被除数和除数
+- **返回**: 向上取整的除法结果 ⌈a/b⌉
+- **用途**: kernel内部使用，计算向上整除结果，等价于 `(a + b - 1) // b`
 
 ### tl.dot(a, b, acc=None, allow_tf32=True)
 ```python
 result = tl.dot(a, b, acc=accumulator)
 ```
-- **Parameters**:
-  - `a`, `b`: Enter Matrix
-  - `acc`: Composer (optional)
-  - `allow_tf32`: Allow TF32 accuracy
-- **Return**: matrix multiplication result
-- **Practice**: Core matrix multiplication Operations
+- **参数**:
+  - `a`, `b`: 输入矩阵
+  - `acc`: 累加器 (可选)
+  - `allow_tf32`: 是否允许 TF32 精度
+- **返回**: 矩阵乘法结果
+- **用途**: 核心矩阵乘法操作
 
 ### tl.sum(x, axis)
 ```python
 block_sum = tl.sum(data, axis=0)
 ```
-- **Parameters**:
-  - `x`: Enter tensor
-  - `axis`: Axis of Return
-- **Return**: Return result
+- **参数**:
+  - `x`: 输入张量
+  - `axis`: 归约轴
+- **返回**: 归约结果
 
 ### tl.max(x, axis)
 ```python
 max_val = tl.max(data, axis=0)
 ```
-- **Parameters**:
-  - `x`: Enter tensor
-  - `axis`: Axis of Return
-- **Return**: max
+- **参数**:
+  - `x`: 输入张量
+  - `axis`: 归约轴
+- **返回**: 最大值
 
 
 ### tl.where(condition, x, y)
 ```python
 result = tl.where(mask, data, 0.0)
 ```
-- **Parameters**:
-  - `condition`: Condition tensor
-  - `x`, `y`: Select Value
-- **returned**: value selected according to condition
-- **Practice**: SIMD friendly choice of conditions
+- **参数**:
+  - `condition`: 条件张量
+  - `x`, `y`: 选择值
+- **返回**: 根据条件选择的值
+- **用途**: SIMD 友好的条件选择
 
 ### tl.cumsum(input, axis=0, reverse=False, dtype=None)
 ```python
 cumulative_sum = tl.cumsum(data, axis=0)
 reverse_cumsum = tl.cumsum(data, axis=1, reverse=True)
 ```
-- **Parameters**:
-  - `input`: Enter tensor
-  - `axis`: Axis of Accumulation Sum (default 0)
-  - `reverse`: Whether to accumulate backwards (default is False)
-  - `dtype`: Output data type (optional, default is the same as input)
-- **Return**: cumulative sum result tensor
-- **Use**: Calculate accumulation along assigned axes, often for prefixing and calculation
+- **参数**:
+  - `input`: 输入张量
+  - `axis`: 累积求和的轴 (默认为 0)
+  - `reverse`: 是否反向累积 (默认为 False)
+  - `dtype`: 输出数据类型 (可选，默认与输入相同)
+- **返回**: 累积求和结果张量
+- **用途**: 计算沿指定轴的累积和，常用于前缀和计算
 
 ### tl.cumprod(input, axis=0, reverse=False)
 ```python
 cumulative_prod = tl.cumprod(data, axis=0)
 reverse_cumprod = tl.cumprod(data, axis=1, reverse=True)
 ```
-- **Parameters**:
-  - `input`: Enter tensor
-  - `axis`: Axis of cumulative product (default 0)
-  - `reverse`: Whether to accumulate backwards (default is False)
-- **Return**: cumulative product tensor
-- **Use**: Calculating cumulative multipliers along specified axes, often used in probability calculations and sequence processing
+- **参数**:
+  - `input`: 输入张量
+  - `axis`: 累积乘积的轴 (默认为 0)
+  - `reverse`: 是否反向累积 (默认为 False)
+- **返回**: 累积乘积结果张量
+- **用途**: 计算沿指定轴的累积乘积，常用于概率计算和序列处理
 
-## 6. Atomic Operation API
+## 6. 原子操作 API
 
 ### tl.atomic_add(pointer, value)
 ```python
 tl.atomic_add(output_ptr, block_sum)
 ```
-- **Parameters**:
-  - `pointer`: Target memory pointer
-  - `value`: Value to add
-- **Pilot**: Line secure plus operation
+- **参数**:
+  - `pointer`: 目标内存指针
+  - `value`: 要添加的值
+- **用途**: 线程安全的加法操作
 
 ### tl.atomic_max(pointer, value)
 ```python
 tl.atomic_max(max_ptr, local_max)
 ```
-- **Parameters**:
-  - `pointer`: Target memory pointer
-  - `value`: Value to compare
-- **Pilot**: maximum value update for thread security
+- **参数**:
+  - `pointer`: 目标内存指针
+  - `value`: 要比较的值
+- **用途**: 线程安全的最大值更新
 
 ### tl.constexpr
 ```python
 BLOCK_SIZE: tl.constexpr = 1024
 ```
-- **Practice**: Mark constant parameters at time of compilation
-- **Constraint**: must be stated in a function signature
+- **用途**: 标记编译时常量参数
+- **约束**: 必须在函数签名中声明
 
-## 7. Block Distribution Optimization API
+## 7. 块分配优化 API
 
 ### tl.swizzle2d(i, j, size_i, size_j, group_size)
 ```python
 task_i, task_j = tl.swizzle2d(block_i, block_j, NUM_BLOCKS_I, NUM_BLOCKS_J, GROUP_SIZE)
 ```
-- **Parameters**:
-  - `i`, `j`: Raw block index
-  - `size_i`, `size_j`: Total number of blocks
-  - `group_size`: Group Size (usually 2/4/8)
-- **Return**: Renumbered block index (task_i, task_j)
-- **Use**: 2D block reset to increase cache locality
-- **Applicable scene**: matrix multiplication multi-dimensional block calculations to improve data reuse
-- **Note: Priority (i) grouping is supported only, and priority is manually achieved
+- **参数**:
+  - `i`, `j`: 原始块索引
+  - `size_i`, `size_j`: 总块数
+  - `group_size`: 分组大小(通常为2/4/8)
+- **返回**: 重排后的块索引 (task_i, task_j)
+- **用途**: 2D块重排,提升缓存局部性
+- **适用场景**: 矩阵乘法等多维块计算,改善数据复用
+- **注意**: 仅支持行优先(i方向)分组,列优先需手动实现
 
-## 8. Slice Extension API
+## 8. 切片扩展 API
 
 ### tl.extra.cann.extension.extract_slice(ful, offsets, sizes, strides)
 ```python
 sub_tensor = tl.extra.cann.extension.extract_slice(tensor, [0], [32], [1])
 ```
-- **Activation**: Extracts a slice from the input tensor by offset, size and step.
-- **Parameters**:
-  - `ful`: Source tensor to extract slices
-  - `offsets`: Initial offset of slices on all dimensions
-  - `sizes`: Size of slices on all dimensions
-  - `strides`: Length of slices in all dimensions
-- **Return**: after extract tensor
+- **作用**: 从输入张量中按照偏移量、大小和步幅提取一个切片。
+- **参数**:
+  - `ful`: 要提取切片的源张量
+  - `offsets`: 切片在各维上的起始偏移
+  - `sizes`: 切片在各维上的大小
+  - `strides`: 切片在各维上的步长
+- **返回**: 提取后的子张量
 ### tl.extra.cann.extension.insert_slice(ful, sub, offsets, sizes, strides)
 ```python
 output = tl.extra.cann.extension.insert_slice(output, output_sub, [offset], [size], [1])
 ```
-- **Activation**: Insert sub-tensor at the specified position of target tensor by offset, size and step.
-- **Parameters**:
-  - `ful`: Target for receiving the insertion result tensor
-  - `sub`: Subs tensor to insert
-  - `offsets`: Initial offset on all dimensions of the insert area
-  - `sizes`: Size of the insert area on all dimensions
-  - `strides`: The length of the insertion area on all dimensions
-- **Return**: new tensor after insertion of sub-tensor
+- **作用**: 将子张量按照偏移量、大小和步幅插入到目标张量的指定位置。
+- **参数**:
+  - `ful`: 接收插入结果的目标张量
+  - `sub`: 要插入的子张量
+  - `offsets`: 插入区域在各维上的起始偏移
+  - `sizes`: 插入区域在各维上的大小
+  - `strides`: 插入区域在各维上的步长
+- **返回**: 插入子张量后的新张量
 
-## API does not exist in the current version
+## 当前版本不存在的 API
 
 ### tl.extract_slice(ful, offsets, sizes, strides)
-This api doesn't exist in the current version.
+这个api 在当前版本不存在.
 
 ### tl.insert_slice(ful, sub, offsets, sizes, strides)
-This api doesn't exist in the current version.
+这个api 在当前版本不存在.
 

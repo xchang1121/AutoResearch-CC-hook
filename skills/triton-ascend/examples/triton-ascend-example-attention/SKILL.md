@@ -1,6 +1,6 @@
 ---
 name: triton-ascend-example-attention
-description: "A5(Ascend950)Flash AttentionCompleteTriton-AscendAchieved.Cube/VectorSerial alternation:CubeRun!logits = Q·K^T and partial = P·VTwo paragraphs.matmul + fixpipe;VectorRun online.softmax + flashcumulatively updated;adopted3individualsync_blockEventsid 0/1/2,PIPE_FIX/V/MTE. You can refer to this code structure to generateA5SerialattentionCategoryoperator."
+description: "A5（Ascend950）Flash Attention 的完整 Triton-Ascend 实现示例。Cube/Vector 串行交替：Cube 跑 logits = Q·K^T 与 partial = P·V 两段 matmul + fixpipe；Vector 跑在线 softmax + flash 累加更新；通过 3 个 sync_block 事件（id 0/1/2，PIPE_FIX/V/MTE 配对）协调。可参考此代码结构生成 A5 串行 attention 类算子。"
 category: example
 version: "1.0.0"
 metadata:
@@ -11,7 +11,7 @@ metadata:
   requires_affinity: true
 ---
 
-# A5 Flash Attention - Example
+# A5 Flash Attention — 实现示例
 
 ```python
 @triton.jit
@@ -79,7 +79,7 @@ def flash_attn_fwd_serial_kernel(
     n_total = B * NHEAD * n_m_blocks
     HALF_M: tl.constexpr = BM // 2
 
-    # _ on-chip Buffers (UBrows = HALF_M for ROW_SPLIT; P in L1 with NZ 16 ×16 Fractal)
+    # ---- on-chip buffers (UB rows = HALF_M for ROW_SPLIT; P 在 L1 用 NZ 16×16 分形) ----
     logits_ub     = bl.alloc(tl.float32, (HALF_M, BN),     al.ascend_address_space.UB)
     attn_value_ub = bl.alloc(tl.float32, (HALF_M, D_HEAD), al.ascend_address_space.UB)
     prob_l1_nz    = bl.alloc(elem_ty, (BN // 16, BM // 16, 16, 16),
@@ -93,8 +93,8 @@ def flash_attn_fwd_serial_kernel(
         head_id  = bh_idx %  NHEAD
         bh_base_off = batch_id.to(tl.int64) * s_q_b + head_id.to(tl.int64) * s_q_h
 
-        # q_blk / k_blk / v_blk: tl.make_block_ptr Standard Structure, order=(1)
-        #   Both with base ={q,k,v}_ptr + bh_base_off, Shape = (SEQ_LEN, D_HEAD)
+        # q_blk / k_blk / v_blk: tl.make_block_ptr 标准构造，order=(1,0)
+        #   都用 base = {q,k,v}_ptr + bh_base_off，shape = (SEQ_LEN, D_HEAD)
         #   q_blk: strides=(s_q_m, s_q_d), offsets=(mb_idx*BM, 0), block_shape=(BM, D_HEAD)
         #   k_blk: strides=(s_k_n, s_k_d), offsets=(0, 0),         block_shape=(BN, D_HEAD)
         #   v_blk: strides=(s_v_n, s_v_d), offsets=(0, 0),         block_shape=(BN, D_HEAD)
@@ -187,13 +187,13 @@ def flash_attn_fwd_serial_kernel(
             out_acc = out_acc / row_denom[:, None]
             sub_vec_id = al.sub_vec_id()
             # out_blk_sub: tl.make_block_ptr, order=(1,0)
-            #   = out_ptr + bh_base_off + D_HEAD * sub_vec_id * HALF_M ← sub_vec
+            #   base = out_ptr + bh_base_off + D_HEAD * sub_vec_id * HALF_M  ← sub_vec 行偏移
             #   shape=(SEQ_LEN, D_HEAD), strides=(s_o_m, s_o_d),
             #   offsets=(mb_idx * BM, 0), block_shape=(HALF_M, D_HEAD)
             tl.store(out_blk_sub, out_acc.to(out_ptr.type.element_ty))
 ```
 
-**Compiler options**:
+**编译选项**：
 
 ```python
 flash_attn_fwd_serial_kernel[grid](

@@ -1,6 +1,6 @@
 ---
 name: triton-ascend-memory
-description: "Ascend NPU memory access optimization strategy, including UB (Uniform Buffer Zone), data layout optimization, combined access memory and prefeeding techniques. Application to memory bandwidth restricted, need to optimize data handling efficiency, or kernel code performance optimization scenario for processing large-scale data"
+description: "Ascend NPU 内存访问优化策略，包括 UB（统一缓冲区）利用、数据布局优化、合并访存和预取技巧。适用于内存带宽受限、需要优化数据搬运效率、或处理大规模数据的内核代码性能优化场景"
 category: fundamental
 version: "1.0.0"
 metadata:
@@ -9,20 +9,20 @@ metadata:
   hardware: "Atlas A2, Atlas A3"
 ---
 
-# Memory access optimization
+# 内存访问优化
 
-## Block size selection rationale
+## 块大小选择原理
 
-The size of the block needs to be balanced by the type of operator and the hardware storage level:
+块大小需要根据算子类型和硬件存储层级来平衡：
 
-- **VEC class operator**(election-wise, reduce, softmax, etc.): data need to be placed in UB (192KB/VEC), `BLOCK_SIZE * sizeof(dtype)` need to be less than UB available capacity, taking into account the parallelity of calculation. Too small parallels are insufficient and too large a spill UB
-- **CUBE class operator**(matmul, attent etc.): Left matrix L0A (* KB), Right matrix L0B (* KB), result L0C (* KB), specific reference hardware information document:
-  - `m0 * k0 * sizeof(A.dtype) ≤ * KB`(L0A)
-  - `k0 * n0 * sizeof(B.dtype) ≤ * KB`(L0B)
-  - `m0 * n0 * sizeof(C.dtype) ≤ * KB`(L0C)
-- All data transfers are aligned with**256 Bytes**, BLONK_SIZE is 32 times best
+- **VEC 类算子**（element-wise、reduce、softmax 等）：数据需放入 UB（192KB/VEC），`BLOCK_SIZE * sizeof(dtype)` 需小于 UB 可用容量，同时兼顾计算并行度。过小并行度不足，过大溢出 UB
+- **CUBE 类算子**（matmul、attention 等）：左矩阵放 L0A（* KB），右矩阵放 L0B（* KB），结果放 L0C（* KB），具体参考硬件信息文档：
+  - `m0 * k0 * sizeof(A.dtype) ≤ * KB`（L0A）
+  - `k0 * n0 * sizeof(B.dtype) ≤ * KB`（L0B）
+  - `m0 * n0 * sizeof(C.dtype) ≤ * KB`（L0C）
+- 所有数据传输按 **256 Bytes 对齐**，BLOCK_SIZE 为 32 的倍数最优
 
-## 2D data: priority tl.make_block_ptr
+## 2D 数据：优先 tl.make_block_ptr
 
 ```python
 A_block_ptr = tl.make_block_ptr(
@@ -30,13 +30,13 @@ A_block_ptr = tl.make_block_ptr(
     offsets=(pid_m * BLOCK_M, 0), block_shape=(BLOCK_M, BLOCK_K), order=(1, 0),
 )
 a = tl.load(A_block_ptr, boundary_check=(0, 1))
-# Move Pointer
+# 移动指针
 A_block_ptr = tl.advance(A_block_ptr, (0, BLOCK_K))
 ```
 
-## Continuous memory: one-dimensional access
+## 连续内存：一维访问
 
-Uncontinuing tensor first converts `.contiguous()`, then accesss with one-dimensional ptr + offsets:
+非连续张量先 `.contiguous()` 转换，再用一维 ptr + offsets 访问：
 
 ```python
 class ModelNew(torch.nn.Module):
@@ -50,21 +50,21 @@ class ModelNew(torch.nn.Module):
         return out
 ```
 
-A 1-D visit is more efficient than a three-dimensional visit and recommended for priority use.
+一维访问比 stride 计算效率更高，推荐优先使用。
 
-If the host side does not convert the non-continuous input to `.contiguous()`, Kernel cannot assume that the one-dimensional `ptr + offsets` corresponds to the order of the logical elements; then it has to go into and use the stride in a visible fashion, or first at the host side, in a continuous tensor.
+如果 host 侧没有把非连续输入转为 `.contiguous()`，kernel 不能假设一维`ptr + offsets` 与逻辑元素顺序一致；此时必须显式传入并使用 stride，或先在 host 侧物化连续张量。
 
-Common security writing:
+常见安全写法：
 
-- If you use `x.numel()` + 1-D offsets, put the input first on the side of `.contiguous()`.
-- matmul / transpose / broadcast /Non-last dimensionreduceIf it's not materialized,tensor  Gotta put  `stride()`Pass it.kernel, and calculated by the logical dimensionoffset.
-- If the output is written on a one-dimensional continuous basis, the output is created using either `torch.empty_like()` or `torch.empty(..., device=x.device, dtype=x.dtype)`.
+- elementwise / reduce 如果使用 `x.numel()` + 一维 offsets，host 侧先对输入做 `.contiguous()`。
+- matmul / transpose / broadcast / 非最后维 reduce 如果不物化连续张量，必须把 `stride()` 传给 kernel，并按逻辑维度计算 offset。
+- 输出如果按一维连续写入，优先用 `torch.empty_like()` 或 `torch.empty(..., device=x.device, dtype=x.dtype)` 创建连续输出。
 
-## Alignment Requirements
-- Ascend 256B alignment: elect-wise/redance operator
-- Ascend 512B alignment: MatMul split
-- Data removal bandwidth cap of approximately 256*256B to design removal policy
+## 对齐要求
+- Ascend 256B 对齐: element-wise / reduce 算子
+- Ascend 512B 对齐: MatMul 切分
+- 数据搬运带宽上限约 256*256B，据此设计搬运策略
 
-## Points
-- Priority `.contiguous()` + 1-D access
-- Continuous memory access is much more efficient than the cost of calculation for the distance
+## 要点
+- 优先 `.contiguous()` + 一维访问
+- 连续内存访问效率远高于 stride 计算开销

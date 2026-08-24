@@ -1,6 +1,6 @@
 ---
 name: pypto-case-matvec
-description: "Matrix-vector Multiplication: K > elementwiseul + sum instead of matmul"
+description: "矩阵-向量乘法：K > 65535 时用 elementwise mul + sum 替代 matmul"
 category: case
 version: "1.0.0"
 metadata:
@@ -13,7 +13,7 @@ metadata:
 
 A: (256, 131072), B: (131072, 1) -> C: (256, 1)
 
-K = 131072 exceeding the `pypto.matmul` limit (last dimension < = 65535) and replaced by `sum(a * b_row, dim=1)`.
+K=131072 超过 `pypto.matmul` 限制（最后一维 <= 65535），用 `sum(a * b_row, dim=1)` 替代。
 
 ```python
 def create_matvec_sum_kernel(a_shape, b_shape):
@@ -37,9 +37,9 @@ class ModelNew(torch.nn.Module):
         assert B.dim() == 2
         assert tuple(B.shape) == (131072, 1)
         A = A.contiguous()
-        # B: (K, 1) - > (1,K) Multiplication for broadcasting
+        # B: (K, 1) -> (1, K) 用于广播乘法
         B_row = B.contiguous().reshape(1, -1)
         return create_matvec_sum_kernel(tuple(A.shape), tuple(B_row.shape))(A, B_row)
 ```
 
-Key points: `B.reshape(1, -1)` in Forward converts column vector into line vector to make `a * b_row` broadcastable.
+关键点：forward 中 `B.reshape(1, -1)` 将列向量转为行向量，使 `a * b_row` 可广播。

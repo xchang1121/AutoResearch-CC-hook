@@ -1,117 +1,117 @@
-# CPU C++ Expert skills and optimization recommendation
+# CPU C++ 专家技巧与优化建议
 
-This document provides guidance on techniques, performance optimization and problem mapping developed by CPU C++.
+本文档提供 CPU C++ 开发的技巧、性能优化和问题排查指南。
 
-## 1. Performance optimization
+## 1. 性能优化
 
-### data type selection policy
-- **Priority support**: float 32, float64, int 32, int64
-- **Autoconversion**: non-supported type automatically converts to float32
-- **Type check**: Check tensor type using `scalar_type()`
-- **pointer acquisition**: using the corresponding `data_ptr<T>()` method
+### 数据类型选择策略
+- **优先支持**: float32, float64, int32, int64
+- **自动转换**: 不支持的类型自动转换为float32
+- **类型检查**: 使用`scalar_type()`检查张量类型
+- **指针获取**: 使用对应的`data_ptr<T>()`方法
 
-### Cycle Optimization Policy
-- **Cycle expansion**: manual roll-out cycle reduces branch costs
-- **Cache friendly**: access data according to line priority
-- **Boundary processing**: vector processes most of the data, scalar handles the remaining elements
-- **Avoidance of branches**: reduced conditionalities and more efficient implementation
+### 循环优化策略
+- **循环展开**: 手动展开循环减少分支开销
+- **缓存友好**: 按行优先顺序访问数据
+- **边界处理**: 向量化处理大部分数据，标量处理剩余元素
+- **避免分支**: 减少条件判断，提高执行效率
 
-### Memory access optimization
-- **Consequencing inspection**: ensure continuous RAM layout of tensor
-- **Data locality**: access to adjacent memory as much as possible
-- **Avoid copy**: Reduce unnecessary tensor copying operations
-- **On-site operations**: change on-site as far as possible
+### 内存访问优化
+- **连续性检查**: 确保张量内存布局连续
+- **数据局部性**: 尽量访问相邻内存位置
+- **避免拷贝**: 减少不必要的张量拷贝操作
+- **就地操作**: 尽可能进行就地修改
 
-## 2. Numerical stability technique
+## 2. 数值稳定性技巧
 
-### Spill-proofing
+### 防溢出处理
 ```cpp
-// Minus maximum value before integration
+// 归一化前先减去最大值
 float max_val = *std::max_element(x_ptr, x_ptr + numel);
 for (int64_t i = 0; i < numel; ++i) {
     float stable_data = x_ptr[i] - max_val;
     out_ptr[i] = std::exp(stable_data);
 }
 ```
-### accuracy Upgrade
-- **Intermediate calculation**: accuracy does not have to be raised to dooble at calculation, use the float type
-- **Accumulation operation**: using the Kahan Summation Method to prevent the loss of accuracy
-- **Avoiding Numeric Spill**: Checking Off-Zero and Open Operations
-- **Typologies conversion**: careful handling of conversions between accuracys
+### 精度提升
+- **中间计算**: 计算时精度没必要提升到double，使用float类型就可以
+- **累加操作**: 使用Kahan求和算法防止精度丢失
+- **避免数值下溢**: 检查除零和开方操作
+- **类型转换**: 谨慎处理不同精度间的转换
 
-## 3. Programming constraints and best practice
+## 3. 编程约束与最佳实践
 
-### Rules to be followed
-- **Boundary check**: all arrays must check the border before visiting
-- **Type security**: ensure that the type of pointer matches the type of tensor
-- **Unusual security**: use of RAII to manage resources
-- **data type support**: priority support for commonly used types, automatic conversion of other types
+### 必须遵循的规则
+- **边界检查**: 所有数组访问前必须检查边界
+- **类型安全**: 确保指针类型与张量类型匹配
+- **异常安全**: 使用RAII管理资源
+- **数据类型支持**: 优先支持常用类型，其他类型自动转换
 
-### Principles of kernel design
-- **Single function**: One thing for each function
-- **Parameters Simple**: Avoid complex data structure transfer
-- **Memorial Locality**: access to adjacent memory as much as possible
-- **Avoid dynamic distribution**: kernel avoidancenew/delete
+### 内核设计原则
+- **单一职责**: 每个函数只做一件事
+- **参数简单**: 避免复杂的数据结构传递
+- **内存局部性**: 尽量访问相邻内存位置
+- **避免动态分配**: 内核内避免new/delete
 
-### OpenMP Parallel Programming Constraint
-- **⚠️ Key Constraint**: OpenMPruntimeAPI call position limit
-  - **No scenes allowed**:Don't be here.SIMDRegional, parallel regionsintervening codeMedium Call`omp_get_thread_num()`Wait.OpenMPruntimeAPI
-  - **Correct use**: OpenMP API should be called in the normal code path in the parallel area, not in the restricted context of compiler
-  - **Example of error**:
+### OpenMP并行编程约束
+- **⚠️ 关键约束**: OpenMP运行时API调用位置限制
+  - **禁止场景**: 不得在SIMD区域、并行区域的intervening code中调用`omp_get_thread_num()`等OpenMP运行时API
+  - **正确用法**: OpenMP API应在并行区域内的正常代码路径中调用,而非在编译器受限的上下文中
+  - **错误示例**:
     ```cpp
-    // ❌ error: Call OpenMP API in restricted context
-    std::mt19937 gen(seed + omp_get_thread_num());  // Compiler error!
+    // ❌ 错误:在受限上下文中调用OpenMP API
+    std::mt19937 gen(seed + omp_get_thread_num());  // 编译错误!
     ```
-  - **Correct example**:
+  - **正确示例**:
     ```cpp
-    // ✅ Correct: Normal Call within Parallel Area
+    // ✅ 正确:在并行区域内正常调用
     #pragma omp parallel
     {
-        int tid = omp_get_thread_num();  // Correct.
+        int tid = omp_get_thread_num();  // 正确
         std::mt19937 gen(seed + tid);
     }
     ```
-- **Language security**: ensuring an example of an independent random number generator for each thread
-- **Data competition**: Avoid multiple threads writing the same memory position at the same time
+- **线程安全**: 确保每个线程有独立的随机数生成器实例
+- **数据竞争**: 避免多个线程同时写入同一内存位置
 
-## 4. Debugging and queuing lists
+## 4. 调试与排查清单
 
-### Memory access issues
-- [ ] Do all array visits have border checks?
-- [ ] Is tensor continuous?
-- [ ] Does the pointer type match the tensor type?
-- [ ] Are there cross-border visits?
+### 内存访问问题
+- [ ] 所有数组访问是否都有边界检查？
+- [ ] 张量是否连续？
+- [ ] 指针类型是否匹配张量类型？
+- [ ] 是否有越界访问？
 
-### Types of treatment of problems
-- [ ] data type check correctly?
-- [ ] Is the type conversion safe?
-- [ ] Is the output type consistent with the input?
-- [ ] Are all types of support addressed?
+### 类型处理问题  
+- [ ] 数据类型检查是否正确？
+- [ ] 类型转换是否安全？
+- [ ] 输出类型是否与输入一致？
+- [ ] 是否处理了所有支持的类型？
 
-### Performance issues
-- [ ] Is a cycle being used to expand?
-- [ ] Do memory access continue?
-- [ ] Were unnecessary copies avoided?
-- [ ] Is it properly optimized?
+### 性能问题
+- [ ] 是否使用了循环展开？
+- [ ] 内存访问是否连续？
+- [ ] 是否避免了不必要的拷贝？
+- [ ] 是否进行了适当的优化？
 
-## 5. Frequent Error Scanning
+## 5. 常见错误速查
 
-| Error Type | Problem | Solutions |
+| 错误类型 | 问题 | 解决方案 |
 |---------|------|---------|
-| Cross-border visits | Paragraph error or abnormal result | Add Border Check |
-| Type does not match | Error compilation or runtime error | Check the pointer type |
-| Non-continuing visits | Performance drops or wrong results | Ensure the continuity of tensor |
-| Memory Leak | Process memory continues to grow | Avoid manual memory management |
+| 越界访问 | 段错误或结果异常 | 添加边界检查 |
+| 类型不匹配 | 编译错误或运行时错误 | 检查指针类型 |
+| 非连续访问 | 性能下降或错误结果 | 确保张量连续 |
+| 内存泄漏 | 程序内存持续增长 | 避免手动内存管理 |
 
 
-## 6. Development proposal
+## 6. 开发建议
 
-### The code generated is referred to as the embedded C++ code in the Python module.
+### 生成的代码请参考使用Python模块内嵌C++代码
 
-### Code Style
-- Attention! The resulting code does not contain any test code.
-- Attention! The embedded C++ code must be written in the embedded script to ensure that it is properly compiled and loaded.
-- The embedded C++ code uses a three-quote string to keep the format clear
-- Add sufficient comments to explain the calculation logic
-- Use descriptive variable and function names
-- Uniform error-processing mode
+### 代码风格
+- 注意！！生成的代码不要包含任何测试代码
+- 注意！！内嵌的C++代码一定写进嵌入脚本中，保证正确编译加载
+- 内嵌C++代码使用三引号字符串，保持格式清晰
+- 添加充分的注释说明计算逻辑
+- 使用描述性的变量名和函数名
+- 统一的错误处理模式

@@ -2,8 +2,8 @@
 ```python
 float_data = tl.cast(int_data, tl.float32)
 ```
-- **Parameters**:
-  - `input`: Enter tensor
-  - `dtype`: Target data type
-- **Return**: tensor after type conversion
+- **参数**:
+  - `input`: 输入张量
+  - `dtype`: 目标数据类型
+- **返回**: 类型转换后的张量
 

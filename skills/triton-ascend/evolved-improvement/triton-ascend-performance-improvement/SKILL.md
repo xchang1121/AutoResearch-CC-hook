@@ -1,7 +1,7 @@
 ---
 name: triton-ascend-performance-improvement
 description: |
-  Triton Ascend performance optimizes operational experience. The generic optimisation model, which is derived from batch adaptation searches, covers tile optimization, memory loading optimization, rediction optimization, covert broadcasting, multi-pass consolidation, data access re-engineering, etc.
+  Triton Ascend 性能优化实战经验。从批量自适应搜索中提炼的通用优化模式，覆盖 tile 调优方法论、内存加载优化、reduction 优化、隐式广播、多 Pass 合并、数据访问重构等。
 category: improvement
 version: "1.0.0"
 metadata:
@@ -10,78 +10,78 @@ metadata:
   dsl: triton_ascend
 ---
 
-## Tile Size Selection Method
+## Tile 尺寸选择方法
 
-tile sizes are subject to hardware storage restrictions (hardware information documents for specific capacity reference):
+tile 尺寸需满足硬件存储约束（具体容量参考传入的硬件信息文档）：
 
-**CUBE Path (matmul / tl.dot)**: Tyre must be capable of being placed in L0A/L0B/L0C
-- Calculator: `BLONK_M × BLONK_K × size (dtype) ≤ L0A capacity '
-- fp32 Two times more than fp16 and needs to be reduced accordingly
-- K-dimensional 512B alignment to increase bandwidth utilization
+**CUBE 路径 (matmul / tl.dot)**：tile 必须能放入 L0A/L0B/L0C
+- 计算公式：`BLOCK_M × BLOCK_K × sizeof(dtype) ≤ L0A 容量`
+- fp32 占用是 fp16 的 2 倍，需相应缩小 tile
+- K 维度按 512B 对齐可提升带宽利用率
 
-**VEC Path (elementwise / reduce)**: All active tensor needs to be placed in UB
-- Calculating formula: `BLONK_SIZE × sizeof(dtype) × tensor Active × multi_buffer coefficient ≤ UB capacity '
-- compiler auto-multi-buffer will increase occupancy to 2 ~3 times
-- Kernel intermediate variable (e. g. temporary buffer from `tl.where`) also occupies UB
+**VEC 路径 (elementwise / reduce)**：所有活跃 tensor 需放入 UB
+- 计算公式：`BLOCK_SIZE × sizeof(dtype) × 活跃tensor数 × multi_buffer系数 ≤ UB 容量`
+- 编译器 auto-multi-buffer 会将占用增至 2~3 倍
+- kernel 中间变量（如 `tl.where` 产生的临时缓冲）也占用 UB
 
-**Optimal strategy**: Try from a larger file, downscaled in case of `ub overflow` / `cbuf overflow` 's compilation error. Complementing `@triton.autotune` 's Auto-Effort.
+**调优策略**：从较大 tile 开始尝试，遇到 `ub overflow` / `cbuf overflow` 编译错误时逐级缩小。配合 `@triton.autotune` 自动选优。
 
-## Memory Load Optimization
+## 内存加载优化
 
-Apply mask and fill values directly on `tl.load` instead of loading them unconditionally and filtering them with `tl.where`:
+在 `tl.load` 时直接应用 mask 和填充值，而非先无条件加载再用 `tl.where` 筛选：
 
 ```python
-# Suboptimal: load first and then where (more than one middle operation, possibly trigger vsel compilation error)
+# 次优：先加载再 where（多一次中间操作，可能触发 vsel 编译错误）
 tile = tl.zeros([BLOCK_SIZE], dtype=tl.float32)
 tile = tl.where(mask, tl.load(ptr + offsets), 0.0)
 
-# Recommendations: Apply mask directly on load
+# 推荐：直接在 load 时应用 mask
 tile = tl.load(ptr + offsets, mask=mask, other=0.0)
 ```
 
-## Invisible radio instead of visible
+## 隐式广播替代显式展开
 
-There is a need to expand the dimension (`[:, None]`) of Triton's covert radio to avoid `tl.broadcast_to` creating temporary matrices when low-dimensional tensor is broadcast to high-dimensional:
+需要将低维 tensor 广播到高维时，用维度扩展（`[:, None]`）利用 Triton 的隐式广播，避免 `tl.broadcast_to` 创建临时矩阵：
 
 ```python
-# Suboptimal: Evidently expanded to complete matrix
+# 次优：显式展开为完整矩阵
 a_broadcast = tl.broadcast_to(a_tile[:, None], (BLOCK_M, BLOCK_N))
 c_tile = a_broadcast * b_tile
 
-# Recommendations: Invisible broadcasts
+# 推荐：隐式广播
 c_tile = a_tile[:, None] * b_tile
 ```
 
-## Reduction best practice
+## Reduction 最佳实践
 
-1. **scalarComposer**: for each core`core_sum = 0.0`Local accumulation, avoid.tensorIndexing issues
-2. **single atom writing**: `tl.atomic_add(out_ptr, core_sum)` writing once after cycle
-3. **Avoid host end permute**: non-last dimension reduce direct multidimensional index in Kernel
+1. **标量累加器**：每个核心用 `core_sum = 0.0` 局部累加，避免 tensor 索引问题
+2. **单次原子写入**：循环结束后 `tl.atomic_add(out_ptr, core_sum)` 一次写入
+3. **避免 host 端 permute**：非最后维度 reduce 直接在 kernel 内用多维索引
 
-## Host-end projection
+## Host 端预计算 stride
 
-Precalculating the tensor's stride on the host end and entering it as a parameter in Kernel instead of inside Kernel, reduces referencing errors and supports compiler optimization:
+在 host 端预先计算 tensor 的 stride 并作为参数传入 kernel，而非在 kernel 内部计算，可以减少传参错误并辅助编译器优化：
 
 ```python
-# hostend
+# host 端
 stride_am, stride_ak = A.stride(0), A.stride(1)
 kernel[grid](A_ptr, ..., stride_am, stride_ak, ...)
 ```
 
-## Multiple Pass Merge to Single Pass
+## 多 Pass 合并为单 Pass
 
-  When  operatorMultiple separate periods of time for the same datasoftmax of max→exp_sum→normalize,or topk) should be combined into a single cycle.HBMRead, the ratio is theoretically higher.passMerges to a lesser degree of degree of attribution (can be placed in a single dimension)BLOCKThe scene is the best.
+当算子对同一数据进行多次独立遍历时（如 softmax 的 max→exp_sum→normalize，或 topk 的多次扫描），应合并为单次遍历。每减少一次 HBM 读取，理论上可获得等比例加速。多 pass 合并对归约维度较小（能放入单个 BLOCK）的场景效果最佳。
 
-## Strided Access Mode Reconstructing
+## Strided 访问模式重构
 
-When operator is involved in non-continuous moded access (e.g., access to matching calculations of adjacent elements), the data loading policy should be reset:
-- Change to semantic grouping to place related elements in the same block
-- Avoiding random access to `flat_idx % D` + across stride
-- Handle pairing relationships within blocks after successive loads, using data locality
+当算子涉及非连续的 strided 访问（如需要访问相邻元素的配对计算），应重构数据加载策略：
+- 改为按语义分组处理，使相关元素落在同一 block 内
+- 避免 `flat_idx % D` + 跨 stride 的随机访问
+- 连续加载后在块内处理配对关系，利用数据局部性
 
-Ascend hardware has significant performance penalties for non-continuous access, and the post-restructuring performance gap can be several times to several dozen times.
+Ascend 硬件对非连续访问有显著性能惩罚，重构后性能差距可达数倍至数十倍。
 
-## Two Stages Better than Single Pass
+## Normalization 两阶段优于单 Pass
 
-For the LayerNorthm/RMS Norm category operator, the two-stage programme (Statistics in the first instance means/var, second-time integration) is usually better than single pass (online statistics).
-Reason: Increased tensor in the single pass cycle, increased UB pressure, reduced optimisation efficiency of compiler pipeline. In fact, 2-pass is 20% faster than single pass.
+对于 LayerNorm/RMSNorm 类算子，两阶段方案（第一遍统计 mean/var，第二遍归一化）通常优于单 pass（在线统计）。
+原因：单 pass 循环体内活跃 tensor 增多，UB 压力增大，编译器流水线优化效率下降。实测中 2-pass 比单 pass 快约 20%。

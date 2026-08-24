@@ -1,6 +1,6 @@
 ---
 name: tilelang-ascend-example-quant-matmul
-description: "The example of TileLang Ascend for quantifying matrix multiplication. The example of Cube+Vector integration programming: T.gemm_v0 int8 matrix times + T.tile.cast Quantification + workspace cross-nuclear communication + workspace_idx statement. This example can be consulted when generating quantitative/mixed accuracy matmul class operator."
+description: "量化矩阵乘法的 TileLang Ascend 实现示例。展示 Cube+Vector 融合编程：T.gemm_v0 int8 矩阵乘 + T.tile.cast 量化反量化 + workspace 跨核通信 + workspace_idx 声明。当生成量化/混合精度 matmul 类算子时可参考此示例。"
 category: example
 version: "1.0.0"
 metadata:
@@ -10,14 +10,14 @@ metadata:
   operator_type: "matmul"
 ---
 
-# Quantify the example of matrix multiplication - TileLang Ascend (Cube+Vector Integration, Devoper Mode)
+# 量化矩阵乘法 — TileLang Ascend 实现示例（Cube+Vector 融合，Developer 模式）
 
-**Key technical points**:
-- `T.gemm_v0` int8 matrix times (accum_dtype= "int32")
-- `T.tile.cast` int32 →faat32→faat16 conversion
-- `workspace_idx=[4]` states workspace parameters
-- Cube core workspace, Victor core read from workspace and inverse quantification
-- `AUTO_CV_COMBINE: True + AUTO_CV_SYNC: True` AutoCube+Vector Integration
+**关键技术点**：
+- `T.gemm_v0` int8 矩阵乘（accum_dtype="int32"）
+- `T.tile.cast` int32→float32→float16 类型转换
+- `workspace_idx=[4]` 声明 workspace 参数
+- Cube 核写 workspace，Vector 核从 workspace 读取并反量化
+- `AUTO_CV_COMBINE: True + AUTO_CV_SYNC: True` 自动 Cube+Vector 融合
 
 ```python
 import tilelang as tl
@@ -107,11 +107,11 @@ def simple_quant_matmul(
     return main
 ```
 
-**Called**:
+**调用方式**：
 
 ```python
 kernel = simple_quant_matmul(M, N, K, scale_size="N", block_M=128, block_N=256, block_K=64)
 C = kernel(A_npu, B_npu, scale_npu)
 ```
 
-**Note: The parameters stated in `workspace_idx` do not need to be manually entered in tensor, and compiler is automatically distributed. Only A, B, scale is available on call.
+**注意**：`workspace_idx` 中声明的参数不需要手动传入 tensor，编译器会自动分配。调用时只传 A、B、scale 即可。

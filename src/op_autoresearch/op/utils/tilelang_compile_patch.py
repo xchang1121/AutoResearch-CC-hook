@@ -1,9 +1,23 @@
+# Copyright 2025 Huawei Technologies Co., Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import subprocess
 from pathlib import Path
 
 
 def patch_tilelang_compiler():
-    """Dynamic patch tilelang compiler, add detailed error message display"""
+    """动态补丁 tilelang 编译器，添加详细的错误信息显示功能"""
     try:
         from tilelang.jit import jit_npu
     except ImportError:
@@ -14,14 +28,14 @@ def patch_tilelang_compiler():
 
     compiler_class = jit_npu.compiler_npu
 
-    # Check if you've been patched.
+    # 检查是否已经被补丁过了
     if hasattr(compiler_class._npuir_to_bin_enable_npu_compile, '_op_autoresearch_patched'):
         return True
 
     original_compile_method = compiler_class._npuir_to_bin_enable_npu_compile
 
     def patched_npuir_to_bin_enable_npu_compile(self):
-        """Compiler after patch, providing detailed error message"""
+        """补丁后的编译方法,提供详细的错误信息"""
         import tempfile
         import os
         from pathlib import Path
@@ -46,7 +60,7 @@ def patch_tilelang_compiler():
             try:
                 ret = subprocess.run(cmd_list, capture_output=True, check=True, text=True)
             except subprocess.CalledProcessError as e:
-                # Show complete compilation error message
+                # 显示完整的编译错误信息
                 error_msg = f"\n{'='*60}\n"
                 error_msg += f"NPU Compiler Error (exit code {e.returncode})\n"
                 error_msg += f"Command: {' '.join(cmd_list)}\n"
@@ -58,10 +72,10 @@ def patch_tilelang_compiler():
 
             return Path(bin_path).read_bytes()
 
-    # Apply Patch
+    # 应用补丁
     try:
         compiler_class._npuir_to_bin_enable_npu_compile = patched_npuir_to_bin_enable_npu_compile
-        # The tags have been patched.
+        # 标记已经被补丁过了
         compiler_class._npuir_to_bin_enable_npu_compile._op_autoresearch_patched = True
         return True
     except (AttributeError, TypeError) as e:
@@ -70,16 +84,16 @@ def patch_tilelang_compiler():
 
 
 def apply_tilelang_patches():
-    """Apply all tilelang patches"""
+    """应用所有 tilelang 补丁"""
     success = patch_tilelang_compiler()
     return success
 
 
-# Automatically apply patches (when modules are imported)
+# 自动应用补丁(当模块被导入时)
 if __name__ != "__main__":
     apply_tilelang_patches()
 
-# Test Code
+# 测试代码
 if __name__ == "__main__":
     print("Testing TileLang patches...")
     success = patch_tilelang_compiler()

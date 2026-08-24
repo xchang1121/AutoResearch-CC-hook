@@ -1,139 +1,139 @@
-# accuracy debug best practice
+# 精度调试最佳实践
 
-## Debugging principles
+## 调试原则
 
-### 1. I doubt the formula, then the formula.
+### 1. 先怀疑公式，再怀疑实现
 
-Most of the problems of accuracy are problems of mathematics/calculations per se, not errors of realization.
+大部分精度问题是数学/算法本身的问题，而非实现错误。
 
-**The order of examination**:
-1. Is the mathematical formula correct?
-2. Whether the formula to code map is correct
-3. API is correctly used
-4. Whether data type matches
-5. Numerical stability issues
+**检查顺序**：
+1. 数学公式是否正确
+2. 公式到代码的映射是否正确
+3. API 使用是否正确
+4. 数据类型是否匹配
+5. 数值稳定性问题
 
-### 2. Start with a small sample.
+### 2. 从小样本开始
 
-Test pyramid:
+测试金字塔：
 ```
      ┌────────────┐
-     │  Full Test   │  ← Final Authentication
+     │  完整测试   │  ← 最后验证
      ├────────────┤
-     │  Medium size   │  ← Expand Authentication
+     │  中等规模   │  ← 扩展验证
      ├────────────┤
-     │  Small     │  ← Basic Authentication
+     │  小规模     │  ← 基本验证
      ├────────────┤
-     │  Modular     │  ← First test.
+     │  单元素     │  ← 最先测试
      └────────────┘
 ```
 
-### 3. Record everything.
+### 3. 记录一切
 
-Every change must be recorded:
-- Modify content
-- error Change
-- Performance Impact
+每次修改都要记录：
+- 修改内容
+- 误差变化
+- 性能影响
 
 ```markdown
-### Debug Log
+### 调试日志
 
-| Modify | Max Error | Mean Error | Performance |
+| 修改 | Max Error | Mean Error | 性能 |
 |-----|-----------|------------|------|
-| Initial | 1.2e-2 | 3.5e-4 | - |
-| FP32 Composer | 2.1e-4 | 1.2e-6 | -5% |
-| Numerical stabilization algorithm | 8.5e-6 | 2.3e-7 | -8% |
+| 初始 | 1.2e-2 | 3.5e-4 | - |
+| FP32 累加器 | 2.1e-4 | 1.2e-6 | -5% |
+| 数值稳定算法 | 8.5e-6 | 2.3e-7 | -8% |
 ```
 
-### 4. That's how you figure it out.
+### 4. 理解才能解决
 
-Try not blindly, understand the source of error:
-- Why is there error?
-- What step does error come from?
-- How can the root causes be avoided?
+不要盲目试错，要理解误差来源：
+- 为什么会有误差？
+- 误差来自哪个步骤？
+- 如何从根本上避免？
 
-## Validation Policy
+## 验证策略
 
-### Test the pyramid
+### 测试金字塔
 
 ```
           ┌────────────┐
-          │  Border tests   │  ← Small but important
-          │  Special value     │
+          │  边界测试   │  ← 少量但重要
+          │  特殊值     │
           ├────────────┤
-          │  Random Test   │  ← Unknown problem detected
-          │  Various sizes   │
+          │  随机测试   │  ← 发现未知问题
+          │  多种规模   │
           ├────────────┤
-          │  Reunification Test   │  ← Ensuring that there is no backsliding
-          │  Standard use examples   │
+          │  回归测试   │  ← 确保不倒退
+          │  标准用例   │
           └────────────┘
 ```
 
-### Boundary overwrite
+### 边界值覆盖
 
-| Type | Test Value | Annotations |
+| 类型 | 测试值 | 说明 |
 |-----|-------|------|
-| zero value | 0.0 | Test Zero Processing |
-| Very small | 1e-10 | Surrounding border |
-| Small value | 1e-6 | Normal small value |
-| Normal value | 1.0 | Typical value |
-| Great value | 1e6 | Normal high value |
-| Extreme value | 1e10 | Surround the border |
-| Negative value | -1.0 | Negative Number Processing |
-| FP16 Saturation | 65504.0 | FP16 Max |
+| 零值 | 0.0 | 测试零值处理 |
+| 极小值 | 1e-10 | 下溢边界 |
+| 小值 | 1e-6 | 正常小值 |
+| 正常值 | 1.0 | 典型值 |
+| 大值 | 1e6 | 正常大值 |
+| 极大值 | 1e10 | 上溢边界 |
+| 负值 | -1.0 | 负数处理 |
+| FP16 饱和 | 65504.0 | FP16 最大值 |
 
-### Alignment Overwrite
+### 对齐覆盖
 
-| Test Type | Example: shape | Purpose |
+| 测试类型 | 形状示例 | 目的 |
 |---------|---------|------|
-| 32 Byte Alignment FP32 | (8, 16, 8) | Exclude alignment issues |
-| 32 Byte Alignment FP16 | (8, 16, 16) | Exclude alignment issues |
-| Inconsistent | (8, 17, 9) | Test non-matching |
-| Hardware bound borders | (8, 8, 8) | Minimum number of elements |
+| 32 字节对齐 FP32 | (8, 16, 8) | 排除对齐问题 |
+| 32 字节对齐 FP16 | (8, 16, 16) | 排除对齐问题 |
+| 非对齐 | (8, 17, 9) | 测试非对齐处理 |
+| 硬件约束边界 | (8, 8, 8) | 最小元素数 |
 
-## Preventive measures
+## 预防措施
 
-### Design phase
+### 设计阶段
 
-1. **Choosing algorithms with stable values**
-   - Avoid a-b when a≈b
-   - Use log-sum-exp to avoid spilling
-   - We'll do it in a single way.
+1. **选择数值稳定的算法**
+   - 避免 a-b 当 a≈b
+   - 使用 log-sum-exp 避免溢出
+   - 先归一化再计算
 
-2. **Planning for a mix of accuracy programmes**
-   - FP16 Input/Output
-   - Critical Intermediate Calculation FP32
-   - Aggregation Operations FP32
+2. **规划混合精度方案**
+   - 输入/输出 FP16
+   - 关键中间计算 FP32
+   - 累加类操作 FP32
 
-3. **Understanding hardware constraints**
-   - Data Alignment Requirements
-   - Minimal number of elements bound
-   - Single processing cap
+3. **了解硬件约束**
+   - 数据对齐要求
+   - 最小元素数约束
+   - 单次处理上限
 
-### Encoding Phase
+### 编码阶段
 
-1. **Key path note**
+1. **关键路径注释**
 ```cpp
-// accuracy Sensitivity: Use FP32 to avoid accumulation of error
+// 精度敏感：使用 FP32 避免累加误差
 float sum_fp32 = 0.0f;
 for (int i = 0; i < size; ++i) {
     sum_fp32 += static_cast<float>(input[i]);
 }
 
-// accuracy Sensitivity: Decreasing max to avoid exp spilling
+// 精度敏感：先减 max 避免 exp 溢出
 half max_val = ReduceMax(input);
 half shifted = input[i] - max_val;
 ```
 
-2. **Enter Authentication**
+2. **输入验证**
 ```cpp
-// Check hardware constraints
+// 检查硬件约束
 if (cols < 8) {
     printf("Error: cols must be >= 8 (got %d)\n", cols);
     return;
 }
 
-// Check range of values
+// 检查数值范围
 for (int i = 0; i < size; ++i) {
     if (isinf(static_cast<float>(input[i]))) {
         printf("Warning: input[%d] is Inf\n", i);
@@ -141,177 +141,177 @@ for (int i = 0; i < size; ++i) {
 }
 ```
 
-3. **Debug support**
+3. **调试支持**
 ```cpp
 #ifdef DEBUG_PRECISION
     printf("Step %d: value=%.6f\n", step, static_cast<float>(value));
 #endif
 ```
 
-## Portability Settings Guide
+## 容差设置指南
 
-### Recommended tolerance
+### 推荐容差
 
-| scene | rtol | atol | Annotations |
+| 场景 | rtol | atol | 说明 |
 |-----|------|------|------|
-| **FP16 Standard** | 1e-3 | 1e-4 | Floating point accuracy limited |
-| **FP32 Standard** | 1e-5 | 1e-6 | Standard accuracy |
-| **Integer** | - | 0 | It has to match exactly. |
+| **FP16 标准** | 1e-3 | 1e-4 | 浮点精度有限 |
+| **FP32 标准** | 1e-5 | 1e-6 | 标准精度 |
+| **整数** | - | 0 | 必须精确匹配 |
 
-### It's a special scene.
+### 特殊场景容差
 
-| scene | rtol | atol | Reason |
+| 场景 | rtol | atol | 原因 |
 |-----|------|------|------|
-| Softmax FP16 | 1e-3 | 1e-4 | Probability output, accuracy limited |
-| Softmax FP32 | 1e-5 | 1e-6 | Standard accuracy |
-| Reduce FP16 | 5e-3 | 1e-4 | error is bigger. |
-| Reduce FP32 | 1e-5 | 1e-6 | Standard accuracy |
-| exp/log FP16 | 1e-3 | 1e-4 | Exceed function accuracy limited |
-| Triangular function FP16 | 5e-3 | 1e-4 | Tyler's starting to look like one. |
+| Softmax FP16 | 1e-3 | 1e-4 | 概率输出，精度有限 |
+| Softmax FP32 | 1e-5 | 1e-6 | 标准精度 |
+| Reduce FP16 | 5e-3 | 1e-4 | 累加误差较大 |
+| Reduce FP32 | 1e-5 | 1e-6 | 标准精度 |
+| exp/log FP16 | 1e-3 | 1e-4 | 超越函数精度有限 |
+| 三角函数 FP16 | 5e-3 | 1e-4 | 泰勒展开近似 |
 
-### Discretion selection principle
+### 容差选择原则
 
-1. **Based on the application scene**
-   - Scientific calculations: strict requirements
-   - In-depth learning: relative easing
-   - Visualization: the most liberal
+1. **根据应用场景**
+   - 科学计算：严格要求
+   - 深度学习：相对宽松
+   - 可视化：最宽松
 
-2. **Based on data type**
-   - FP16: Easier tolerance
-   - FP32: Standard tolerance
-   - INT: Zero tolerance
+2. **根据数据类型**
+   - FP16：宽松容差
+   - FP32：标准容差
+   - INT：零容差
 
-3. **Based on operator properties**
-   - Element-by-Element Operations: Standard Perceptions
-   - Reduce Operation: Easier tolerance
-   - Beyond function: Easier tolerance
+3. **根据算子特性**
+   - 逐元素操作：标准容差
+   - Reduce 操作：宽松容差
+   - 超越函数：宽松容差
 
-## Common error mode
+## 常见错误模式
 
-### Error 1: Overbug
+### 错误 1：过度调试
 
-**Symptoms**: repeated attempts at different methods, not systematic
+**症状**：反复尝试不同方法，没有系统性
 
-**Correct practice**
-1. Analyse error mode first.
-2. Identification of possible causes
-3. Targeted Authentication
-4. Record every attempt
+**正确做法**：
+1. 先分析误差模式
+2. 识别可能根因
+3. 针对性验证
+4. 记录每次尝试
 
-### Error 2: Ignore FP32
+### 错误 2：忽略 FP32
 
-**Symptoms**: Directly debugging with FP16, difficult to distinguish from accuracy
+**症状**：直接用 FP16 调试，难以区分精度问题
 
-**Correct practice**
-1. Use FP32 first to verify the correctness of the algorithm
-2. Retest FP16 accuracy
-3. Comparison of differences in location issues
+**正确做法**：
+1. 先用 FP32 验证算法正确性
+2. 再测试 FP16 精度
+3. 对比差异定位问题
 
-### Error 3: Blindly raise accuracy
+### 错误 3：盲目提高精度
 
-**Symptoms**: FP32 is used for all calculations, performance declines
+**症状**：所有计算都用 FP32，性能下降
 
-**Correct practice**
-1. Identify the steps that really need high accuracy.
-2. Use FP32 only at critical steps
-3. Balance accuracy and performance
+**正确做法**：
+1. 识别真正需要高精度的步骤
+2. 只在关键步骤使用 FP32
+3. 平衡精度和性能
 
-### Error 4: Ignore hardware constraints
+### 错误 4：忽略硬件约束
 
-**Symptoms**: abnormal results of specific input sizes
+**症状**：特定输入规模结果异常
 
-**Correct practice**
-1. Access to hardware binding documents
-2. Add Input Authentication
-3. Description of limits in document
+**正确做法**：
+1. 查阅硬件约束文档
+2. 添加输入验证
+3. 在文档中说明限制
 
-## Debug efficiency techniques
+## 调试效率技巧
 
-### 1. Diagnosis first.
-
-```
-Problem → errorAnalysis → Mode Recognition → Genesis. → Targeted repairs
-```
-
-### 2. Quick Validation
+### 1. 诊断先行
 
 ```
-Modular → Small → Standard size → Large → Boundary value
+问题 → 误差分析 → 模式识别 → 根因推断 → 针对性修复
 ```
 
-### 3. Count rules
+### 2. 快速验证
 
 ```
-Quick method count < 7 → Go on.
-Quick method count >= 7 → Toggle Debugging
+单元素 → 小规模 → 标准规模 → 大规模 → 边界值
 ```
 
-### 4. Record template
+### 3. 计数规则
+
+```
+快速方法计数 < 7 → 继续
+快速方法计数 >= 7 → 切换二分调试
+```
+
+### 4. 记录模板
 
 ```markdown
-## Debug Record
+## 调试记录
 
-### Problem
-- Symptoms:
-- Input size:
-- data type:
+### 问题
+- 症状：
+- 输入规模：
+- 数据类型：
 
-### error analysis
-- Maxerror:
-- Averageerror:
-- errorMode:
+### 误差分析
+- 最大误差：
+- 平均误差：
+- 误差模式：
 
-### Debug process
-1. Try:
-   - Methodology:
-   - Results:
-   - Count:
+### 调试过程
+1. 尝试：
+   - 方法：
+   - 结果：
+   - 计数：
 
-2. Try:
-   - Methodology:
-   - Results:
-   - Count:
+2. 尝试：
+   - 方法：
+   - 结果：
+   - 计数：
 
-### Solutions
-- GEN:
-- Restoration:
-- Authentication:
+### 解决方案
+- 根因：
+- 修复：
+- 验证：
 ```
 
-## Performance balanced with accuracy
+## 性能与精度平衡
 
-### Mixed accuracy design
+### 混合精度设计
 
-| Widget | accuracy Selection | Reason |
+| 部件 | 精度选择 | 原因 |
 |-----|---------|------|
-| Input | FP16 | Save bandwidth |
-| Output | FP16 | Save Storage |
-| Intermediate calculation | FP32 | Raise accuracy |
-| Composer | FP32 | Avoid accumulation of error |
-| Compare | FP16 Enough | Without prejudice to accuracy |
+| 输入 | FP16 | 节省带宽 |
+| 输出 | FP16 | 节省存储 |
+| 中间计算 | FP32 | 提升精度 |
+| 累加器 | FP32 | 避免累积误差 |
+| 比较 | FP16 足够 | 不影响精度 |
 
-### Performance assessment
+### 性能评估
 
-Assess the performance impact after repairing the accuracy problem:
-- Performance loss < 5 per cent: acceptable
-- Performance losses 5-10%: need to be assessed
-- Performance loss > 10%: Consider optimisation options
+修复精度问题后评估性能影响：
+- 性能损失 < 5%：可接受
+- 性能损失 5-10%：需评估
+- 性能损失 > 10%：考虑优化方案
 
-## Documentation
+## 文档化
 
-### operator documents should contain
+### 算子文档应包含
 
-1. **Annotations to accuracy**
-   - Supported data type
-   - accuracy characteristics of each data type
-   - Recommended tolerance settings
+1. **精度说明**
+   - 支持的数据类型
+   - 各数据类型的精度特性
+   - 推荐容差设置
 
-2. **Known limitations**
-   - Hardware constraints (matching, minimum number of elements)
-   - accuracy limit (FP16 valid number)
-   - Numerical range limit
+2. **已知限制**
+   - 硬件约束（对齐、最小元素数）
+   - 精度限制（FP16 有效数字）
+   - 数值范围限制
 
-3. **Use of recommendations**
-   - Recommended data type combination
-   - Input mode to avoid
-   - Performance optimization tips
+3. **使用建议**
+   - 推荐的数据类型组合
+   - 需要避免的输入模式
+   - 性能优化提示

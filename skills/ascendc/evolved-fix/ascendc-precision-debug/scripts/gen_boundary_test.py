@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-accuracy debug - Border Value Test Data Generation Tool
+精度调试 - 边界值测试数据生成工具
 
-A variety of boundary value test data are generated to validate operator ' s accuracy and Rufus.
+生成各种边界值测试数据，用于验证算子的精度和鲁棒性。
 """
 
 import numpy as np
@@ -12,12 +12,12 @@ import argparse
 
 def generate_boundary_cases(shape, dtype, output_dir="."):
     """
-    Generate boundary value test data
+    生成边界值测试数据
 
     Args:
-        Shape: Data shape (M, N, K) or (M, N)
-        dtype: data type (`fp16', 'fp32', 'int8')
-        output_dir: Output directory
+        shape: 数据形状 (M, N, K) 或 (M, N)
+        dtype: 数据类型 ('fp16', 'fp32', 'int8')
+        output_dir: 输出目录
     """
     np_type = {
         'fp16': np.float16,
@@ -25,15 +25,15 @@ def generate_boundary_cases(shape, dtype, output_dir="."):
         'int8': np.int8,
     }[dtype]
 
-    # Boundary value definition
+    # 边界值定义
     if dtype == 'fp16':
         boundary_values = {
             "zero": 0.0,
-            "tiny": 1e-4,  # FP16 Minimum normal number
+            "tiny": 1e-4,  # FP16 最小正常数
             "small": 1e-3,
             "normal": 1.0,
             "large": 100.0,
-            "saturation": 65504.0,  # FP16 Max
+            "saturation": 65504.0,  # FP16 最大值
             "negative": -1.0,
             "neg_saturation": -65504.0,
         }
@@ -55,23 +55,23 @@ def generate_boundary_cases(shape, dtype, output_dir="."):
             "normal": 42,
         }
 
-    # Generate test data for each boundary value
+    # 生成每个边界值的测试数据
     for name, value in boundary_values.items():
         data = np.full(shape, value, dtype=np_type)
         filename = f"{output_dir}/boundary_{name}_{dtype}.npy"
         np.save(filename, data)
-        print(f"Generate: {filename} (value={value})")
+        print(f"生成: {filename} (value={value})")
 
 
 def generate_random_aligned(shape, dtype, output_dir=".", seed=42):
     """
-    Generate 32-byte random test data
+    生成32字节对齐的随机测试数据
 
     Args:
-        Shape: Original shape
-        dtype: data type
-        output_dir: Output directory
-        Seed: Random Feeds
+        shape: 原始形状
+        dtype: 数据类型
+        output_dir: 输出目录
+        seed: 随机种子
     """
     np_type = {
         'fp16': np.float16,
@@ -81,34 +81,34 @@ def generate_random_aligned(shape, dtype, output_dir=".", seed=42):
 
     np.random.seed(seed)
 
-    # Check and align
+    # 检查并调整对齐
     element_size = np.dtype(np_type).itemsize
     aligned_size = 32 // element_size
 
     adjusted_shape = list(shape)
     adjusted_shape[-1] = ((shape[-1] + aligned_size - 1) // aligned_size) * aligned_size
 
-    # Generate Random Data
+    # 生成随机数据
     data = np.random.rand(*adjusted_shape).astype(np_type)
 
     filename = f"{output_dir}/random_aligned_{'_'.join(map(str, shape))}_{dtype}.npy"
     np.save(filename, data)
 
-    print(f"Generate: {filename}")
-    print(f"  Originalshape: {shape}")
-    print(f"  Adjustmentsshape: {tuple(adjusted_shape)} (32Byte Alignment)")
-    print(f"  Data range: [{data.min():.6f}, {data.max():.6f}]")
+    print(f"生成: {filename}")
+    print(f"  原始形状: {shape}")
+    print(f"  调整形状: {tuple(adjusted_shape)} (32字节对齐)")
+    print(f"  数据范围: [{data.min():.6f}, {data.max():.6f}]")
 
 
 def generate_unaligned(shape, dtype, output_dir=".", seed=42):
     """
-    Generate non-matched random test data
+    生成非对齐的随机测试数据
 
     Args:
-        Shape: Original shape
-        dtype: data type
-        output_dir: Output directory
-        Seed: Random Feeds
+        shape: 原始形状
+        dtype: 数据类型
+        output_dir: 输出目录
+        seed: 随机种子
     """
     np_type = {
         'fp16': np.float16,
@@ -118,50 +118,50 @@ def generate_unaligned(shape, dtype, output_dir=".", seed=42):
 
     np.random.seed(seed)
 
-    # Make sure you're not aligned.
+    # 确保非对齐
     unaligned_shape = list(shape)
-    unaligned_shape[-1] = shape[-1] + 1  # Add one to destroy alignment.
+    unaligned_shape[-1] = shape[-1] + 1  # 加1破坏对齐
 
     data = np.random.rand(*unaligned_shape).astype(np_type)
 
     filename = f"{output_dir}/random_unaligned_{'_'.join(map(str, shape))}_{dtype}.npy"
     np.save(filename, data)
 
-    print(f"Generate: {filename}")
-    print(f"  shape: {tuple(unaligned_shape)} (Inconsistent)")
+    print(f"生成: {filename}")
+    print(f"  形状: {tuple(unaligned_shape)} (非对齐)")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate accuracy debug test data")
+    parser = argparse.ArgumentParser(description="生成精度调试测试数据")
     parser.add_argument("--shape", nargs="+", type=int, required=True,
-                        help="Data shape, e.g.: 8 16 16")
+                        help="数据形状，如: 8 16 16")
     parser.add_argument("--dtype", choices=["fp16", "fp32", "int8"], default="fp32",
-                        help="data type")
+                        help="数据类型")
     parser.add_argument("--output", default=".",
-                        help="Output Directory")
+                        help="输出目录")
     parser.add_argument("--type", choices=["boundary", "aligned", "unaligned", "all"],
-                        default="all", help="data type generated")
+                        default="all", help="生成的数据类型")
 
     args = parser.parse_args()
 
     shape = tuple(args.shape)
 
     if args.type in ["boundary", "all"]:
-        print("\n [Generating Border Value Data]")
+        print("\n【生成边界值数据】")
         generate_boundary_cases(shape, args.dtype, args.output)
 
     if args.type in ["aligned", "all"]:
-        print("\n [Generating Alignment Random Data]")
+        print("\n【生成对齐随机数据】")
         generate_random_aligned(shape, args.dtype, args.output)
 
     if args.type in ["unaligned", "all"]:
-        print("\n [Generating non-match random data]")
+        print("\n【生成非对齐随机数据】")
         generate_unaligned(shape, args.dtype, args.output)
 
 
 if __name__ == "__main__":
     if len(sys.argv) == 1:
-        print("Example of usage:")
+        print("用法示例:")
         print("  python3 gen_boundary_test.py --shape 8 16 16 --dtype fp16")
         print("  python3 gen_boundary_test.py --shape 8 16 --dtype fp32 --type boundary")
         sys.exit(1)

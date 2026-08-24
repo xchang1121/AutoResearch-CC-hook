@@ -1,6 +1,6 @@
 ---
 name: triton-ascend-case-reduction-amax-medium
-description: "Medium-sized contract (max) optimization: calculates a reduction in the number of returns (circumulation, out-of-circumulation), grid = 40 equals the highest performance of the core number of times (25.73us), and applies to the 2D return scenario for the nonreduce axis medium, larger reduce axis (tens of millions of elements)"
+description: "中等规模归约（amax）优化：计算重组（循环内累加、循环外归约）减少归约次数，grid=40等于核数时性能最优（25.73us），适用于非reduce轴中等、reduce轴较大（千万级元素）的2D归约场景"
 category: case
 version: "1.0.0"
 metadata:
@@ -9,41 +9,41 @@ metadata:
   hardware: "Atlas A2, Atlas A3"
 ---
 
-# Medium Size Amax Recession Optimization
+# 中等规模 Amax 归约优化
 
-## Task characteristics
-- **Data size**: (2048,8192), nonreduce axis medium, reduce axis larger
+## 任务特征
+- **数据尺寸**：(2048, 8192)，非reduce轴中等，reduce轴较大
 
-## Optimization 1: Calculate reorganization
+## 优化 1：计算重组
 
 ```python
-# Error: Simple way: multiple returns within the cycle
+# 错误：简单方式：循环内多次归约
 row_max = -float('inf')
 for n_offset in range(0, N, BLOCK_SIZE):
     curr_max = tl.max(data_block, 1)
     row_max = tl.maximum(curr_max, row_max)
 
-# Correct: Optimized approach: maintenance of matrix structure, circular out-of-contract
+# 正确：优化方式：维护矩阵结构，循环外归约
 curr_max = tl.full((BLOCK_SIZE_M, BLOCK_SIZE_N), -float('inf'), dtype=tl.float32)
 for n_start in range(0, N, BLOCK_SIZE_N):
     curr_max = tl.maximum(data_block, curr_max)
 row_max = tl.max(curr_max, 1)
 ```
 
-## Optimizing 2: Grid Configuration
+## 优化 2：Grid 配置
 
 ```python
-# (AI core=40)
-# Grid =32 < 40, UB full - > 29.05 us
+# （AI core=40）
+# 1. grid=32<40, UB用满 -> 29.05 us
 triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 256})
 
-# 2 grid>40, UB full - > 29.09 us
+# 2. grid>40, UB用满 -> 29.09 us
 triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 512})
 
-# Grid = 40, UB within - > 25.73 us best
+# 3. grid=40, UB不超出 -> 25.73 us 最优
 triton.Config({'BLOCK_SIZE_M': 52, 'BLOCK_SIZE_N': 256})
 ```
 
-### Summary
-1. Computation of reorganization: consolidation of multiple returns into one and reduction of the number of returns
-2. Grid Configuration: Grid equals the best performance for a core number of hours, and needs to ensure that UB is within range
+### 总结
+1. 计算重组：将多次归约合并为一次，减少归约次数
+2. Grid配置：grid等于核数时性能最优，需确保UB不超出

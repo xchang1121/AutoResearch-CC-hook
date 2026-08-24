@@ -1,6 +1,6 @@
 ---
 name: triton-cuda-matmul
-description: "matrix multiplicationoperator (matmul/bmm/linear) optimisation strategy, including partition Tiling, shared memory Cache, Tensor Core Use and Large Matrix Processing Techniques. Application to CUDA kernel generation scenarios for the implementation of matrix calculations such as GEMM, batch matrix multipliers, full connectivity layers"
+description: "矩阵乘法算子(matmul/bmm/linear)优化策略，包括分块 Tiling、共享内存缓存、Tensor Core 利用和大矩阵处理技巧。适用于实现 GEMM、批量矩阵乘、全连接层等矩阵运算的 CUDA 内核代码生成场景"
 category: implementation
 version: "1.0.0"
 metadata:
@@ -10,30 +10,30 @@ metadata:
   algorithms: "matmul, bmm, linear"
 ---
 
-# MatMul operator Optimization
+# MatMul 算子优化
 
-> Applicable to matrix multiplication and related operations
+> 适用于矩阵乘法及相关运算
 
-## CUDA GPU MatMul Optimizing Core
+## CUDA GPU MatMul 优化核心
 
-### Tensor Core
+### Tensor Core 利用
 
-- **Ampere (A100)**: support FP16, BF16, TF32, INT8 Tensor Core
-- **Hopper (H100)**: extra support FP8, wgmma command
-- **Key**: `tl.dot(a, b, allow_tf32=True)` enabled TF32 Tensor Core
+- **Ampere (A100)**: 支持 FP16, BF16, TF32, INT8 Tensor Core
+- **Hopper (H100)**: 额外支持 FP8, wgmma 指令
+- **关键**: `tl.dot(a, b, allow_tf32=True)` 启用 TF32 Tensor Core
 
-### Partition Configuration Proposal
+### 分块配置建议
 
-Common configuration (2 times):
+常用配置（2 的幂次）：
 
-| Configure | BLOCK_M | BLOCK_N | BLOCK_K | num_warps | num_stages | Apply scene |
+| 配置 | BLOCK_M | BLOCK_N | BLOCK_K | num_warps | num_stages | 适用场景 |
 |------|---------|---------|---------|-----------|------------|---------|
-| Small Matrix | 64 | 64 | 32 | 4 | 4 | M, N < 1024 |
-| Medium Matrix | 128 | 128 | 32 | 4 | 3 | M, N < 4096 |
-| Large Matrix | 128 | 256 | 64 | 8 | 3 | M, N >= 4096 |
-| High king | 64 | 128 | 64 | 4 | 4 | K, it's big. |
+| 小矩阵 | 64 | 64 | 32 | 4 | 4 | M, N < 1024 |
+| 中矩阵 | 128 | 128 | 32 | 4 | 3 | M, N < 4096 |
+| 大矩阵 | 128 | 256 | 64 | 8 | 3 | M, N >= 4096 |
+| 高 K | 64 | 128 | 64 | 4 | 4 | K 很大 |
 
-## Standard MatMul Kernel (using block_ptr)
+## 标准 MatMul Kernel（使用 block_ptr）
 
 ```python
 @triton.jit
@@ -50,12 +50,12 @@ def matmul_kernel(
     pid = tl.program_id(0)
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
-
-    # 2D index calculation
+    
+    # 2D 索引计算
     pid_m = pid // num_pid_n
     pid_n = pid % num_pid_n
-
-    # Create block points
+    
+    # 创建 block pointers
     a_block_ptr = tl.make_block_ptr(
         base=a_ptr,
         shape=(M, K),
@@ -64,7 +64,7 @@ def matmul_kernel(
         block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_K),
         order=(1, 0)
     )
-
+    
     b_block_ptr = tl.make_block_ptr(
         base=b_ptr,
         shape=(K, N),
@@ -73,21 +73,21 @@ def matmul_kernel(
         block_shape=(BLOCK_SIZE_K, BLOCK_SIZE_N),
         order=(1, 0)
     )
-
-    # Use float32 loader
+    
+    # 使用 float32 累加器
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
-
-    # K-dimensional cycle
+    
+    # K 维度循环
     for k in range(0, K, BLOCK_SIZE_K):
         a = tl.load(a_block_ptr, boundary_check=(0, 1))
         b = tl.load(b_block_ptr, boundary_check=(0, 1))
         accumulator += tl.dot(a, b)
-
-        # Move block points
+        
+        # 移动 block pointers
         a_block_ptr = tl.advance(a_block_ptr, (0, BLOCK_SIZE_K))
         b_block_ptr = tl.advance(b_block_ptr, (BLOCK_SIZE_K, 0))
-
-    # Storage results (required for visible conversion type, matching output dtype)
+    
+    # 存储结果（需显式转换类型，匹配输出 dtype）
     c = accumulator.to(c_ptr.dtype.element_ty)
     c_block_ptr = tl.make_block_ptr(
         base=c_ptr,
@@ -100,7 +100,7 @@ def matmul_kernel(
     tl.store(c_block_ptr, c, boundary_check=(0, 1))
 ```
 
-## Optimize using Autotune
+## 使用 Autotune 优化
 
 ```python
 @triton.autotune(
@@ -110,7 +110,7 @@ def matmul_kernel(
         triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_stages=5, num_warps=2),
     ],
     key=['M', 'N', 'K'],
-    restore_value=['c_ptr'],  # Must: list all output pointer parameter names
+    restore_value=['c_ptr'],  # 必须：列出所有输出指针参数名
 )
 @triton.jit
 def matmul_kernel_autotune(
@@ -123,16 +123,16 @@ def matmul_kernel_autotune(
     pid = tl.program_id(0)
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
-
-    # L2 Cache Optimization: Grouped ordering
+    
+    # L2 缓存优化：Grouped ordering
     num_pid_in_group = GROUP_SIZE_M * num_pid_n
     group_id = pid // num_pid_in_group
     first_pid_m = group_id * GROUP_SIZE_M
     group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
     pid_m = first_pid_m + ((pid % num_pid_in_group) % group_size_m)
     pid_n = (pid % num_pid_in_group) // group_size_m
-
-    # Follow-up is the same as the standard Kernel
+    
+    # ... 后续与标准 kernel 相同
     a_block_ptr = tl.make_block_ptr(
         base=a_ptr, shape=(M, K), strides=(stride_am, stride_ak),
         offsets=(pid_m * BLOCK_SIZE_M, 0),
@@ -143,7 +143,7 @@ def matmul_kernel_autotune(
         offsets=(0, pid_n * BLOCK_SIZE_N),
         block_shape=(BLOCK_SIZE_K, BLOCK_SIZE_N), order=(1, 0)
     )
-
+    
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
     for k in range(0, K, BLOCK_SIZE_K):
         a = tl.load(a_block_ptr, boundary_check=(0, 1))
@@ -151,7 +151,7 @@ def matmul_kernel_autotune(
         accumulator += tl.dot(a, b)
         a_block_ptr = tl.advance(a_block_ptr, (0, BLOCK_SIZE_K))
         b_block_ptr = tl.advance(b_block_ptr, (BLOCK_SIZE_K, 0))
-
+    
     c = accumulator.to(c_ptr.dtype.element_ty)
     c_block_ptr = tl.make_block_ptr(
         base=c_ptr, shape=(M, N), strides=(stride_cm, stride_cn),
@@ -161,7 +161,7 @@ def matmul_kernel_autotune(
     tl.store(c_block_ptr, c, boundary_check=(0, 1))
 ```
 
-## Host Side Start
+## Host 侧启动
 
 ```python
 class ModelNew(torch.nn.Module):
@@ -173,9 +173,9 @@ class ModelNew(torch.nn.Module):
         K2, N = b.shape
         assert K == K2
         c = torch.empty((M, N), device=a.device, dtype=a.dtype)
-
+        
         grid = lambda meta: (triton.cdiv(M, meta['BLOCK_SIZE_M']) * triton.cdiv(N, meta['BLOCK_SIZE_N']),)
-
+        
         matmul_kernel_autotune[grid](
             a, b, c,
             M, N, K,
@@ -186,18 +186,18 @@ class ModelNew(torch.nn.Module):
         return c
 ```
 
-## L2 Cache Optimization: Grouped Ordering
+## L2 缓存优化：Grouped Ordering
 
-### Grouped Ordering?
+### 为什么需要 Grouped Ordering？
 
-The standard row or row priority flow leads to low utilization of the L2 cache. By grouping adjacent blocks, data can be reused:
+标准的行优先或列优先遍历会导致 L2 缓存利用率低。通过将相邻的块分组处理，可以增加数据复用：
 
 ```python
-# Standard Pass: adjacent pid access to block A in different rows
+# 标准遍历：相邻 pid 访问不同行的 A 块
 pid_m = pid // num_pid_n
 pid_n = pid % num_pid_n
 
-# Grouped ordering: adjacent pid access to block A of the same group
+# Grouped ordering：相邻 pid 访问同一组行的 A 块
 num_pid_in_group = GROUP_SIZE_M * num_pid_n
 group_id = pid // num_pid_in_group
 first_pid_m = group_id * GROUP_SIZE_M
@@ -208,50 +208,50 @@ pid_n = (pid % num_pid_in_group) // group_size_m
 
 ### Swizzle2D
 
-Another way to optimize the cache:
+另一种缓存优化方式：
 ```python
 task_m, task_n = tl.swizzle2d(pid_m, pid_n, num_pid_m, num_pid_n, GROUP_SIZE)
 ```
 
-## Elements of optimization
+## 优化要点
 
-### 1. Part Configuration
+### 1. 分块配置
 
-- Search for optimal configuration using autotune
-- Consider Tensor Core requirements (number of blocks of 16)
-- A larger piece of → better data reuse, but higher memory pressure
+- 使用 autotune 搜索最优配置
+- 考虑 Tensor Core 的要求（块大小为 16 的倍数）
+- 更大的块 → 更好的数据复用，但更高的寄存器压力
 
-### 2. accuracy control
+### 2. 精度控制
 
-- Thrusters use float32: `tl.zeros(..., dtype=tl.float32)`
-- Even if input is fp16/ bf16, add with fload32
-- Automatically return target accuracy on final storage
+- 累加器使用 float32: `tl.zeros(..., dtype=tl.float32)`
+- 即使输入是 fp16/bf16，也用 float32 累加
+- 最后存储时自动转回目标精度
 
-### 3. Memory Access
+### 3. 内存访问
 
-- Prefer `tl.make_block_ptr` and `boundary_check`
-- Move block pointer with `tl.advance`
-- Optimizing the L2 cache using Grouped Ordering
+- 优先使用 `tl.make_block_ptr` 和 `boundary_check`
+- 使用 `tl.advance` 移动块指针
+- 利用 Grouped Ordering 优化 L2 缓存
 
-### 4. pipeline
+### 4. 流水线
 
-- `num_stages` Control Software pipeline Levels
-- More stage → better hide memory latency
-- But it'll take more shared memory.
+- `num_stages` 控制软件流水线级数
+- 更多 stage → 更好地隐藏内存延迟
+- 但会占用更多共享内存
 
-## Performance Checklist
+## 性能检查清单
 
-- [ ] Did you use autotune to search for optimal configuration?
-- [ ] Does the compulsor use float32?
-- [ ] Grouped Ordering or swizzle2d optimized L2 caches?
-- [ ] Is the K-dimensional cycle correctly achieved?
-- [ ] Does it make sense for num_warps and num_stages?
-- [ ] block size is 16 multiples (Tensor Core requirement)?
+- [ ] 是否使用了 autotune 搜索最优配置？
+- [ ] 累加器是否使用 float32？
+- [ ] 是否使用了 Grouped Ordering 或 swizzle2d 优化 L2 缓存？
+- [ ] K 维度循环是否正确实现？
+- [ ] num_warps 和 num_stages 是否合理？
+- [ ] block 大小是否为 16 的倍数（Tensor Core 要求）？
 
-## Common Errors
+## 常见错误
 
-1. **Additional fp16**: accuracy serious loss
-2. **Forget K-dimensional loop**: Result error
-3. **block not the same size Tensor Core**: poor performance
-4. **L2 Cache not optimized**: Large Matrix Decline
-5. **num_warps mismatch**: block size and warp number mismatch leads to waste of resources
+1. **累加用 fp16**: 精度损失严重
+2. **忘记 K 维度循环**: 结果错误
+3. **block 大小不对齐 Tensor Core**: 性能不佳
+4. **L2 缓存未优化**: 大矩阵性能下降
+5. **num_warps 不匹配**: block 大小和 warp 数不匹配导致资源浪费

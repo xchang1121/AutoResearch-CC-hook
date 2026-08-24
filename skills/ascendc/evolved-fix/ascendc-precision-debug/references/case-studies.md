@@ -1,29 +1,29 @@
-# Field debugging cases
+# 实战调试案例
 
-## Case 1: SoftmaxV5 accuracy debug
+## 案例1：SoftmaxV5 精度调试
 
-### Description of the problem
+### 问题描述
 
-The Softmax operator output accuracy at a specified input scale did not meet expectations, and the validation of the foot report accuracy failed.
+Softmax 算子在特定输入规模下输出精度不符合预期，验证脚本报告精度失败。
 
-### Debug process
+### 调试过程
 
-#### Step 1: Minimum Recoverable Test
+#### Step 1: 最小可复现测试
 
 ```bash
-# Start with minimum shape, 32 byte alignment
+# 从最小形状开始，32字节对齐
 ./softmaxv5 16 16 8 fp32
 
-# If passed, test FP16.
+# 如果通过，测试 FP16
 ./softmaxv5 16 16 8 fp16
 ```
 
-Results**: small-scale tests passed and large-scale tests failed
+**结果**：小规模测试通过，大规模测试失败
 
-#### Step 2: error analysis
+#### Step 2: 误差分析
 
 ```python
-# Analyse error distribution
+# 分析误差分布
 pred = np.load('output.npy')
 truth = np.load('expected.npy')
 error = np.abs(pred - truth)
@@ -31,23 +31,23 @@ error = np.abs(pred - truth)
 print(f"Max error: {error.max():.2e}")
 print(f"Mean error: {error.mean():.2e}")
 
-# Find the worst samples.
+# 找出最差样本
 worst_idx = error.argmax()
 print(f"Worst @{worst_idx}: pred={pred.flat[worst_idx]}, truth={truth.flat[worst_idx]}")
 ```
 
-**Found**: error is concentrated in specific columns
+**发现**：误差主要集中在特定列
 
-#### Step 3: Secondary disassembly certification
+#### Step 3: 二分拆解验证
 
 ```cpp
-// Softmax formula: softmax(x)=exp(x-max)/ sum(exp(x-max))
+// Softmax 公式: softmax(x) = exp(x-max) / sum(exp(x-max))
 
-// Step 1: Verify ReduceMax
+// 第1步：验证 ReduceMax
 half max_val = ReduceMax(input);
 printf("Step1 - max: %.6f\n", static_cast<float>(max_val));
 
-// Step 2: Sub-Commission after validation of broadcast
+// 第2步：验证广播后的 Sub
 for (int i = 0; i < size; ++i) {
     half shifted = input[i] - max_val;
     if (i < 3) {
@@ -57,7 +57,7 @@ for (int i = 0; i < size; ++i) {
     }
 }
 
-// Step 3: Validate Exp
+// 第3步：验证 Exp
 for (int i = 0; i < size; ++i) {
     half exp_val = Exp(input[i] - max_val);
     if (i < 3) {
@@ -65,11 +65,11 @@ for (int i = 0; i < size; ++i) {
     }
 }
 
-// Step 4: Validate ReduceSum
+// 第4步：验证 ReduceSum
 half exp_sum = ReduceSum(exp_values);
 printf("Step4 - exp_sum: %.6f\n", static_cast<float>(exp_sum));
 
-// Step 5: Harmonization of certification
+// 第5步：验证归一化
 for (int i = 0; i < size; ++i) {
     output[i] = exp_values[i] / exp_sum;
     if (i < 3) {
@@ -77,33 +77,33 @@ for (int i = 0; i < size; ++i) {
     }
 }
 
-// Validation: The sum of the output should be close to 1.
+// 验证：输出之和应该接近1
 half output_sum = ReduceSum(output);
 printf("Verification - output_sum: %.6f (should be 1.0)\n",
        static_cast<float>(output_sum));
 ```
 
-**Step 4: Border conditions test**
+**Step 4: 边界条件测试**
 
 ```bash
-# Test hardware bound borders
-./softmaxv5 8 8 8 fp32    # Minimum Columns=8
-./softmaxv5 16 8 8 fp16   # FP16 Minimum Columns
+# 测试硬件约束边界
+./softmaxv5 8 8 8 fp32    # 最小列数=8
+./softmaxv5 16 8 8 fp16   # FP16 最小列数
 
-# Testing large scale
+# 测试大规模
 ./softmaxv5 1024 256 8 fp32
 
-# Test Non-Square
+# 测试非方形
 ./softmaxv5 256 512 4 fp32
 ```
 
-**Key findings**:
-- Columns must be ≥-8, otherwise ReduceMax/ReduceSum is not correctly calculated
-- This is a constraint to the hardware reduce operation.
+**关键发现**：
+- 列数必须 ≥ 8，否则 ReduceMax/ReduceSum 计算不正确
+- 这是硬件 reduce 操作的约束
 
-#### Step 5: Solutions
+#### Step 5: 解决方案
 
-1. Add input authentication:
+1. 添加输入验证：
 ```cpp
 if (cols < 8) {
     printf("Error: cols must be >= 8 (got %d)\n", cols);
@@ -111,88 +111,88 @@ if (cols < 8) {
 }
 ```
 
-2. Make this constraint clear in the document:
+2. 在文档中明确说明这一约束：
 ```markdown
-## Known Limits
-- Columns must ≥ 8(hardware) Reduce OPERATIONAL CONSTRAINTS)
+## 已知限制
+- 列数必须 ≥ 8（硬件 Reduce 操作约束）
 ```
 
-### Lessons learned
+### 经验总结
 
-| Problem | Gene. | Solutions |
+| 问题 | 根因 | 解决方案 |
 |-----|------|---------|
-| accuracy-specific size anomaly | Hardware constraints not satisfactory | Add Input Validation + Document Description |
-| Reduce, it's a mistake. | Columns < 8 | Ensure column count ≥8 |
+| 特定规模精度异常 | 硬件约束不满足 | 添加输入验证 + 文档说明 |
+| Reduce 结果错误 | 列数 < 8 | 确保列数 ≥ 8 |
 
 ---
 
-## Case 2: Sinh operator FP16 accuracy is deficient
+## 案例2：Sinh 算子 FP16 精度不足
 
-### Description of the problem
+### 问题描述
 
-Sinh operator is clearly inadequate under FP16 accuracy, which is more than 1% relative to error.
+Sinh 算子在 FP16 下精度明显不足，相对误差超过 1%。
 
-### Math Formula
+### 数学公式
 
 ```
 sinh(x) = (exp(x) - exp(-x)) / 2
 ```
 
-### Debug process
+### 调试过程
 
-#### Step 1: FP32 vs FP16 Contrast
+#### Step 1: FP32 vs FP16 对比
 
 ```python
-# FP32 Test
+# FP32 测试
 result_fp32 = sinh_fp32(test_input)
 error_fp32 = np.abs(result_fp32 - expected)
 print(f"FP32 max error: {error_fp32.max():.2e}")  # ~1e-6
 
-# FP16 Test
+# FP16 测试
 result_fp16 = sinh_fp16(test_input)
 error_fp16 = np.abs(result_fp16 - expected)
 print(f"FP16 max error: {error_fp16.max():.2e}")  # ~1e-2
 ```
 
-**Found**: FP16 error significantly greater than FP32
+**发现**：FP16 误差明显大于 FP32
 
-#### Step 2: Debug
+#### Step 2: 二分调试
 
 ```cpp
-// Dismantling calculation step
+// 拆解计算步骤
 half x = 1.5h;
 
-// Step 1: exp(x)
+// 第1步：exp(x)
 half exp_x = Exp(x);
 printf("exp(%.2f) = %.6f\n", static_cast<float>(x), static_cast<float>(exp_x));
 
-// Step 2: exp(-x)
+// 第2步：exp(-x)
 half exp_neg_x = Exp(-x);
 printf("exp(%.2f) = %.6f\n", static_cast<float>(-x), static_cast<float>(exp_neg_x));
 
-// Step 3: Subtract
+// 第3步：减法
 half numerator = exp_x - exp_neg_x;
 printf("numerator = %.6f - %.6f = %.6f\n",
        static_cast<float>(exp_x),
        static_cast<float>(exp_neg_x),
        static_cast<float>(numerator));
 
-// Step 4: Division
+// 第4步：除法
 half result = numerator / 2.0h;
 printf("result = %.6f / 2 = %.6f\n",
        static_cast<float>(numerator),
        static_cast<float>(result));
 ```
 
-**Found**: Decreasing step `exp_x - exp_neg_x` lost significantly under FP16 accuracy
+**发现**：减法步骤 `exp_x - exp_neg_x` 在 FP16 下精度损失较大
 
-#### Step 3: Solutions
+#### Step 3: 解决方案
 
-Using FP32 middle accuracy:
+使用 FP32 中间精度：
 
 ```cpp
 half SinhStable(half x) {
-    // Use FP32 for intermediate calculations
+    // 使用 FP32 进行中间计算
     float x_f32 = static_cast<float>(x);
 
     float exp_x = exp(x_f32);
@@ -203,53 +203,53 @@ half SinhStable(half x) {
 }
 ```
 
-### Lessons learned
+### 经验总结
 
-| Problem | Gene. | Solutions |
+| 问题 | 根因 | 解决方案 |
 |-----|------|---------|
-| FP16 accuracy is inadequate | Reduced offset caused accuracy losses | Use of FP32 for critical steps |
-| FP16 error Big | Exp(x)-exp(-x) accuracy Loss | Intermediate calculation using FP32 |
+| FP16 精度不足 | 减法抵消导致精度损失 | 关键步骤使用 FP32 |
+| sinh(x) FP16 误差大 | exp(x)-exp(-x) 精度损失 | 中间计算用 FP32 |
 
 ---
 
-## Case 3: ReduceSum plus accuracy loss
+## 案例3：ReduceSum 累加精度损失
 
-### Description of the problem
+### 问题描述
 
-ReduceSum is not enough for accuracy when a large number of elements are added, especially FP16.
+ReduceSum 在大量元素累加时精度不足，特别是 FP16。
 
-### Debug process
+### 调试过程
 
-#### Step 1: Revert the problem
+#### Step 1: 问题复现
 
 ```python
-# Generate test data
+# 生成测试数据
 size = 1000
 input_data = np.ones(size, dtype=np.float16) * 0.1
 
-# Expected results
+# 期望结果
 expected = 100.0  # 1000 * 0.1
 
-# Actual results
+# 实际结果
 result = reducesum_fp16(input_data)
 print(f"Expected: {expected}, Got: {result}, Error: {abs(result - expected)}")
 ```
 
-**Result**: error reaches 1.5 (relative to error 1.5%)
+**结果**：误差达到 1.5（相对误差 1.5%）
 
-#### Step 2: Analysis of causes
+#### Step 2: 分析原因
 
-FP16 accuracy is limited, and many times cumulatively results in the accumulation of error:
-- FP16 About 3-4 significant places
-- 1,000 times cumulative, each time error
+FP16 精度有限，多次累加导致误差累积：
+- FP16 约 3-4 位有效数字
+- 1000 次累加，每次累积误差
 
-#### Step 3: Solutions
+#### Step 3: 解决方案
 
-Use FP32 loader:
+使用 FP32 累加器：
 
 ```cpp
 half ReduceSumAccurate(half* input, int size) {
-    // Use FP32 loader
+    // 使用 FP32 累加器
     float sum_fp32 = 0.0f;
 
     for (int i = 0; i < size; ++i) {
@@ -260,63 +260,63 @@ half ReduceSumAccurate(half* input, int size) {
 }
 ```
 
-**Validation**: error down to 1e-4 below
+**验证**：误差降至 1e-4 以下
 
-### Lessons learned
+### 经验总结
 
-| Problem | Gene. | Solutions |
+| 问题 | 根因 | 解决方案 |
 |-----|------|---------|
-| Reduce accuracy losses | FP16 excise error accumulation | Use FP32 loader |
+| Reduce 精度损失 | FP16 累加误差累积 | 使用 FP32 累加器 |
 
 ---
 
-## Case 4: exp spill caused Inf
+## 案例4：exp 溢出导致 Inf
 
-### Description of the problem
+### 问题描述
 
-Softmax operator output Inf when the input value is larger.
+Softmax 算子在输入值较大时输出 Inf。
 
-### Debug process
+### 调试过程
 
-#### Step 1: Problem positioning
+#### Step 1: 问题定位
 
 ```python
-# Test Big Inputs
+# 测试大输入
 large_input = np.array([[100.0, 101.0, 102.0]], dtype=np.float16)
 result = softmax(large_input)
 print(result)  # [nan, nan, nan]
 ```
 
-#### Step 2: Printf debug
+#### Step 2: Printf 调试
 
 ```cpp
-// Direct exp spills
+// 直接 exp 会溢出
 half x = 100.0h;
 half exp_x = Exp(x);
 printf("exp(%.1f) = %f\n", static_cast<float>(x), static_cast<float>(exp_x));
-// Output: ext(100.0) = inf
+// 输出: exp(100.0) = inf
 ```
 
-#### Step 3: Solutions
+#### Step 3: 解决方案
 
-Softmax:
+数值稳定的 Softmax：
 
 ```cpp
 half SoftmaxStable(half* input, int size) {
-    // Maximum first value
+    // 先求最大值
     half max_val = input[0];
     for (int i = 1; i < size; ++i) {
         max_val = max(max_val, input[i]);
     }
 
-    // Calculate exp(x-max), avoid spills
+    // 计算 exp(x - max)，避免溢出
     float exp_sum = 0.0f;
     for (int i = 0; i < size; ++i) {
-        half shifted = input[i] - max_val;  // Maximum input becomes 0
+        half shifted = input[i] - max_val;  // 最大输入变为 0
         exp_sum += static_cast<float>(Exp(shifted));
     }
 
-    // Normalization
+    // 归一化
     for (int i = 0; i < size; ++i) {
         half shifted = input[i] - max_val;
         output[i] = Exp(shifted) / static_cast<half>(exp_sum);
@@ -324,136 +324,136 @@ half SoftmaxStable(half* input, int size) {
 }
 ```
 
-### Lessons learned
+### 经验总结
 
-| Problem | Gene. | Solutions |
+| 问题 | 根因 | 解决方案 |
 |-----|------|---------|
-| exp spill | Excessive input value | Less max, then ext. |
-| Softmax Output Inf | exp(x) when spilling x>88 | Numerical stabilization algorithm |
+| exp 溢出 | 输入值过大 | 先减 max，再 exp |
+| Softmax 输出 Inf | exp(x) 当 x>88 时溢出 | 数值稳定算法 |
 
 ---
 
-## Case 5: Multi-matrix, head vivid NAN when slammed in L1
+## 案例5：Multi-matrix 拼接到 L1 时 head 维奇偶 NaN
 
-### Description of the problem
+### 问题描述
 
-Some of the operators (typical multi-head category: multi-head MatMul/ multi-head Attention, etc.) bring multiple matrices to the same piece of L1 NZ Buffer and load them once to L0. Each matrix at the beginning of L1 has to be correctly calculated by NZfset physical layout, which is strongly related to data dtype.
+某些算子（典型 multi-head 类：multi-head MatMul / multi-head Attention 等）把多个矩阵拼接到同一片 L1 NZ buffer，做一次 LoadData 加载到 L0。每个矩阵在 L1 的起始 offset 必须按 NZ fractal 物理布局正确计算，与数据 dtype 强相关。
 
-Toggle dtype path (e. g. fp16 → fp8) or add scale tensor, offset formulae can easily go wrong.
+切换 dtype 路径（如 fp16 → fp8）或新增 scale 张量时，offset 公式照搬容易出错。
 
-### Symptom
+### 症状
 
-Watch the output of**chilling NAN mode**by head-dimensional slices:
+按 head 维度切片观察输出，呈现**奇偶 NaN 模式**：
 
 ```
-head 0: ✅ Validity, none NaN
-head 1: ❌ All NaN(fp8 0x7F)
-head 2: ❌ All NaN
-head 3: ✅ Validity, none NaN
+head 0: ✅ 数值合理，无 NaN
+head 1: ❌ 全 NaN（fp8 0x7F）
+head 2: ❌ 全 NaN
+head 3: ✅ 数值合理，无 NaN
 ```
 
-Typical migraines such as `[OK, BAD, BAD, OK]` / `[OK, BAD, OK, BAD]`.
+`[OK, BAD, BAD, OK]` / `[OK, BAD, OK, BAD]` 等典型奇偶分布。
 
-### Debug process
+### 调试过程
 
-#### Step 1: Degrade to single matrix (single head) test
+#### Step 1: 退化到单 matrix（单 head）测试
 
-Degrade operator to `multi-matrix-count = 1` (single head) with other parameters unchanged.
+把算子退化到 `multi-matrix-count = 1`（单 head），其他参数不变。
 
-- Single matrix output normal → problem in multiple matrix fusion (this case)
-- SinglematrixYeah.NaN →The problem is at the bottom.scalePath/ CastFormula/ LoadDatafields), see[common-traps.mdA trap.10](common-traps.md)
+- 单 matrix 输出正常 → 问题在多 matrix 拼接（本案例）
+- 单 matrix 也 NaN → 问题在更底层（scale 路径 / Cast 公式 / LoadData 字段），见 [common-traps.md 陷阱10](common-traps.md)
 
-#### Step 2: Constant replacement isolation
+#### Step 2: 常量替换隔离
 
-Replace all suspicious scale tensor with a neutral constant (scale = 1.0), rerun:
+把可疑 scale 张量全部替换为中性常量（scale = 1.0），重跑：
 
-- NN disappears → root cause in scale path
-- NAN is still at → root in data carrier (this case)
+- NaN 消失 → 根因在 scale 路径
+- NaN 仍在 → 根因在数据载体（本案例）
 
-#### Step 3: Sample by stage printf
+#### Step 3: 逐 stage printf 采样
 
-Insert printf at each Company status output, with a different medium for sampling headrows:
+在每个 Compute stage 输出位置插入 printf，采样不同 head row 的中间数值：
 
-- Early stage output is normal at head 0 / 3, head 1 / 2 has exploded → locking on the stage's fusion matrix used
-- Early stage all normal, late stage before error → locks the later stage used
+- 早期 stage 输出在 head 0 / 3 数值正常，head 1 / 2 已经爆炸 → 锁定该 stage 用到的拼接矩阵
+- 早期 stage 全部正常，后期 stage 才出错 → 锁定后期 stage 用到的拼接矩阵
 
-The corresponding L1 fusion matrix is the suspect after locating it to a specific status.
+定位到具体 stage 后，对应的 L1 拼接矩阵就是嫌疑对象。
 
-#### Step 4: Head amongfset formulae for contrasting data carriers
+#### Step 4: 对照数据载体的 head offset 公式
 
-Checks whether multiple matrix collating with L1's head formula coefficient matches the number of NZ C0 elements in dtype:
+检查多 matrix 拼接到 L1 的 head offset 公式系数，是否与 dtype 的 NZ C0 元素数匹配：
 
 ```cpp
-// ❌ Copy fp16 formulae to fp8 data carrier
-DataCopy(aL1[g * mEff * CUBE_BLOCK], aGm[...], ...);   // CUBE_BLOCK=16 Yes. fp16 C0 Number of elements
+// ❌ 照搬 fp16 公式到 fp8 数据载体
+DataCopy(aL1[g * mEff * CUBE_BLOCK], aGm[...], ...);   // CUBE_BLOCK=16 是 fp16 C0 元素数
 
-// ✅ fp8 data carrier should use FP8_C0_ELEMS =32
+// ✅ fp8 数据载体应该用 FP8_C0_ELEMS = 32
 DataCopy(aL1[g * mEff * FP8_C0_ELEMS], aGm[...], ...);
 ```
 
-The restored mode may change from `[OK, BAD, BAD, OK]` to `[OK, BAD, OK, BAD]` (partly restored but still incorrect, indicating that the scale carrier formula is also incorrect).
+修复后模式可能从 `[OK, BAD, BAD, OK]` 变为 `[OK, BAD, OK, BAD]`（部分恢复但仍有错位，说明 scale 载体公式也错）。
 
-#### Step 5: Check an independent offset formula for scale carriers
+#### Step 5: 检查 scale 载体的独立 offset 公式
 
-Scale tensor is usually loaded with a B16 view + Dn2Nz, which is M-fractal element count**different from the data carrier**:
+scale 张量通常用 B16 视图 + Dn2Nz 加载，其 M-fractal element count **与数据载体不同**：
 
 ```cpp
-// ❌ scale carrier misused data carrier formula coefficient
+// ❌ scale 载体误用数据载体公式系数
 DataCopy(aScaleL1B16[g * mEff * CUBE_BLOCK], aScaleGmB16[...], ...);
-// or
+// 或
 DataCopy(aScaleL1B16[g * mEff * FP8_C0_ELEMS], aScaleGmB16[...], ...);
 
-// ✅ scale carriers use their own M-fractal element count
+// ✅ scale 载体用其自己的 M-fractal element count
 DataCopy(aScaleL1B16[g * mEff * scaleK_b16], aScaleGmB16[...], ...);
 ```
 
-Fix scale after all head output is normal.
+修复 scale offset 后所有 head 输出正常。
 
-### Lessons learned
+### 经验总结
 
-| Problem | Gene. | Solutions |
+| 问题 | 根因 | 解决方案 |
 |-----|------|---------|
-| Multi-head NAN | Data carrier head input formula dtype misused | Press dtype for C0 elements (fp16 = 16, fp8 = 32, fp4 = 64) |
-| One of the repairs is still partial, NAN. | Scale carrier formula coefficient misusing data carrier formulae | scale carrier formula independently extrapolates, without copying data carriers |
-| Multi-head All NAN | Error on a lower path outside the spell | Decline to single matrix priority |
+| multi-head 奇偶 NaN | 数据载体 head offset 公式 dtype 误用 | 按 dtype 用对应 C0 元素数（fp16=16，fp8=32，fp4=64） |
+| 修一处后仍部分 NaN | scale 载体公式系数误用数据载体公式 | scale 载体公式独立推导，不照搬数据载体 |
+| multi-head 全 NaN | 拼接以外的更底层路径出错 | 退化到单 matrix 优先排查 |
 
-### Key principles
+### 关键原则
 
-1. **Degradation test is the gold standard for multi-matrix-matrix problems**: single matrix PASS / multiple matrix FAIL → locks the adhesion immediately
-2. **The data carrier vs scale carrier means the formula has to be independently extrapolated**: possibly multiple C0 sizes in the same operator, cannot copy the UCF
-3. **head NN hint misspelled**: All BAD is a data access problem (scale axes / Cast formula / LoadData field) and the weirder BAD is a patchwork problem
-4. **Constance replacement separation root factor**: replacement of suspected tensor with neutral constant, identifying "the tensor path vs other path"
+1. **退化测试是 multi-matrix 类问题的金标准**：单 matrix PASS / 多 matrix FAIL → 立刻锁定拼接相关
+2. **数据载体 vs scale 载体 offset 公式必须独立推导**：同一算子中可能多种 C0 大小并存，不能照搬统一系数
+3. **head 维奇偶 NaN 提示拼接错位**：全 BAD 是数据通路问题（scale 轴 / Cast 公式 / LoadData 字段），奇偶 BAD 才是拼接问题
+4. **常量替换隔离根因**：把可疑张量替换为中性常量，分辨"该张量路径 vs 其他路径"
 
-Parameters contrast: NZ C0 size, Multi-matrix head input formula is relevant to Cube/matmul class operator and is not active in this repository.
+参数对照：NZ C0 大小、Multi-matrix head offset 公式属于 Cube/matmul 类算子相关，本仓库（vector / reduction）不展开。
 
 ---
 
-## Debugging lessons learned
+## 调试经验总结
 
-### Debug Efficiency Sorting
+### 调试效率排序
 
-| Methodology | Apply scene | Efficiency |
+| 方法 | 适用场景 | 效率 |
 |-----|---------|------|
-| error analysis | Preliminary diagnosis | ⭐⭐⭐ |
-| Printf debug | Quick positioning | ⭐⭐⭐ |
-| Common trap screening. | Typical problem. | ⭐⭐ |
-| Debug 2 | Complex issues | ⭐⭐ |
-| Data comparison | System Authentication | ⭐ |
+| 误差分析 | 初步诊断 | ⭐⭐⭐ |
+| Printf 调试 | 快速定位 | ⭐⭐⭐ |
+| 常见陷阱排查 | 典型问题 | ⭐⭐ |
+| 二分调试 | 复杂问题 | ⭐⭐ |
+| 数据对比 | 系统验证 | ⭐ |
 
-### Rapid diagnostic tips
+### 快速诊断提示
 
-| Symptom | Possible causes | Fast Check |
+| 症状 | 可能原因 | 快速检查 |
 |-----|---------|---------|
-| All the results are bad. | Formula/API problem | Check formula realization |
-| FP16 Specially bad | accuracy is inadequate | Try FP32 Median |
-| Inf/NAN | Spills/de-zeros | Check boundary values |
-| Error on a specific scale | Hardware constraints | Check the alignment/minimal number of elements |
-| Subtract error Large | Subtract offset | Reorder Formulae |
+| 所有结果都差 | 公式/API 问题 | 检查公式实现 |
+| FP16 特别差 | 精度不足 | 尝试 FP32 中间值 |
+| 出现 Inf/NaN | 溢出/除零 | 检查边界值 |
+| 特定规模错误 | 硬件约束 | 检查对齐/最小元素数 |
+| 减法误差大 | 减法抵消 | 重排公式 |
 
-### Debug the laws of gold
+### 调试黄金法则
 
-1. **FP32 and FP16**: exclusion algorithm problems
-2. **Alignment, later non- Alignment**: exclusion of alignment issues
-3. **Simplicity, complexity**: starting with the smallest test case
-4. **Fast, then deep**: fast-track method is not working and debugped in half
-5. **Record everything**: every change is recorded error
+1. **先 FP32，后 FP16**：排除算法问题
+2. **先对齐，后非对齐**：排除对齐问题
+3. **先简单，后复杂**：从最小测试用例开始
+4. **先快速，后深入**：快速方法无效再用二分调试
+5. **记录一切**：每次修改都要记录误差变化

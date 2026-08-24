@@ -1,6 +1,6 @@
 ---
 name: triton-ascend-case-elemwise-zeros
-description: "SmallshapetensorCreatezeros/arange/fullOptimization: Avoiding multi-nuclear start-up and dispatch costs by reducing the number of nuclears, single-nuclear processing performance is better than multi-nuclear parallels, applicableshapeSmall (thousands of elements)elementwiseCreatetensorscene"
+description: "小shape张量创建（zeros/arange/full）优化：通过减少核数避免多核启动和调度开销，单核处理性能优于多核并行，适用于shape较小（千级元素）的elementwise创建张量场景"
 category: case
 version: "1.0.0"
 metadata:
@@ -9,18 +9,18 @@ metadata:
   hardware: "Atlas A2, Atlas A3"
 ---
 
-# Zeros Create tensor Optimization Case
+# Zeros 创建张量优化案例
 
-## Task characteristics
-- **Operating type**: Elemwise type, including the operation to create tensors for torch arange, full, Zeros, Zeros_like
-- **Data size**: (2, 256, 16), data size smaller
-- **data type**: float32
-- **Task characteristics**: can be sequenced according to axle (which can flatten is an axle), outer parallel, inner layer vector
+## 任务特征
+- **操作类型**：Elemwise类型，包含torch的arange、full、zeros、zeros_like等创建张量的操作
+- **数据尺寸**：(2, 256, 16)，数据shape较小
+- **数据类型**：float32
+- **任务特点**：可以按照轴的顺序（可flatten为一根轴），外层并行，内层向量化
 
-## Optimization: Small Shape nuclei processing
+## 优化：小shape少核处理
 
 ```python
-# kernel code
+# 内核代码
 block_start = pid * BLOCK_SIZE
 offsets = block_start + tl.arange(0, BLOCK_SIZE)
 mask = offsets < n_elements
@@ -28,11 +28,11 @@ zeros = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
 tl.store(output_ptr + offsets, zeros, mask=mask)
 ```
 
-### Optimizing content
-- Resize parallels and improve performance by setting the size of BLONK_SIZE
-- When Shape is small, the nuclear numbers are kept to a minimum and multi-nuclear start-up and dispatch costs are avoided.
+### 优化内容
+- 通过设置BLOCK_SIZE的大小，来调整并行，提高性能
+- Shape较小时，核数尽量减小，可以避免多核启动和调度开销
 
-### Summary
-1. On the Ascend platform, when the size of the Shape is small, the number is kept to a minimum, which avoids multi-nuclear start-up and dispatch costs and achieves performance optimization
-2. For a simple Elementwise operation, the elements of the multiple axes are expanded into a single axis, and they are split on this axis.
-3. Allocating block to each liner, and considering multiple splits if the UB does not exist
+### 总结
+1. 在Ascend平台上，shape较小的时候，核数尽量减小，可以避免多核启动和调度开销，实现性能优化
+2. 对于单纯的Elementwise操作，将多根轴的元素展开为一根轴，然后在这根轴上进行切分
+3. 将block分配给每个线程块，若UB存不下，可考虑多次切分

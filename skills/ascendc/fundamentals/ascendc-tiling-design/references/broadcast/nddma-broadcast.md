@@ -1,92 +1,92 @@
-# Broadcast - NDDMA Broadcast Branch (DAV_3510)
+# Broadcast - NDDMA Broadcast 分支（DAV_3510）
 
-> **Applied scene**: multidimensional after-axis, DAV_3510 chip.**Only for GM→UB migration phase**, automatic broadcast via NDDMA hardware stride = 0 configuration, data reach UB as complete post-broadcast file. Not applicable to UB internal broadcasting (UB internal request for [dynamic UB Broadcast] (dynamic-ub-broadcast.md)).
+> **适用场景**: 合轴后多维，DAV_3510 芯片。**仅用于 GM→UB 搬入阶段**，通过 NDDMA 硬件 stride=0 配置自动广播，数据到达 UB 时已是广播后的完整 tile。不适用于 UB 内部广播（UB 内部请使用 [动态 UB Broadcast](dynamic-ub-broadcast.md)）。
 >
-> **DAV_2201 does not support NDDMA**, use [UB Broadcast static interface] (ub-broadcast.md).
+> **DAV_2201 不支持 NDDMA**，请使用 [UB Broadcast 静态接口](ub-broadcast.md)。
 
 ---
 
-## I. SPECIFIC STATE
+## 一、分支特征
 
-| Features | Annotations |
+| 特征 | 说明 |
 |------|------|
-| **Chip request** | DAV_3510(Ascend 950) |
-| **Post-axis dimensions** | > 1 D |
-| **Broadcasting mode** | NDDMA hardware auto copying data according to stride=0 during GM→UB removal |
-| **Distinction from UB BRC** | `Broadcast()` API call not required for UB to move in and finish broadcast |
-| **NDDMA Maximum Dimension** | 5D. More than 5D requires an outer cycle + multiple NDDMA calls |
+| **芯片要求** | DAV_3510（Ascend 950） |
+| **合轴后维度** | > 1 维 |
+| **广播方式** | GM→UB 搬运时，NDDMA 硬件根据 stride=0 自动复制数据 |
+| **与 UB BRC 的区别** | 不需要 UB 内 `Broadcast()` API 调用，搬入即完成广播 |
+| **NDDMA 最大维度** | 5 维。超过 5 维需要外层循环 + 多次 NDDMA 调用 |
 
 ---
 
-## II. Core API: DataCopy + MultiCopyParams
+## 二、核心 API：DataCopy + MultiCopyParams
 
-Nature of NDDMA broadcasting: Configure multi-dimensional moded copy, setting the srcStride of the broadcast axis to 0, where hardware is automatically copied.
+NDDMA 广播的本质：配置多维 strided copy，将广播轴的 srcStride 设为 0，硬件在该轴自动复制。
 
-### 2.1 MultiCopyParams Structure
+### 2.1 MultiCopyParams 结构
 
 ```cpp
-// NDDMA Maximum Support 5D
+// NDDMA 最大支持 5 维
 constexpr int64_t NDDMA_MAX_DIMS = 5;
 
 AscendC::MultiCopyLoopInfo<NDDMA_MAX_DIMS> loopInfo;
-// LoopInfo.loopSize[i] — Number of cycles of i-dimensional
-// LoopInfo.loopSrcStride[i] — GM source leap (stride=0 → this dimension automatically)
-// LoopInfo.loopDstStTride[i] — target jump for i-dimensional UB
+// loopInfo.loopSize[i]      — 第 i 维的循环次数
+// loopInfo.loopSrcStride[i] — 第 i 维的 GM 源跳跃（stride=0 → 该维自动复制）
+// loopInfo.loopDstStride[i] — 第 i 维的 UB 目标跳跃
 
 AscendC::MultiCopyParams<T, NDDMA_MAX_DIMS> params = {loopInfo, constValue};
 ```
 
-### 2.2 Motivation
+### 2.2 调用方式
 
 ```cpp
 static constexpr AscendC::MultiCopyConfig config = {false, 0, 0, false};
 AscendC::DataCopy<T, NDDMA_MAX_DIMS, config>(localTensor, globalTensor[gmOffset], params);
 ```
 
-### 2.3 Broadcast effects of stride = 0
+### 2.3 stride=0 的广播效果
 
 ```
-Example:: x=[1,3,8] It's broadcast. out=[4,3,8]
-  inputStrides  = [0, 8, 1]    ← Axis 0 stride=0It needs to be broadcast.
+示例: x=[1,3,8] 广播到 out=[4,3,8]
+  inputStrides  = [0, 8, 1]    ← 轴 0 stride=0，需要广播
   outputStrides = [24, 8, 1]
 
-NDDMA Configure:
+NDDMA 配置:
   loopSize      = [4, 3, 8]
-  loopSrcStride = [0, 8, 1]    ← srcStride[0]=0Hardware on the axis. 0 Repeat the same data
+  loopSrcStride = [0, 8, 1]    ← srcStride[0]=0，硬件在轴 0 重复读同一块数据
   loopDstStride = [24, 8, 1]
 
-Effect: hardware broadcasts `[1, 3, 8]` four times to fill `[4, 3, 8]`.
+效果: 硬件自动将 [1,3,8] 的数据复制 4 次填满 [4,3,8]
 ```
 
 ---
 
-## III. Two models
+## 三、两种模式
 
-### 3.1 WitoutLoop (schMode=1): the remaining axis after UB split ≤ 5
+### 3.1 WithoutLoop（schMode=1）：UB 切分后剩余轴 ≤ 5
 
-The remaining dimension is within the 5-dimensional limit of NDDMA and a `DataCopy` call is complete.
+剩余维度在 NDDMA 的 5 维限制内，一次 `DataCopy` 调用完成。
 
 ```cpp
-// Configure MultiCopyParams: Map ubSplitAxis and subsequent axes to the 5D of NDDMA
+// 配置 MultiCopyParams：将 ubSplitAxis 及之后的轴映射到 NDDMA 的 5 维
 MultiCopyParams<T, 5> params = BroadcastSetNddmaConfigWithoutLoop<T>(
     outputDims, outputStrides, inputStrides, shapeLen, ubSplitSize, ubSplitAxis);
 
-// One move in to finish the broadcast.
+// 一次搬入完成广播
 DataCopy<T, 5, config>(localTensor, globalTensor[gmOffset], params);
 ```
 
-**Optimization**: If a broadcast input `inputStrides[ubSplitAxis] == outputStrides[ubSplitAxis]` (i.e. the input does not need to be broadcast at the UB split axis), degradation is normal `DataCopyPad` and NDDMA costs are avoided.
+**优化**：如果某个广播输入的 `inputStrides[ubSplitAxis] == outputStrides[ubSplitAxis]`（即该输入在 UB 切分轴无需广播），退化为普通 `DataCopyPad`，避免 NDDMA 开销。
 
-### 3.2 With Loop (schMode=2): the remaining axis after UB split > 5
+### 3.2 WithLoop（schMode=2）：UB 切分后剩余轴 > 5
 
-The remaining dimension exceeds the 5-dimensional limit of NDDMA. The innermost 5-dimensional limit is given to NDDMA, and the outer axle circulates through Kernel.
+剩余维度超过 NDDMA 的 5 维限制。将最内 5 维交给 NDDMA，外层轴通过 Kernel 循环遍历。
 
 ```cpp
-// Configure NDDMA handles the inner 5D
+// 配置 NDDMA 处理最内 5 维
 MultiCopyParams<T, 5> params = BroadcastSetNddmaConfigWithLoop<T>(
     outputDims, outputStrides, inputStrides, shapeLen, ubSplitAxis);
 
-// The outer circle runs through the remaining axes
+// 外层循环遍历剩余轴
 int64_t nddmaProduct = BroadcastFuseAxes(outputDims, ubSplitAxis + 1, shapeLen - 5) * ubSplitSize;
 int64_t nddmaIndices[3] = {0};
 
@@ -102,19 +102,19 @@ for (int64_t i = 0; i < nddmaProduct; i++) {
 }
 ```
 
-### 3.3 FuseAxis Optimization (WithLoop + CopyBrcSize ≤ 4)
+### 3.3 FuseAxis 优化（WithLoop + CopyBrcSize ≤ 4）
 
-When CopyBrc node ≤4 and ≥3, try to merge the adjacent axes in the same broadcast mode and reduce the number of NDDMA calls:
+当 CopyBrc 节点数 ≤ 4 且 ≥ 3 时，尝试将广播模式相同的相邻轴合并，减少 NDDMA 调用次数：
 
 ```cpp
-// Scanning outward from the inner axis, with the same broadcasting mode (both stide=0 or both stide>0) combined
+// 从最内轴向外扫描，相邻轴广播模式相同（都 stride=0 或都 stride>0）则合并
 while (count > ubSplitAxis) {
     curFlag = inputStrides[count] == 0 ? 0 : 1;
     if (curFlag != oriFlag) {
-        // Different modes → New dimensions
+        // 不同模式 → 新维度
         outputDims2[newCount] = outputDims[count];
     } else {
-        // Same mode → merge
+        // 相同模式 → 合并
         outputDims2[newCount] *= outputDims[count];
     }
 }
@@ -122,12 +122,12 @@ while (count > ubSplitAxis) {
 
 ---
 
-## IV. Tiling Parameter Calculation
+## 四、Tiling 参数计算
 
-Same as the UB Broadcast branch (shared `DoBrodcastTiling`), except for SchMode:
+与 UB Broadcast 分支完全相同（共用 `DoBrodcastTiling`），仅 schMode 不同：
 
 ```cpp
-// Decision
+// 判定
 int64_t axisInsideUB = shapeLen - ubSplitAxis;
 if (axisInsideUB <= 5) {
     schMode = 1;   // WithoutLoop
@@ -138,7 +138,7 @@ if (axisInsideUB <= 5) {
 
 ---
 
-## Kernel Implementation Process
+## 五、Kernel 执行流程
 
 ```cpp
 __aicore__ inline void Process()
@@ -158,17 +158,17 @@ __aicore__ inline void Process()
         int64_t ubSplitSize = (axesIndices[ubSplitAxis] == ubOuter - 1)
                               ? ubTail : ubFormer;
 
-        // 1. Broadcast input: NDDMA migration (stride = 0-axis hardware automatic reproduction)
-        //    Data reached UB complete after broadcast file
+        // 1. 广播输入：NDDMA 搬入（stride=0 轴硬件自动复制）
+        //    数据到达 UB 时已是广播后的完整 tile
         BroadcastNddmaWithoutLoop/WithLoop(globalTensor, localTensor, ...);
 
-        // 2. General input: DataCopyPad linear migration
+        // 2. 普通输入：DataCopyPad 线性搬入
         DataCopyPad(inputLocal, inputGm[gmOffset], {1, inputLength * sizeof(T), 0, 0});
 
-        // 3. Calculation
+        // 3. 计算
         Add(outputLocal, input0Local, input1Local, tileLength);
 
-        // 4. Removal
+        // 4. 搬出
         DataCopyPad(outputGm[outOffset], outputLocal, {1, tileLength * sizeof(T), 0, 0});
     }
 }
@@ -176,24 +176,24 @@ __aicore__ inline void Process()
 
 ---
 
-## VI. Comparison with UB Broadcast
+## 六、与 UB Broadcast 的对比
 
-| Dimensions | UB Broadcast (DAV_2201) | NDDMA Broadcast (DAV_3510) |
+| 维度 | UB Broadcast (DAV_2201) | NDDMA Broadcast (DAV_3510) |
 |------|---------------------|----------------------|
-| Time to broadcast. | After moving in, UB inline calls Broadcast API | When moved in, hardware is automatically completed |
-| UB Occupation | Need src + dst space | Only dst space (removation is the result) |
+| 广播时机 | 搬入后，UB 内调用 Broadcast API | 搬入时，硬件自动完成 |
+| UB 占用 | 需要 src + dst 两块空间 | 只需 dst 空间（搬入即是结果） |
 | API | `Broadcast<T, dim, axis>()` | `DataCopy<T, 5, config>()` |
-| Dimension limits | Static interface 1D/2D; Dynamic interface rank 1-9 | NDDMA maximum 5D, exceeding required outer circulation |
-| Performance | Additional Vector Command Costs | Hardware complete, no additional command. |
-| tmpBuffer | Needs (Broadcast API internal) | I don't need it. |
+| 维度限制 | 静态接口 1D/2D；动态接口 rank 1~9 | NDDMA 最大 5 维，超过需外层循环 |
+| 性能 | 额外矢量指令开销 | 硬件完成，无额外指令 |
+| tmpBuffer | 需要（Broadcast API 内部使用） | 不需要 |
 
 ---
 
-## VII. Constraints
+## 七、约束
 
-| Constraints | Annotations |
+| 约束 | 说明 |
 |------|------|
-| **Chip** | DAV_3510 (Asend,950) only, DAV_2201 not supported |
-| **NDDMA Maximum Dimension** | Five. Over the five-dimensional outer circle |
-| **Tride=0 meaning** | InputStrides' axis = 0, hardware repeats unpropulsed address |
-| **Degraded without broadcasting** | InputStrides = outputStrides degraded to DataCopyPad |
+| **芯片** | 仅 DAV_3510（Ascend 950），DAV_2201 不支持 |
+| **NDDMA 最大维度** | 5。超过 5 维需外层循环 |
+| **stride=0 含义** | inputStrides 中 stride=0 的轴，硬件重复读取不推进地址 |
+| **无广播退化** | inputStrides == outputStrides 时退化为 DataCopyPad |

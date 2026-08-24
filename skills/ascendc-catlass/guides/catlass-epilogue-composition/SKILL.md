@@ -1,6 +1,6 @@
 ---
 name: catlass-epilogue-composition
-description: "CATLASS Aftercare: MatmulEpilogue, EVG TreVisitor, UB workspace; Add/Bias/ReLU integration and corresponding Kernel selection. This applies to matmul+Element-by-Element integration operator."
+description: "CATLASS 尾处理：MatmulEpilogue、EVG TreeVisitor、UB workspace；Add/Bias/ReLU 等融合与对应 Kernel 选型。适用于 matmul+逐元素类融合算子。"
 category: guide
 version: "1.0.0"
 metadata:
@@ -10,22 +10,22 @@ metadata:
   operator_patterns: "matmul, fused"
 ---
 
-# CATLASS tailing (Epilogue)
+# CATLASS 尾处理（Epilogue）
 
-`D = matmul (A, B) (+/-) Element-by-Element ` needs to be mounted on Gemm**BlockEpilogue**or**EVG**instead of `F.relu(matmul(...))` in `kernel.py` (which deviates from Catlass optimization and may trigger static inspections).
+reference 若是 `D = matmul(A,B) (+/-) 逐元素运算`，需要在 Gemm 上挂 **BlockEpilogue** 或 **EVG**，而不是在 `kernel.py` 里用 `F.relu(matmul(...))` 代替（会偏离 catlass 优化目标，且可能触发静态检查）。
 
-## Path Contrast
+## 路径对比
 
-| Path | Kernel | Annotations |
+| 路径 | Kernel | 说明 |
 |------|--------|------|
-| No tailings | `BasicMatmul<..., void, Scheduler>` | GEMM pure |
-| Standard Epilogue | `MatmulEpilogue` | MMAD+Element by Element within AIC |
-| EVG + GM | `BasicMatmulTlaVisitor` | MMAD results are integrated through workspace, AIV |
-| EVG + UB | `BasicMatmulTlaUbVisitor` | UB, reduce GM round-trip |
+| 无尾处理 | `BasicMatmul<..., void, Scheduler>` | 纯 GEMM |
+| 标准 Epilogue | `MatmulEpilogue` | AIC 内 MMAD + 逐元素 |
+| EVG + GM | `BasicMatmulTlaVisitor` | MMAD 结果经 workspace，AIV 做树形融合 |
+| EVG + UB | `BasicMatmulTlaUbVisitor` | 累加留 UB，减少 GM 往返 |
 
-## Standard Epilogue (example Add)
+## 标准 Epilogue（以 Add 为例）
 
-Example of additional header file:
+额外头文件示例：
 
 ```cpp
 #include "catlass/gemm/kernel/matmul_epilogue.hpp"
@@ -34,15 +34,15 @@ Example of additional header file:
 #include "catlass/epilogue/tile/tile_elemwise_add.hpp"
 ```
 
-Elements of assembly:
+组装要点：
 
 ```cpp
-using BlockMmad = /* The same BasicMatmul */;
+using BlockMmad = /* 同 BasicMatmul */;
 
-using XType = Gemm::GemmType<half, layout::RowMajor>;  // Consistency with semantics of integration
+using XType = Gemm::GemmType<half, layout::RowMajor>;  // 与融合语义一致
 using DType = CType;
 using EpilogueDispatchPolicy = Epilogue::EpilogueAtlasA2ElemWiseOneSource;
-constexpr uint32_t computeLength = 16384;  // Press tile Adjustments to structure
+constexpr uint32_t computeLength = 16384;  // 按 tile 与架构调整
 using TileElemWise = Epilogue::Tile::TileElemWiseAdd<ArchTag, CType, computeLength>;
 using EpilogueTileCopy = Epilogue::Tile::TileCopy<ArchTag, CType, XType, DType>;
 using BlockEpilogue = Epilogue::Block::BlockEpilogue<
@@ -51,18 +51,18 @@ using BlockEpilogue = Epilogue::Block::BlockEpilogue<
 using MatmulKernel = Gemm::Kernel::MatmulEpilogue<BlockMmad, BlockEpilogue, BlockScheduler>;
 ```
 
-`MatmulEpilogue` parameter semantics contain**bias/ add-up matrix X**and output D; aligned to `03_matmul_add` type example.
+`MatmulEpilogue` 参数语义上包含 **偏置/加数矩阵 X** 与输出 D；与 `03_matmul_add` 一类 example 对齐。
 
-## Customised Element by Element (e. g. Add+ReLU)
+## 自定义逐元素（如 Add+ReLU）
 
-`TileElemWise*`:
+仓内若无现成 `TileElemWise*`：
 
-- **Custom Tile Epilogue**header file with `.asc` to `BlockEpilogue`
-- AR Tasks that do not include the header file in `editable_files` can only be selected in the existing Tile group
+- 可参照 example 增加 **自定义 Tile Epilogue** 头文件，并在 `.asc` 中挂到 `BlockEpilogue`
+- AR 任务若未把该头文件列入 `editable_files`，则只能在已有 Tile 组合内选型
 
-## Summary of EVG (TreeVisitor)
+## EVG（TreeVisitor）概要
 
-Fits to a more complex integration map (multi-input, multi-operator chain):
+适合更复杂的融合图（多输入、多算子链）：
 
 ```cpp
 #include "catlass/gemm/kernel/basic_matmul_tla_visitor.hpp"
@@ -70,30 +70,30 @@ Fits to a more complex integration map (multi-input, multi-operator chain):
 #include "catlass/epilogue/fusion/tree_visitor.hpp"
 ```
 
-A combination of `VisitorAccLoad`, `VisitorAuxLoad`, `VisitorCompute<Op>`, `VisitorAuxStore`, etc. with `TreeVisitor`; `Arguments` requires additional `EVG::Arguments`.
+用 `TreeVisitor` 组合 `VisitorAccLoad`、`VisitorAuxLoad`、`VisitorCompute<Op>`、`VisitorAuxStore` 等；`Arguments` 需额外携带 `EVG::Arguments`。
 
-UB version replaces `EpilogueVisitor<false>` only with `<true>`, Kernel with `BasicMatmulTlaUbVisitor`.
+UB 版本仅将 `EpilogueVisitor<false>` 换为 `<true>`，Kernel 换为 `BasicMatmulTlaUbVisitor`。
 
-## Integration model quick check.
+## 融合模式速查
 
-| Objective | Component orientation |
+| 目标 | 组件方向 |
 |------|----------|
 | D = C + X | `TileElemWiseAdd` / `VisitorCompute<Add>` |
-| GEMM only | `BlockEpilogue = void` |
-| ReLU / GELU / SiLU | EVG `VisitorCompute<Relu>` etc. |
-| GEMM with bias | Some templates add Bias type parameters to `BlockMmad` |
+| 仅 GEMM | `BlockEpilogue = void` |
+| ReLU / GELU / SiLU | EVG `VisitorCompute<Relu>` 等 |
+| 带 bias 的 GEMM | 部分模板在 `BlockMmad` 上增加 Bias 类型参数 |
 
-## Kernel Selection
+## Kernel 选型
 
-| Requirements | Kernel |
+| 需求 | Kernel |
 |------|--------|
-| No integration | `BasicMatmul` |
-| Simple by element, AIC completed | `MatmulEpilogue` |
-| Complex integration, AIV implementation | `BasicMatmulTlaVisitor` |
-| Complex integration + small GM round-trip | `BasicMatmulTlaUbVisitor` |
+| 无融合 | `BasicMatmul` |
+| 简单逐元素、AIC 内完成 | `MatmulEpilogue` |
+| 复杂融合、AIV 执行 | `BasicMatmulTlaVisitor` |
+| 复杂融合 + 少 GM 往返 | `BasicMatmulTlaUbVisitor` |
 
-## AR Alignment with Python
+## AR 与 Python 对齐
 
-- `Model.forward` for `reference.py` defines semantics (e. g. `relu(A@B+X)`)
-- `ModelNew` of `kernel.py` should call `torch.ops.catlass.*` of the same word**
-- Integration logic should be achieved on**catlass**(`.asc`/ customize epilogue header / `catlass_torch.cpp`); do not recalculate the catlas results with a pure torch in Python
+- `reference.py` 的 `Model.forward` 定义了语义（如 `relu(A@B+X)`）
+- `kernel.py` 的 `ModelNew` 应调用 **同一语义** 的 `torch.ops.catlass.*`
+- 融合逻辑应在 **catlass 侧** 实现（`.asc` / 自定义 epilogue 头文件 / `catlass_torch.cpp`）；不要在 Python 里用纯 torch 重算一遍再冒充 catlass 结果

@@ -1,23 +1,23 @@
-# Error pattern in DumpTensor perspective
+# DumpTensor 视角下的错误模式
 
-> The focus of this paper is "What anomalies → should be checked in which direction you see in the dump output." Father SKILL's Symptoms-Cause Quick Checklist is more comprehensive, and only the models related to the diagnostic strength of the DumpTensor plugin are listed here.
+> 本文聚焦「在 dump 输出里看到什么样的异常 → 该往哪个方向查」。父 SKILL 的「症状-原因速查表」更全面，本文只列与 DumpTensor 插桩诊断强相关的模式。
 
-## DumpTensor exclusive diagnostic model
+## DumpTensor 专属诊断模式
 
-| Dump phenomenon                                       | The most probable root cause.                          | Next                                                         |
+| Dump 现象                                       | 最可能的根因                          | 下一步                                                         |
 |-------------------------------------------------|---------------------------------------|----------------------------------------------------------------|
-| Disc = 100 (input) is abnormal.                          | DataCopy Unfinished / Without DeQue    | Move DumpTensor after DeQue; or temporary PipeBarrier authentication        |
-| Desc = 100 Correct, desc = 200 (median) abnormal             | Compute Phase Question                      | Disaggregated stake inside Compute, binary position which API/parameter                |
-| dsc = 200 Correct, desc = 300 (output) all 0 / all old    | Copyout is not valid/ Queue error (VECIN)     | Check output queue type, EnQue/DeQue, DataCopyPad alignment               |
-| Monochrome dump. Correct, multi-nucleus merger chaos.                    | desc does not contain blockIdx, multiple log staggered      | `desc = base + GetBlockIdx() * 1000`                          |
-| Dump display input does not match CPU gold               | host side data preparation / DataCopy profile error  | Compare host buffer, check DataCopy arguments                          |
-| Every N is an anomaly                             | / Alignment                     | Check DataCopy side, do you need DataCopyPad                    |
-| Nump / Inf                             | Except zero, exp spill, not initialized              | Add dump up to the earliest desc in the emergence of NN                   |
-| After changing the code, the dump didn't change at all.                          | Binary unupdated / Kernel Cache hit      | `rm -rf build/ $HOME/atc_data/kernel_cache/` Recoding             |
+| desc=100（输入）就异常                          | DataCopy 未完成 / 未 DeQue 就 dump    | 把 DumpTensor 移到 DeQue 之后；或临时 PipeBarrier 验证        |
+| desc=100 正确，desc=200（中间）异常             | Compute 阶段问题                      | 在 Compute 内细分插桩，二分定位是哪个 API/参数                |
+| desc=200 正确，desc=300（输出）全 0 / 全旧值    | CopyOut 没生效 / 队列写错 (VECIN)     | 检查输出队列类型、EnQue/DeQue、DataCopyPad 对齐               |
+| 单核 dump 正确，多核合并后乱                    | desc 未含 blockIdx，多核日志交错      | `desc = base + GetBlockIdx() * 1000`                          |
+| Dump 显示输入与 CPU golden 不一致               | host 侧数据准备 / DataCopy stride 错  | 比对 host buffer，检查 DataCopy 参数                          |
+| 每隔 N 个值一处异常                             | stride / 对齐问题                     | 检查 DataCopy stride、是否需要 DataCopyPad                    |
+| dump 出现 NaN / Inf                             | 除零、exp 溢出、未初始化              | 在出现 NaN 的最早 desc 上游加 dump 缩小范围                   |
+| 改代码后 dump 完全没变                          | 二进制未更新 / kernel cache 命中      | `rm -rf build/ $HOME/atc_data/kernel_cache/` 重编             |
 
-## General error mode quick check
+## 通用错误模式速查
 
-Use this when the dump is not sufficient to locate and needs to return to the common idea:
+仅当 dump 不足以定位、需要回到通用思路时使用：
 
 | Pattern                    | Root Cause                    | Fix                                            |
 |----------------------------|-------------------------------|------------------------------------------------|
@@ -30,11 +30,11 @@ Use this when the dump is not sufficient to locate and needs to return to the co
 | Output all zeros           | Missing compute/wrong queue   | Verify Compute called, check queue             |
 | Output matches input       | Computation not applied       | Verify operation executed                      |
 
-A more complete accuracy trap can be found in the [common-traps.md] (../common-traps.md) of the parent SKILL.
+更完整的精度陷阱见父 SKILL 的 [common-traps.md](../common-traps.md)。
 
-## Diagnosis Workstream
+## 诊断工作流
 
-1. From desc minimum value (input side), find**the first phase inconsistent with CPU gold
-2. Match the root causes against the DumpTensor exclusive diagnostic model table above
-3. Add an additional layer upstream at this stage. Dump, verify the assumption.
-4. After repair, the cache rerun must be compiled to confirm the dump value change
+1. 从 desc 最小值（输入侧）开始看，找到**第一个**与 CPU golden 不一致的阶段
+2. 对照上方「DumpTensor 专属诊断模式」表匹配根因
+3. 在该阶段上游再插一层 dump，验证假设
+4. 修复后必须清编译缓存重跑，确认 dump 数值变化

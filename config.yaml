@@ -1,25 +1,25 @@
-# framework reference tables and adjustable parameters. settings.py loads each process only once
-# (scripts /utils/settings.py to provide a typology for each key.
+# 框架参考表和可调参数。settings.py 每个进程只加载一次
+# （scripts/utils/settings.py 为每个 key 提供一个类型化 accessor）。
 #
-# This document contains two sets of elements:
-#   Reference Table for original consumption (hallucinated_scripts, remote_worker.hosts),
-#      Structures can be relatively free.
-#   2. Arguable parameters; no more background defaults are written in the code. Section/key is missing,
-#      Settings._get reports errors directly. See below for more details under " Alignable Parameters".
+# 本文件包含两类内容：
+#   1. 原样消费的参考表（hallucinated_scripts、remote_worker.hosts），
+#      结构可以相对自由。
+#   2. 可调参数；代码里不再写兜底默认值。缺少 section/key 时，
+#      settings._get 会直接报错。详见下方“可调参数”部分。
 #
-# If you need to change the value directly from here, you need to change it from here; settings.py is read in @lru_cache.
-# Long life cycle processes do not automatically detect changes and need to be restarted.
+# 需要调参时直接改这里的值；settings.py 使用 @lru_cache 读取，
+# 长生命周期进程不会自动感知修改，需要重启。
 
 
 # ---------------------------------------------------------------------------
-# A list of hallucinating script aliases. Looks/guard_bash will look at this table before actually implementing Bash:
-# If Claude tries `python scripts/engine/<key>.py ...`, Hook will turn rejection down
-# The message is reworded to "Do you want to run this?" for <value>.py, not a hint.
-# General newspaper "unknown script".
+# 幻觉脚本别名表。hooks/guard_bash 在真正执行 Bash 前会先查这张表：
+# 如果 Claude 尝试 `python scripts/engine/<key>.py ...`，hook 会把拒绝
+# 信息改写为指向 <value>.py 的“你是不是想运行这个？”提示，而不是
+# 泛泛地报“unknown script”。
 #
-# When a new script name, "Looks reasonable but actually wrong", appears in the log, an additional item is added here.
-# Key is the wrong name that Claude made up; value is the real entry script
-# (must exist under scripts/engine/).
+# 当日志里出现新的“看起来合理但实际错误”的脚本名时，就在这里加一项。
+# key 是 Claude 编造出的错误名字；value 是真实入口脚本
+# （必须存在于 scripts/engine/ 下）。
 # ---------------------------------------------------------------------------
 hallucinated_scripts:
   eval.py: baseline.py
@@ -32,34 +32,34 @@ hallucinated_scripts:
 
 
 # ---------------------------------------------------------------------------
-# Remote worker SSH schedule;for:
+# 远端 worker SSH 调度；用于：
 #   `op-autoresearch worker --remote-host <alias> --start/stop/status ...`
 #
-# Each arias under `hosts:` describes an op-autoresearch that allows SSH to go in and start worker
-# Daemon's machine. Every time --start / --status / --stop --remote-host is called, it's not the same thing.
-# This table is read by op-autoresearch (default./config.yaml; available)
-# --remote-config <path> overwrite.
+# `hosts:` 下的每个 alias 描述一台 op-autoresearch 可以 SSH 进去并启动 worker
+# daemon 的机器。每次调用 --start / --status / --stop --remote-host 时，
+# op-autoresearch 都会读取这张表（默认 ./config.yaml；可用
+# --remote-config <path> 覆盖）。
 #
-# The fields state:
-#   Repo_path (must be filled) absolute path of remote repository checkout. Op-autoresearch will move the remote
-#                         PYTHONPATH fixed to `<repo_path>/src`,
-#                         Make sure Damon runs the current checkout source, not
-#                         The pip install version that remains in the site-packages.
-#   env_script (must) start a shell script from before daemon. launcher will start first
-#                         Enables conda shell hook, so SSH non-interactive shell
-#                         You can also direct `conda activate ...`. The script must be completed
-#                         Ensure that `python -c "import torch_npu, triton"` is available;
-#                         The same python selected by PATH will run a remote op-autoresearch.
-#   ssh_alias (optional) to host for ssh. Default equals the current key name; when
-#                         ~ The host lias in the /.ssh/config and the name you want to use here
-#                         Overwrite when inconsistent.
+# 字段说明：
+#   repo_path   （必填）远端本仓库 checkout 的绝对路径。op-autoresearch 会把远端
+#                         PYTHONPATH 固定到 `<repo_path>/src`，
+#                         确保 daemon 跑的是当前 checkout 的源码，而不是
+#                         site-packages 里残留的 pip install 版本。
+#   env_script  （必填）启动 daemon 前 source 的 shell 脚本。launcher 会先
+#                         启用 conda shell hook，所以 SSH 非交互 shell 里
+#                         也可以直接 `conda activate ...`。该脚本结束后必须
+#                         保证 `python -c "import torch_npu, triton"` 可用；
+#                         同一个由 PATH 选中的 python 会运行远端 op-autoresearch。
+#   ssh_alias   （可选）传给 ssh 的主机名。默认等于当前 key 名；当
+#                         ~/.ssh/config 里的 host alias 和这里想用的名字
+#                         不一致时再覆盖。
 #
-# Tunnels are automatically managed by op-autoresearch: --start opens
-# `ssh -L <port>:127.0.0.1:<port> <alias> -f -N -T`, get forkk out.
-# ssh pid writes ~/.op_autoresearch/tunnels/<port>.pid. Following --status / --stop /
-# `--worker-url 127.0.0.1:<port>` will have transparent access to the remote damon via the tunnel.
+# 隧道由 op-autoresearch 自动管理：--start 时会打开
+# `ssh -L <port>:127.0.0.1:<port> <alias> -f -N -T`，并把 fork 出来的
+# ssh pid 写到 ~/.op_autoresearch/tunnels/<port>.pid。后续 --status / --stop /
+# `--worker-url 127.0.0.1:<port>` 都会透明地通过该隧道访问远端 daemon。
 # ---------------------------------------------------------------------------
-  # Example configuration;filling by actual deployment path and environmental script:
+  # 示例配置；按实际部署路径和环境脚本填写：
   #   my-npu:
   #     repo_path: /abs/path/to/op-autoresearch
   #     env_script: /abs/path/env.sh
@@ -73,77 +73,77 @@ remote_worker:
 
 
 # ===========================================================================
-# Alignable parameters.
+# 可调参数。
 #
-# All contents below are based on config.yaml as a single factual source. settings.py is exposed to each key
-# A accessor (settings. <name>()) without the code default; section missing
-# KeyError. Please change only the value here; not in
-# Add a fallback to the settings.py or downstream caller, otherwise it would undermine the single source constraint.
-# If you want to delete a parameter, you need to delete both accessor in settings.py and in this document
-# Key and caller with an audit of `git grep <accessor>`.
+# 下方所有内容均以 config.yaml 为单一事实源。settings.py 为每个 key 暴露
+# 一个 accessor（settings.<name>()），且不提供代码内默认值；缺少 section
+# 或 key 会在第一次读取时报 KeyError。调参请只改这里的值；不要在
+# settings.py 或下游 caller 里新增 fallback，否则会破坏单一事实源约束。
+# 如果要删除某个参数，需要同时删除 settings.py 里的 accessor、本文件里的
+# key，并用 `git grep <accessor>` 审计调用方。
 # ===========================================================================
 
 
 # ---------------------------------------------------------------------------
-# task default; when scafed CLI flag is not imported and task.yaml does not have a fixed corresponding field
-# Use. runtime priority:
-#       task.yaml field > This defaults block > (uncoded default)
+# 任务默认值；当 scaffold CLI flag 未传入，且 task.yaml 没有固定对应字段时
+# 使用。运行时优先级：
+#       task.yaml 字段   >  本 defaults block  >  （无代码内默认值）
 #
-# The parsed value is written to task.yaml when the scaffold job is created. Therefore, even if later transferred here
-# defaults, created task still retains the value from then scaffold.
+# scaffold 创建任务时会把解析后的值写入 task.yaml。因此，即使之后调这里的
+# defaults，已经创建好的任务仍保留当时 scaffold 出来的值。
 #
-# The fields state:
-#   max_rounds(int) Optimized turn budget for new assignments: PLAN → EDIT →
-#                                       eval loop. state machine meeting after reaching max_rounds
-#                                       Automatically transfer to FINISH and write report.md.
-#                                       scaffold's --max-rounds overwrites by task.
-#   Eval_timeout (int seconds) wall clock budget for a single verify/profile subprocess.
-#                                       eval_runner Zooms on num_cases; 50
-#                                       Shape's op will get about 50 times the budget.
-#                                       SIGKIL/124 High-time; trying to make hang fail faster
-#                                       Turn it down.
-#   When the task-level configuration is not provided by the reference_data_timeout (int seconds), the task-level configuration is not available.
-#                                       General_Reference budget.
-#   smoke_test_timeout (int seconds)quick_check optional smoke test budget
-#                                       (on a task basis, not on a sape basis). Only
-#                                       task.yaml triggers when setting smoke_test_script.
-#                                       It should be smaller at each Edit key path.
-#   Code_checker_enabled (bool)Triton impl AST regression check is default enabled.
-#                                       This check was called by quick_check.py
-#                                       scripts/utils/validate_triton_impl.py,
-#                                       @triton.jitcontrac.
-#                                       Available in task.yaml
-#                                       `code_checker: {enabled: false}` or
-#                                       scaffold's --no-code-checker closed by task.
-#   Metric.primary(str) keep_or_discard read the indicator name. Currently only
-#                                       `latency_us` will be explained; other values will enter
-#                                       "unknown metric" branch of report.py.
-#   Metric.lower_is_better (bool) true for smaller (latency); false for
-#                                       The bigger the better.
-#   (a) Metric.improvement_threshold (float)KEEP threshold. The unit is a percentage, not decimal;
-#                                       with is_improvement
+# 字段说明：
+#   max_rounds            (int)         新任务的优化轮次预算：PLAN → EDIT →
+#                                       eval 循环。达到 max_rounds 后，状态机会
+#                                       自动转入 FINISH 并写 report.md。可通过
+#                                       scaffold 的 --max-rounds 按任务覆盖。
+#   eval_timeout          (int seconds) 单个 verify/profile 子进程的墙钟预算。
+#                                       eval_runner 会按 num_cases 放大；50 个
+#                                       shape 的 op 会得到约 50 倍预算。
+#                                       SIGKILL/124 时调大；想让 hang 更快失败
+#                                       时调小。
+#   reference_data_timeout (int seconds) 未提供任务级配置时，
+#                                       generate_reference 的预算。
+#   smoke_test_timeout    (int seconds) quick_check 可选 smoke test 的预算
+#                                       （按任务计，不按 shape 计）。仅当
+#                                       task.yaml 设置 smoke_test_script 时触发。
+#                                       它在每次 EDIT 的关键路径上，应保持较小。
+#   code_checker_enabled  (bool)        Triton impl AST 回归检查是否默认启用。
+#                                       该检查由 quick_check.py 调用
+#                                       scripts/utils/validate_triton_impl.py，
+#                                       用于抓伪造 @triton.jit contract 的 kernel。
+#                                       可在 task.yaml 中用
+#                                       `code_checker: {enabled: false}` 或
+#                                       scaffold 的 --no-code-checker 按任务关闭。
+#   metric.primary        (str)         keep_or_discard 读取的指标名。目前只有
+#                                       `latency_us` 会被解释；其他值会进入
+#                                       report.py 的 "unknown metric" 分支。
+#   metric.lower_is_better (bool)       true 表示越小越好（延迟）；false 表示
+#                                       越大越好（吞吐）。
+#   metric.improvement_threshold (float) KEEP 门槛。单位是百分比，不是小数；
+#                                       与 is_improvement 中的
 #                                       `relative_pct = (best-cand)/|best| * 100`
-#                                       Alignment. Example:
-#                                         0.0 → Keep
-#                                         2.0 → needs to be raised by more than 2 %
-#                                         5.0 → needs to increase by more than 5 %
-#                                       Set here 0.05 for "> 0.05 %", almost anything.
-#                                       It's all going through.
-#   Consective_fail_threshold(int) continues FAIL several times from PLAN/EDIT
-#                                       DIAGNOSE. Formerly in phase_policy.py
-#                                       Hard-coded `3`.
-#   Diagnose_max_attempts (int)
-#                                       Maximum number of multiple tests; after that, enter the path of the artificial bottoming product.
-#                                       Previously coded in state_store.py as
-#                                       `DIAGNOSE_ATTEMPTS_CAP = 5`.
-#   Back / framework / dsl(str) workspace target group, fixed by repo.
-#                                       I'll send them to you.
-#                                       op_autoresearch.op.verifier.KernelVerifier.
-#                                       where `dsl` uses snake-form, e. g.
-#                                       `triton_ascend`. This configuration does not belong to TaskConfig;
-#                                       This is single repo single target design, consistent with skill_dsl.
-#                                       Default value for eval_kernel.py aggparse for CA
-#                                       is the upstream equivalent.
+#                                       对齐。示例：
+#                                         0.0  → 任意严格提升都会 keep
+#                                         2.0  → 需要提升超过 2 %
+#                                         5.0  → 需要提升超过 5 %
+#                                       这里设 0.05 表示“>0.05 %”，几乎任何
+#                                       正向提升都会通过。
+#   consecutive_fail_threshold (int)    连续 FAIL 多少次后从 PLAN/EDIT 转入
+#                                       DIAGNOSE。以前在 phase_policy.py 里
+#                                       硬编码为 `3`。
+#   diagnose_max_attempts (int)         同一 plan_version 下 DIAGNOSE subagent
+#                                       最多重试次数；超过后进入人工兜底产物路径。
+#                                       以前在 state_store.py 里硬编码为
+#                                       `DIAGNOSE_ATTEMPTS_CAP = 5`。
+#   backend / framework / dsl (str)     workspace 目标三元组，按 repo 固定。
+#                                       utils.eval_bridge 会把它们传给
+#                                       op_autoresearch.op.verifier.KernelVerifier。
+#                                       其中 `dsl` 使用 snake-form，如
+#                                       `triton_ascend`。该配置不属于 TaskConfig；
+#                                       这是单 repo 单目标设计，和 skill_dsl 一致。
+#                                       CA 的 eval_kernel.py argparse 默认值
+#                                       是上游等价物。
 # ---------------------------------------------------------------------------
 defaults:
   max_rounds: 30
@@ -166,18 +166,18 @@ defaults:
 
 
 # ---------------------------------------------------------------------------
-# eval time measurement configuration (utils/eval_runner.local_eval{,_async}).
-# Read where the time actually occurs: the remote eval is the config.yaml on the side of WOrkER.
-# Not the config.yaml on the edge of the orchestrator. You need to keep both sides synchronized; otherwise you have to accept
-# Local-baseline and remote round's warmup/repeats may be different.
+# eval 计时测量配置（utils/eval_runner.local_eval{,_async}）。
+# 在计时实际发生的地方读取：远端 eval 时生效的是 WORKER 侧的 config.yaml，
+# 不是 orchestrator 侧的 config.yaml。需要保持两边同步；否则就要接受
+# local-baseline 和 remote round 的 warmup/repeats 可能不同。
 #
-# The fields state:
-#   Warmup (int) measures the number of preheats that do not count before starting. The greater the value, JIT/cache
-#                  The warmer the warmer, the longer the clocks of each wall. For most of the ops, the more the warmer the heat is, the longer the clocks go.
-#                  Ten times is enough to stabilize the triton-ascend compilation cache.
-#   repeats (int) is the number of official time series, the average of which is the latency_us of each share.
-#                  The larger the value, the lower the difference, the longer each wall clock. On 910B, it was observed
-#                  100 is the appropriate point between the difference and the cost.
+# 字段说明：
+#   warmup   (int) 测量开始前不计时的预热迭代次数。值越大，JIT/cache
+#                  预热越充分，但每轮墙钟时间也越长。对大多数 op 而言，
+#                  10 次足以让 triton-ascend 编译缓存稳定。
+#   repeats  (int) 正式计时迭代次数，其均值作为每个 shape 的 latency_us。
+#                  值越大方差越低，但每轮墙钟时间越长。在 910B 上观察到
+#                  100 是方差和成本之间比较合适的点。
 # ---------------------------------------------------------------------------
 eval:
   warmup: 5
@@ -185,43 +185,43 @@ eval:
 
 
 # ---------------------------------------------------------------------------
-# Remote worker daemon configuration. Cables share the same source:
-#   - op-autoresearch (on the side of the developer): Tunnel Port, Ready Wait, Status Search
-#   -op_autoresearch.worker.server: bind port (avoiding drift on both sides)
+# 远端 worker daemon 配置。线缆两侧共用同一个事实源：
+#   - op-autoresearch（开发机侧）：隧道端口、ready 等待、status 探活
+#   - op_autoresearch.worker.server：bind 端口（避免两侧漂移）
 #
-# Ready_* / status_* timeout overp-autoresearch by remote daemon via `ssh -L`
-# scene; apart from daemon's own startup time, there will be an unstable network going to and from latency. If the network is slow
-# "worker not ready" miscalculation is raised; if you want the card to die daemon to fail more quickly, you can't be sure of it.
-# Just turn it down.
+# ready_* / status_* timeout 覆盖 op-autoresearch 通过 `ssh -L` 等远端 daemon 的
+# 场景；除了 daemon 自身启动时间，还会叠加不稳定的网络往返延迟。如果慢网络
+# 上出现 “worker not ready” 的误判，就调大；如果希望卡死 daemon 更快失败，
+# 就调小。
 #
-# The fields state:
-#   port(int)worker bound TCP port ( 127.0.0.1; to developer only)
-#                               . Also op-autoresearch --start/
-#                               --status / --stop default --port. After this change,
-#                               Next `op-autoresearch worker --start` will automatically use the new port.
-#   Ready_timeout (float) waits for a response from the op-autoresearch after starting the daemon
-#                               /status 's seconds. Every ready_poll_interval 's seconds rotates.
-#                               Cann effect + worker starts at warm size about 5s,
-#                               Cold Cache is about 15s; 20s leaves a surplus.
-#   Ready_poll_interval (float) starts the second of two seconds in the waiting cycle.
-#                               The smaller you find, the faster you're ready, the more SSH noise you're waiting for.
-#   Ready_probe_timeout (float) timeout in single /status poll cycle.
-#                               Keep it short, avoid the tunnel jamming at once, and eat the whole thing.
-#                               Ready_timeout. Different from the next status_timeout.
-#   Number of seconds for status_timeout (float) stand alone /status capable of sexual detection
-#                               (`op-autoresearch worker --status` uses this path;
-#                               Eval_client also used it to quickly fail before sending multipart/run.
-#                               High latency links can be scaled up.
-#   free_ttl (float) idle distance
-#                               recaper recovery.
-#   Please_read_interval (float) daemon scans the number of seconds between expired lines.
-#   acquire_timeout (float) server waiting for free time;
-#                               Overtime /acquire_device returns 503.
-#   http_read_margin (float)clit read-timeout relative service work/wait budget
-#                               Additional excess left.
-#   /release_device clint read-timeout.
-#   Doc_timeout (float)/docs/<name> clit read-timeout.
-#   Health_timeout (float) daemon side/health event-loop maximum.
+# 字段说明：
+#   port                (int)   worker 绑定的 TCP 端口（仅 127.0.0.1；到开发机
+#                               的路由走 ssh -L）。也是 op-autoresearch --start /
+#                               --status / --stop 的默认 --port。改这里后，
+#                               下一次 `op-autoresearch worker --start` 会自动使用新端口。
+#   ready_timeout       (float) 启动远端 daemon 后，op-autoresearch 最多等待它响应
+#                               /status 的秒数。每 ready_poll_interval 秒轮询一次。
+#                               CANN import + worker 启动在 warm cache 下约 5s，
+#                               cold cache 下约 15s；20s 留有余量。
+#   ready_poll_interval (float) 启动等待循环中两次 ready poll 的间隔秒数。
+#                               越小发现 ready 越快，但等待期间 SSH 噪声越多。
+#   ready_probe_timeout (float) ready 循环中单次 /status poll 的超时时间。
+#                               保持较短，避免隧道卡住时一次 poll 吃掉整个
+#                               ready_timeout。不同于下面的 status_timeout。
+#   status_timeout      (float) 单独 /status 可达性探活的秒数
+#                               （`op-autoresearch worker --status` 使用该路径；
+#                               eval_client 在发送 multipart /run 前也用它快速失败）。
+#                               高延迟链路上可调大。
+#   lease_ttl           (float) 空闲远端 device lease 多久后会被 worker daemon
+#                               reaper 回收。
+#   lease_reap_interval (float) daemon 扫描过期 lease 的间隔秒数。
+#   acquire_timeout     (float) 服务端等待空闲 device 的最长时间；
+#                               超时后 /acquire_device 返回 503。
+#   http_read_margin    (float) client read-timeout 相对服务端 work/wait 预算
+#                               额外多留的余量。
+#   release_timeout     (float) /release_device 的 client read-timeout。
+#   doc_timeout         (float) /docs/<name> 的 client read-timeout。
+#   health_timeout      (float) daemon 侧 /health event-loop 探活上限。
 # ---------------------------------------------------------------------------
 worker:
   port: 9111
@@ -239,42 +239,42 @@ worker:
 
 
 # ---------------------------------------------------------------------------
-# Batch driver parameters (scripts/batch/*). Here are two unrelated types of timeout:
-# Tier 1/2 pre-screening for pre-runs (batch/ verify.py usage), and for each op
-# driver wall clock upper limit and cooling time between op (used when batt/ run.py cycle op).
+# 批跑 driver 参数（scripts/batch/*）。这里放了两类彼此无关的 timeout：
+# 长批跑前的 Tier 1/2 预检 verify（batch/verify.py 使用），以及每个 op 的
+# driver 墙钟上限和 op 间冷却时间（batch/run.py 循环 op 时使用）。
 #
-# The fields state:
-#   Tier1_timeout (int seconds) per op Tier 1 budget:import +
-#                                   Tiny-shape smoke. NPU is not needed, primary grammatical error
-#                                   AND LOST EXPORT.
-#   Tier2_timeout (int seconds) for each op Tier 2 budget: use real
-#                                   Kernel does complete multi-shape correctness verification.
-#                                   Tranton-ascend under the cold JIT, about 50 bucks.
-#                                   It's very special for constexpr, Kernel.
-#                                   (maxpool3d, variation, etc.) It may take a few minutes.
-#   Run_timeout_min (int minutes)watch/run.py per hardwall clock limit for each op
-#                                   (note minutes, not seconds). Each op runs at most
-#                                   so long; run.py will SIGTERM
-#                                   claude --print and mark the op as `error`.
-#                                   Use `batch/run.py --timeout-min N` to overwrite one time.
-#                                   Suggested calibration of about 3 times the median number of observations
-#                                   (cut JIT + 30 wheel + report).
-#   The clockdown_sec (int seconds) catch/ run.py between two ops.
-#                                   Let worker complete cleanup (release, GC HBM)
-#                                   , and then let the next op acquire. Available
-#                                   `--cooldown-sec N` overwrite. 0 allows, but is easier to trigger
-#                                   Occasional device-acquire competition.
-#   Transient_retries(int) is the same op inside when session crashes
-#                                   (claude.exe rc != 0)butframeworkProgress is still complete.
-#                                   (progress_initialized=True), watch/run.py
-#                                   Restart at most.
+# 字段说明：
+#   tier1_timeout    (int seconds)  每个 op 的 Tier 1 verify 预算：import +
+#                                   tiny-shape smoke。不需要 NPU，主要抓语法错误
+#                                   和缺失 export。
+#   tier2_timeout    (int seconds)  每个 op 的 Tier 2 verify 预算：使用真实
+#                                   kernel 做完整 multi-shape 正确性验证。
+#                                   triton-ascend 在 cold JIT、约 50 cases 下，
+#                                   对 constexpr 特化很多的 kernel
+#                                   （maxpool3d、attention 变体等）可能需要数分钟。
+#   run_timeout_min  (int minutes)  batch/run.py 中每个 op 的硬墙钟上限
+#                                   （注意单位是分钟，不是秒）。每个 op 最多运行
+#                                   这么久；超时后 run.py 会 SIGTERM
+#                                   claude --print，并把该 op 标为 `error`。
+#                                   可用 `batch/run.py --timeout-min N` 单次覆盖。
+#                                   建议按观测中位数约 3 倍校准
+#                                   （cold JIT + 30 轮 + report）。
+#   cooldown_sec     (int seconds)  batch/run.py 中两个 op 之间的 sleep 时间。
+#                                   让 worker 完成 cleanup（释放 device、GC HBM）
+#                                   后再让下一个 op acquire。可用
+#                                   `--cooldown-sec N` 覆盖。0 允许，但更容易触发
+#                                   偶发 device-acquire 竞态。
+#   transient_retries (int)         同一个 op 内，当 session 中途崩溃
+#                                   （claude.exe rc != 0）但框架进度仍完整
+#                                   （progress_initialized=True）时，batch/run.py
+#                                   最多重新拉起
 #                                   `claude --print /autoresearch --resume
-#                                   The number of times <task_dir> --force` is used to block.
-#                                   ECONNRESET / stread adle timeout / temporary API
-#                                   Errors such as not going stop_save exiting the CLI case.
-#                                   If you fail, you won't try again. You'll be exposed:
-#                                   rc = 0 + case! = FINISH means LLM ends early
-#                                   rc! = 0 + no project means baseline has not yet been submitted.
+#                                   <task_dir> --force` 的次数。用于兜住
+#                                   ECONNRESET / stream idle timeout / 临时 API
+#                                   错误这类没有走 stop_save 就退出 CLI 的情况。
+#                                   真失败不会重试，会直接暴露：
+#                                   rc=0 + phase != FINISH 表示 LLM 提前结束 turn；
+#                                   rc != 0 + 无 progress 表示 baseline 尚未提交。
 # ---------------------------------------------------------------------------
 batch:
   tier1_timeout: 30
@@ -285,16 +285,16 @@ batch:
 
 
 # ---------------------------------------------------------------------------
-# Batch reporter (summarize.py / monitor.py) and shared in settings.py
-# The value is speedup fraction:
-# v = baseline_us / candidate_us; v = 1.0 means candidate is equal to ref.
+# 批跑 reporter（summarize.py / monitor.py）以及 settings.py 中共享的
+# classify_speedup() 使用的加速比分桶。数值是 speedup factor：
+# v = baseline_us / candidate_us；v=1.0 表示 candidate 与 ref 持平。
 #
-# Three barrels: v > improved_above → "improved"; v < review_below → "regress";
-# → "on-par" in the middle. The wider the area, the more open the noise; the narrower the zone, the smaller the changes will be marked.
+# 三个桶：v > improved_above → "improved"；v < regress_below → "regress"；
+# 中间区间 → "on-par"。区间越宽，对噪声越宽容；区间越窄，小幅变化也会被标记。
 #
-# The fields state:
-#   Speedup_improved_above (float) upper barrel threshold.v Above the value Times "improved".
-#   Speedup_regress_below (float) threshold below the current value "regress".
+# 字段说明：
+#   speedup_improved_above  (float)  上桶阈值。v 高于该值时报 "improved"。
+#   speedup_regress_below   (float)  下桶阈值。v 低于该值时报 "regress"。
 # ---------------------------------------------------------------------------
 metrics:
   speedup_improved_above: 1.05
@@ -302,16 +302,16 @@ metrics:
 
 
 # ---------------------------------------------------------------------------
-# Resume Cardiac Freshness Window (scripts/resume.py).
+# resume 心跳新鲜度窗口（scripts/resume.py）。
 #
-# /autoresearch is updated every time you call
-# `last_touched` field of <task_dir> /.ar_state/state.json. If a task
-# Last_touched updated than this window considers it still held by another live session;
-# Resume will reject attach, avoid competition with the session that is being written. If some slow EDIT turns
-# It's probably more than this time, making it bigger; if you want to restore to the kill session more quickly, turn it down.
+# /autoresearch 每次 tool call 都会更新
+# <task_dir>/.ar_state/state.json 的 `last_touched` 字段。如果某任务的
+# last_touched 比这个窗口更新，就认为它仍被另一个 live session 持有；
+# resume 会拒绝 attach，避免和正在写入的 session 竞争。若某些慢 EDIT 轮次
+# 可能超过这个时间，调大；若希望更快恢复被 kill 的 session，调小。
 #
-# The fields state:
-#   Heartbeat_fresh_seconds (int seconds) above.
+# 字段说明：
+#   heartbeat_fresh_seconds  (int seconds)  上述新鲜度窗口。
 # ---------------------------------------------------------------------------
 resume:
   heartbeat_fresh_seconds: 180

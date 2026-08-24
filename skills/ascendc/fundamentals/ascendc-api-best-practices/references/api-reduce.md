@@ -1,35 +1,35 @@
-# Reduce API User Guide
+# Reduce API 使用指南
 
-Line-by-line Reduce selection and use of the API selection for cross-reduce.
-
----
-
-## Contents
-
-1. [Interface Selection](# Interface Selection)
-2. [Level 2 interface (line-by-line processing)](#level-2 -- interface-by-line processing)
-3. [Pattern interface (cross-line batch)](#pattern -- interface cross-line batch)
-4. [Annual errors](#Annual errors)
-5. [best practice](#best practice)
+逐行 Reduce 与跨行 Reduce 的 API 选择与使用规范。
 
 ---
 
-## Interface Selection
+## 目录
 
-| scene | Interface | Parameters | Alignment Requirements | Typical uses |
+1. [接口选择](#接口选择)
+2. [Level 2 接口（逐行处理）](#level-2-接口逐行处理)
+3. [Pattern 接口（跨行批量）](#pattern-接口跨行批量)
+4. [常见错误](#常见错误)
+5. [最佳实践](#最佳实践)
+
+---
+
+## 接口选择
+
+| 场景 | 接口 | 参数 | 对齐要求 | 典型用途 |
 |-----|------|------|----------|---------|
-| Separately, line by line | Level 2 | `(dst, src, tmp, count)` | **Not available** | Softmax, LayerNorm |
-| Bulk processing across rows | Pattern | **Two forms**(see below) | 32 Bytes | ReduceSum axis=-1 |
+| 逐行独立处理 | Level 2 | `(dst, src, tmp, count)` | **无** | Softmax, LayerNorm |
+| 跨行批量处理 | Pattern | **两种形式**（见下文） | 32 字节 | ReduceSum axis=-1 |
 
-**The selection principle**
-- Independent line-by-line calculation of →**Level 2 interface**(simplistic, no matching requirement)
-- Need to cross line Reduce →**Pattern interface**(higher performance, recommended form 1)
+**选择原则**：
+- 逐行独立计算 → **Level 2 接口**（更简单，无对齐要求）
+- 需要跨行 Reduce → **Pattern 接口**（性能更高，推荐形式1）
 
 ---
 
-## Level 2 interface (line-by-line)
+## Level 2 接口（逐行处理）
 
-### API Signature
+### API 签名
 
 ```cpp
 AscendC::ReduceMax<T>(dst, src, tmpBuffer, count, calIndex);
@@ -37,55 +37,55 @@ AscendC::ReduceSum<T, isSetMask=true>(dst, src, tmpBuffer, count);
 AscendC::ReduceMin<T>(dst, src, tmpBuffer, count, calIndex);
 ```
 
-**Parameters**:
-- `dst`: Output LocalTensor (1 element)
-- `src`: Enter LocalTensor (count elements)
-- `tmpBuffer`: Temporary Buffer (**types must be the same as T**)
-- `count`: Number of elements (int32_t)
-- `calIndex`: Whether or not to calculate the index (bool, default false)
+**参数**：
+- `dst`：输出 LocalTensor（1 个元素）
+- `src`：输入 LocalTensor（count 个元素）
+- `tmpBuffer`：临时 buffer（**类型必须与 T 相同**）
+- `count`：元素个数（int32_t）
+- `calIndex`：是否计算索引（bool，默认 false）
 
-### tmpBuffer type requirements
+### tmpBuffer 类型要求
 
-**tmpBuffer type must be the same as dst/src**:
+**tmpBuffer 类型必须与 dst/src 相同**：
 
 ```cpp
-// ❌ error: tmpBuffer type not matched
+// ❌ 错误：tmpBuffer 类型不匹配
 AscendC::LocalTensor<uint8_t> tmpBuffer = tmpBuf.Get<uint8_t>();
-AscendC::ReduceMax(rowTmp, src, tmpBuffer, count);  // Compiler error!
+AscendC::ReduceMax(rowTmp, src, tmpBuffer, count);  // 编译错误！
 
-// ✅ Correct: tmpBuffer type must be the same as T
+// ✅ 正确：tmpBuffer 类型必须与 T 相同
 AscendC::LocalTensor<T> reduceTmp = reduceBuf.Get<T>();
 AscendC::ReduceMax(rowTmp, src, reduceTmp, count);
 ```
 
-### Full example: Softmax-by-line
+### 完整示例：Softmax 逐行处理
 
 ```cpp
 __aicore__ inline void ProcessRow(
-    AscendC::LocalTensor<T>& xLocal,
-    AscendC::LocalTensor<T>& yLocal,
+    AscendC::LocalTensor<T>& xLocal, 
+    AscendC::LocalTensor<T>& yLocal, 
     uint32_t rowIdx)
 {
-    uint32_t rowOffset = rowIdx * rLengthAlign;  // ⚠️ Use it. rLengthAlign
-
+    uint32_t rowOffset = rowIdx * rLengthAlign;  // ⚠️ 用 rLengthAlign
+    
     AscendC::LocalTensor<T> rowTmp = rowBuf.Get<T>();
     AscendC::LocalTensor<T> reduceTmp = reduceBuf.Get<T>();
-
-    // ReduceMax (count = rLength, number of valid data)
-    AscendC::ReduceMax<T>(rowTmp, xLocal[rowOffset], reduceTmp,
+    
+    // 1. ReduceMax（count = rLength，有效数据个数）
+    AscendC::ReduceMax<T>(rowTmp, xLocal[rowOffset], reduceTmp, 
         static_cast<int32_t>(rLength), false);
-
+    
     T maxVal = rowTmp.GetValue(0);
     AscendC::Duplicate<T>(rowTmp, maxVal, rLength);
     AscendC::Sub<T>(xLocal[rowOffset], xLocal[rowOffset], rowTmp, rLength);
-
+    
     // 2. Exp
     AscendC::Exp<T>(xLocal[rowOffset], xLocal[rowOffset], rLength);
-
+    
     // 3. ReduceSum
-    AscendC::ReduceSum<T, true>(rowTmp, xLocal[rowOffset], reduceTmp,
+    AscendC::ReduceSum<T, true>(rowTmp, xLocal[rowOffset], reduceTmp, 
         static_cast<int32_t>(rLength));
-
+    
     T sumVal = rowTmp.GetValue(0);
     AscendC::Duplicate<T>(rowTmp, sumVal, rLength);
     AscendC::Div<T>(yLocal[rowOffset], xLocal[rowOffset], rowTmp, rLength);
@@ -94,40 +94,40 @@ __aicore__ inline void ProcessRow(
 
 ---
 
-## Pattern interface (lined batch)
+## Pattern 接口（跨行批量）
 
-The Pattern interface has**two overload formats**as detailed in [api-reduce-pattern.md] (api-reduce-pattern.md).
+Pattern 接口有**两种重载形式**，详见 [api-reduce-pattern.md](api-reduce-pattern.md)。
 
-### Quick start.
+### 快速入门
 
 ```cpp
 AscendC::LocalTensor<float> dstLocal = outQueue.AllocTensor<float>();
 AscendC::LocalTensor<float> srcLocal = inQueue.DeQue<float>();
 AscendC::LocalTensor<uint8_t> tmpLocal = tmpBuf.Get<uint8_t>();
 
-uint32_t srcShape[] = {rows, alignedCols};  // alignedCols I have to. 32 Byte Alignment
+uint32_t srcShape[] = {rows, alignedCols};  // alignedCols 必须 32 字节对齐
 
-// Recommended use form 1: Visible transfer to tmpLocal
+// 推荐使用形式1：显式传入 tmpLocal
 AscendC::ReduceMax<float, AscendC::Pattern::Reduce::AR, true>(
     dstLocal, srcLocal, tmpLocal, srcShape, true);
 ```
 
-### Key points
+### 关键要点
 
-| Points | Annotations |
+| 要点 | 说明 |
 |-----|------|
-| **Alignment requirements** | `alignedCols` must be 32 bytes aligned |
-| **Pattern Type** | `Pattern::Reduce::AR` (in column direction), `Pattern::Reduce::RA` (in row direction) |
-| **Recommended form** | Form 1 (visible transfer of shared TmpBuffer) |
-| **Temporary space** | Both forms need to be reserved, as detailed below.[api-reduce-pattern.md](api-reduce-pattern.md) |
+| **对齐要求** | `alignedCols` 必须 32 字节对齐 |
+| **Pattern 类型** | `Pattern::Reduce::AR`（沿列方向）、`Pattern::Reduce::RA`（沿行方向） |
+| **推荐形式** | 形式1（显式传入 sharedTmpBuffer） |
+| **临时空间** | 两种形式都需要预留，详见 [api-reduce-pattern.md](api-reduce-pattern.md) |
 
-### Non-recognizing data processing
+### 非对齐数据处理
 
 ```cpp
-// ✅ Option 1: Change to a Level 2 interface (no matching requirement)
+// ✅ 方案1：改用 Level 2 接口（无对齐要求）
 AscendC::ReduceMax<T>(dst, src, tmp, rLength, false);
 
-// ✅ option 2: Fill in with DataCopyPad to align
+// ✅ 方案2：用 DataCopyPad 填充到对齐
 uint32_t alignedCols = ((rLength * sizeof(T) + 31) / 32) * 32 / sizeof(T);
 AscendC::DataCopyPadExtParams<T> padParams;
 padParams.isPad = true;
@@ -140,119 +140,119 @@ AscendC::ReduceMax<T, AscendC::Pattern::Reduce::AR, true>(dst, src, srcShape, tr
 
 ---
 
-## Common Errors
+## 常见错误
 
-### Error 1: tmpBuffer type not matched
+### 错误1：tmpBuffer 类型不匹配
 
 ```cpp
-// ❌ error
+// ❌ 错误
 AscendC::LocalTensor<uint8_t> tmpBuffer = tmpBuf.Get<uint8_t>();
 AscendC::ReduceMax(rowTmp, src, tmpBuffer, count);
 
-// ✅ Correct
+// ✅ 正确
 AscendC::LocalTensor<T> reduceTmp = reduceBuf.Get<T>();
 AscendC::ReduceMax(rowTmp, src, reduceTmp, count);
 ```
 
-### Error 2: RowOffset with rLength instead of rLengthAlign
+### 错误2：rowOffset 用 rLength 而非 rLengthAlign
 
 ```cpp
-// ❌ error: single-line, multi-line failed
+// ❌ 错误：单行通过，多行失败
 uint32_t rowOffset = rowIdx * rLength;
 
-// ✅ Correct
+// ✅ 正确
 uint32_t rowOffset = rowIdx * rLengthAlign;
 ```
 
-### Error 3: Unmatched data with Patterson interface
+### 错误3：非对齐数据用 Pattern 接口
 
 ```cpp
-// ❌ Error: rLength=13, not 32 byte alignment
+// ❌ 错误：rLength=13，非 32 字节对齐
 uint32_t srcShape[] = {1, rLength};
 AscendC::ReduceMax<T, AscendC::Pattern::Reduce::AR, true>(dst, src, srcShape, false);
 
-// ✅ Option 1: Change to the Level 2 interface
+// ✅ 方案1：改用 Level 2 接口
 AscendC::ReduceMax<T>(dst, src, tmp, rLength, false);
 
-// ✅ option 2: Fill in the alignment with DataCopyPad (see above)
+// ✅ 方案2：用 DataCopyPad 填充到对齐（见上文）
 ```
 
-### Error 4: Reduce API count pass rLengthAlign
+### 错误4：Reduce API count 传 rLengthAlign
 
 ```cpp
-// ❌ error: count should be the number of valid data
+// ❌ 错误：count 应该是有效数据个数
 AscendC::ReduceMax(rowTmp, src, tmp, rLengthAlign, false);
 
-// ✅ Correct: count only valid numbers
+// ✅ 正确：count 只传有效数据个数
 AscendC::ReduceMax(rowTmp, src, tmp, rLength, false);
 ```
 
-### Error 5: Pattern interface format 2 forgot to set aside temporary space
+### 错误5：Pattern 接口形式2 忘记预留临时空间
 
 ```cpp
-// ❌ error: runtime UB crossed border or result error
+// ❌ 错误：运行时 UB 越界或结果错误
 AscendC::ReduceMax<float, AscendC::Pattern::Reduce::AR, true>(dst, src, srcShape, true);
 
-// ✅ Option 1: Use Form 1 (Recommended)
+// ✅ 方案1：使用形式1（推荐）
 AscendC::LocalTensor<uint8_t> tmpLocal = tmpBuf.Get<uint8_t>();
 AscendC::ReduceMax<float, AscendC::Pattern::Reduce::AR, true>(dst, src, tmpLocal, srcShape, true);
 
-// ✅ option 2: set aside temporary space (for details, see api-reduce-pattern.md)
+// ✅ 方案2：预留临时空间（详见 api-reduce-pattern.md）
 ```
 
-### Error 6: Reduce dst start address is not 8 bytes aligned
+### 错误6：Reduce dst 起始地址未 8 字节对齐
 
-`ReduceMax<float>` / `ReduceSum<float>` API and others require**dst start address 8 byte alignment**(matched with fp32 or 2 elements). Under the "group return" scenario (number of groups per row, with only 4 bytes of results) there is a high risk of an odd number of
+`ReduceMax<float>` / `ReduceSum<float>` 等 Reduce API 要求 **dst 起始地址 8 字节对齐**（对 fp32 即 2 个元素对齐）。在"小组归约"场景下（每行多组、每组结果仅占 4 字节）容易出现奇数 offset 位置违反对齐。
 
 ```cpp
-// ❌ dst uses string 1 fp32: 4 bytes per group.
-// Write dstBuf[r *groupsPerRow + g] Only 4B alignment for g odd numbers
+// ❌ dst 用 stride 1 fp32：每组结果占 4 字节，
+// 写到 dstBuf[r * groupsPerRow + g] 在 g 为奇数时只满足 4B 对齐
 const uint32_t groupsPerRow = 4;
-AscendC::ReduceMax<float>(dstBuf[r * groupsPerRow + g], src, tmp, 32, false);  // g=1,3 → 4B Alignment
+AscendC::ReduceMax<float>(dstBuf[r * groupsPerRow + g], src, tmp, 32, false);  // g=1,3 → 4B 对齐
 ```
 
-Fix: dst buffer uses 2 fp32 (eight bytes per group):
+修复：dst buffer 用 stride 2 fp32（每组结果占 8 字节槽位）：
 
 ```cpp
-// ✅ stride 2 fp32 → each dst results 8 bytes, and any g meets 8B alignment
+// ✅ stride 2 fp32 → 每个 dst 结果占 8 字节，任何 g 都满足 8B 对齐
 AscendC::ReduceMax<float>(dstBuf[r * groupsPerRow * 2 + g * 2], src, tmp, 32, false);
 ```
 
-synchronise index times 2 for downstream reading.
+下游读取时索引同步乘 2。
 
-**Symptom**: Reduce API returns silent error (results left with old values or written in the wrong place), not necessarily immediately trip.
+**症状**：Reduce API 返回静默错误（结果残留旧值或写到错位置），不一定立刻 trap。
 
 ---
 
-## best practice
+## 最佳实践
 
-### Parameter Control Table
+### 参数对照表
 
-| Parameter Position | Use rLength | Use rLengthAlign |
+| 参数位置 | 用 rLength | 用 rLengthAlign |
 |---------|-----------|-----------------|
 | DataCopyPad blockLen | ✓ | ✗ |
 | Reduce API count | ✓ | ✗ |
 | Sub/Exp/Div count | ✓ | ✗ |
 | UB rowOffset | ✗ | ✓ |
-| Buffer size calculation | ✗ | ✓ |
+| Buffer 大小计算 | ✗ | ✓ |
 
-### Decision-making process
+### 决策流程
 
 ```
-Yes. Reduce Operation?
+需要 Reduce 操作？
     │
-    ├─ Separately (line by line)Softmax/LayerNorm)
-    │     └─→ Level 2 Interface
-    │           - No Matching Request
+    ├─ 逐行独立处理（Softmax/LayerNorm）
+    │     └─→ Level 2 接口
+    │           - 无对齐要求
     │           - count = rLength
     │
-    └─ Cross-line Batch Reduce
-          └─→ Pattern Interface (format)1 (Recommended)
-                - Yes. 32 Byte Alignment
-                - Visible Management tmp buffer
+    └─ 跨行批量 Reduce
+          └─→ Pattern 接口（形式1 推荐）
+                - 需要 32 字节对齐
+                - 显式管理 tmp buffer
 ```
 
-### Buffer Allocation
+### Buffer 分配
 
 ```cpp
 uint32_t tileSize = rowsPerLoop * rLengthAlign * sizeof(T);
@@ -267,15 +267,15 @@ pipe->InitBuffer(reduceBuf, reduceBufSize);
 
 ---
 
-## API Document Access Priority
+## API 文档查阅优先级
 
-1. ⭐ ⭐ ⭐**Official API Document**: `asc-devkit/docs/api/context/ReduceMax.md`
-2. ⭐ ⭐ ⭐**Official Example Code**: `asc-devkit/examples/03_libraries/05_reduce/`
-3. Pattern interface details: [api-reduce-pattern.md](api-reduce-pattern.md)
+1. ⭐⭐⭐ **官方 API 文档**：`asc-devkit/docs/api/context/ReduceMax.md`
+2. ⭐⭐⭐ **官方示例代码**：`asc-devkit/examples/03_libraries/05_reduce/`
+3. Pattern 接口详解：[api-reduce-pattern.md](api-reduce-pattern.md)
 
 ---
 
-## Example of reference
+## 参考示例
 
-- Example of `asc-devkit/examples/03_libraries/05_reduce/reducemax/reducemax.asc` - Pattern interface
-- `asc-devkit/docs/api/context/ReduceMax.md` - Official API document
+- `asc-devkit/examples/03_libraries/05_reduce/reducemax/reducemax.asc` - Pattern 接口示例
+- `asc-devkit/docs/api/context/ReduceMax.md` - 官方 API 文档

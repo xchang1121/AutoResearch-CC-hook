@@ -1,21 +1,21 @@
-# Universal Tiling Reference
+# 通用 Tiling 参考
 
-> Tiling Design Principles, tmpBufSize formulae, common Tiling data structure fields
+> Tiling 设计原则、tmpBufSize 公式、常用 Tiling 数据结构字段
 
 ---
 
-## Tiling Design Principles
+## Tiling 设计原则
 
-**For direct formula calculations, no two-point search**
+**直接公式计算，不用二分查找**：
 
-1. **a0TileBase is the smallest alignment unit**: `VECTOR_REG_WIDTH / sizeof(T)` (FP32=64), all Buffer sizes are several times their integer
-2. **Limitation to minimize**: `a0Inner = Min (UB capacity limit, A0 dimension limit, polynuclear balance limit) '
-3. **Conservative estimate**: `ubPerTileBase` is calculated using a0TileBase, the actual `tileA0Len ≤ estimate ' will not exceed UB
-4. **API Parameters Limit Transmission**: `R_max = min(R_max, 255)` if `repeatTimes ≤ 255` of Reduce API is relevant to R
+1. **a0TileBase 是最小对齐单位**：`VECTOR_REG_WIDTH / sizeof(T)`（FP32=64），所有 Buffer 大小是其整数倍
+2. **约束取最小**：`a0Inner = min(UB容量限制, A0维度限制, 多核均衡限制)`
+3. **保守估算**：用 a0TileBase 计算 `ubPerTileBase`，实际 `tileA0Len ≤ 估算值`，不会超出 UB
+4. **API 参数限制传导**：若 Reduce API 的 `repeatTimes ≤ 255`，且传入值与 R 相关，则 `R_max = min(R_max, 255)`
 
-**Full load of vs split decision**: Full load = Load data + All Buffer ≤ UB_SIZE calculation processes. Unlike the middle Buffer of operator, the threshold formula differs from operator.
+**全载 vs 分载判定**：全载 = 加载数据 + 计算过程全部 Buffer ≤ UB_SIZE。不同算子的中间 Buffer 不同，阈值公式因算子而异。
 
-## tmpBufSize (sharedTmpBuffer) calculations
+## tmpBufSize（sharedTmpBuffer）计算
 
 ```cpp
 uint32_t ComputeReduceBufSize(uint32_t rLengthAlign, uint32_t typeSize) {
@@ -23,72 +23,72 @@ uint32_t ComputeReduceBufSize(uint32_t rLengthAlign, uint32_t typeSize) {
     uint32_t perBlock = 32 / typeSize;    // 8 for FP32
     uint32_t repeats = (rLengthAlign + perRepeat - 1) / perRepeat;
     uint32_t tmpBufSize = ((repeats + perBlock - 1) / perBlock) * perBlock * typeSize;
-    return std::max(tmpBufSize, 4096u);   // Min 4KB
+    return std::max(tmpBufSize, 4096u);   // 最小 4KB
 }
 ```
 
 ---
 
-## Common Tiling Data Structure Fields
+## 常用 Tiling 数据结构字段
 
-## Basic attribution Tiling (ReduceOpTilingData)
+## 基础归约 Tiling（ReduceOpTilingData）
 
-| Fields | Type | Meaning |
+| 字段 | 类型 | 含义 |
 |------|------|------|
-| `factorACntPerCore` | uint64 | Workload per A-axis |
-| `factorATotalCnt` | uint64 | A-axis total working module |
-| `ubFactorA` | uint64 | A-axis slice size for UB |
-| `factorRCntPerCore` | uint64 | Workload per core R axis |
-| `factorRTotalCnt` | uint64 | R-axis total working module |
-| `ubFactorR` | uint64 | UB 's R-axis slice size |
-| `groupR` | uint64 | R-axis grouping (>1 trigger Group Reduce)|
-| `outSize` | uint64 | Output Buffer Size |
-| `basicBlock` | uint64 | Enter UB buffer size |
-| `resultBlock` | uint64 | Output/intermediate buffer size |
-| `coreNum` | int32 | Use nuclei |
-| `useNddma` | int32 | Whether to use NDDMA |
-| `shape[8]` | uint64[] | Dimensions |
-| `stride[8]` | int64[] | Step in every dimension |
+| `factorACntPerCore` | uint64 | 每核 A 轴工作量 |
+| `factorATotalCnt` | uint64 | A 轴总工作单元 |
+| `ubFactorA` | uint64 | UB 的 A 轴切片大小 |
+| `factorRCntPerCore` | uint64 | 每核 R 轴工作量 |
+| `factorRTotalCnt` | uint64 | R 轴总工作单元 |
+| `ubFactorR` | uint64 | UB 的 R 轴切片大小 |
+| `groupR` | uint64 | R 轴分组数（>1 触发 Group Reduce）|
+| `outSize` | uint64 | 输出缓冲区大小 |
+| `basicBlock` | uint64 | 输入 UB 缓冲区大小 |
+| `resultBlock` | uint64 | 输出/中间缓冲区大小 |
+| `coreNum` | int32 | 使用核数 |
+| `useNddma` | int32 | 是否使用 NDDMA |
+| `shape[8]` | uint64[] | 各维度大小 |
+| `stride[8]` | int64[] | 各维度步进 |
 
-## Arg Max Series Tiling
+## ArgMax 系列 Tiling
 
-| Fields | Type | Meaning |
+| 字段 | 类型 | 含义 |
 |------|------|------|
-| `aSize` | uint64 | Volume of all dimensions before the axis of engagement |
-| `rSize` | uint64 | Reduction-axis volume |
-| `nextASize` | uint64 | Volume of all dimensions after a axis of engagement |
-| `cutASize` | uint16 | A slice of UB |
-| `cutRSize` | uint16 | R slices of UB |
-| `cutNextASize` | uint16 | UB's nextA slice |
-| `realCoreNum` | uint64 | Actual use of cores |
-| `blkFactor` | uint64 | Size of blocks per nuclear main dimension |
-| `blkTailFactor` | uint64 | The size of the tail core main dimension |
-| `tilingKey` | uint64 | Policy Selection Key |
-| `aRaMode` | uint64 | ARA Sub-Model (1-6) |
+| `aSize` | uint64 | 归约轴前所有维度之积 |
+| `rSize` | uint64 | 归约维度大小 |
+| `nextASize` | uint64 | 归约轴后所有维度之积 |
+| `cutASize` | uint16 | UB 的 A 切片 |
+| `cutRSize` | uint16 | UB 的 R 切片 |
+| `cutNextASize` | uint16 | UB 的 nextA 切片 |
+| `realCoreNum` | uint64 | 实际使用核数 |
+| `blkFactor` | uint64 | 每核主维度块大小 |
+| `blkTailFactor` | uint64 | 尾核主维度块大小 |
+| `tilingKey` | uint64 | 策略选择键 |
+| `aRaMode` | uint64 | ARA 子模式 (1-6) |
 | `workSpaceSize` | uint64 | Group Reduce workspace |
 
-## Norm Class Tiling (RmsNom/LayerNom)
+## Norm 类 Tiling（RmsNorm/LayerNorm）
 
-| Fields | Type | Meaning |
+| 字段 | 类型 | 含义 |
 |------|------|------|
-| `num_row` | uint64 | & Enter Number of Lines |
-| `num_col` | uint64 | Enter the number of columns |
-| `num_col_align` | uint64 | Align the rear rows |
-| `block_factor` | uint64 | Number per line |
-| `row_factor` | uint32 | Lines per iterative processing |
-| `ub_factor` | uint32 | Number of columns processed on an iterative basis |
-| `reduce_mask` | uint32 | Return Mask Configuration |
-| `epsilon` | float | Value stabilization constant |
+| `num_row` | uint64 | 输入行数 (M) |
+| `num_col` | uint64 | 输入列数 (N) |
+| `num_col_align` | uint64 | 对齐后列数 |
+| `block_factor` | uint64 | 每核行数 |
+| `row_factor` | uint32 | 每次迭代处理行数 |
+| `ub_factor` | uint32 | 每次迭代处理列数 |
+| `reduce_mask` | uint32 | 归约 mask 配置 |
+| `epsilon` | float | 数值稳定常数 |
 | `avg_factor` | float | 1.0/num_col |
 
-## Softmax Series Tiling
+## Softmax 系列 Tiling
 
-| Fields | Type | Meaning |
+| 字段 | 类型 | 含义 |
 |------|------|------|
-| `a` (or `totalA0Len`/`totalA1Len`) | uint64 | A-dimensional |
-| `r` (or `totalRLen`) | uint64 | R-dimensional |
-| `rAligned` | uint64 | R Align to Size |
-| `ubFactor` | uint64 | UB Process Size |
-| `aBlockFactor` | uint64 | Line A per core |
-| `tilesPerCore` | uint64 | Number of files per core |
+| `a` (或 `totalA0Len`/`totalA1Len`) | uint64 | A 维大小 |
+| `r` (或 `totalRLen`) | uint64 | R 维大小 |
+| `rAligned` | uint64 | R 对齐后大小 |
+| `ubFactor` | uint64 | UB 处理大小 |
+| `aBlockFactor` | uint64 | 每核 A 行数 |
+| `tilesPerCore` | uint64 | 每核 tile 数 |
 | `rLoopCount` | uint64 | R / VL_FP32 |

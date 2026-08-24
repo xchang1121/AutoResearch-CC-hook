@@ -1,6 +1,6 @@
 ---
 name: pypto-case-loss-crossentropy
-description: "Example D: Loss - CrossEntropyLoss, display multiple input kernel, two slots file, softmax+gather+sum, scalar output"
+description: "模式 D 示例：Loss — CrossEntropyLoss，展示多输入 kernel、两段 tile、softmax+gather+sum、标量输出"
 category: example
 version: "1.0.0"
 metadata:
@@ -9,7 +9,7 @@ metadata:
   operator_patterns: "loss,reduction,gather,softmax"
 ---
 
-# Mode D: Los — CrossEntropylos
+# 模式 D：Loss — CrossEntropyLoss
 
 ```python
 def create_cross_entropy_kernel(batch, num_classes):
@@ -34,12 +34,12 @@ def create_cross_entropy_kernel(batch, num_classes):
     return kernel
 ```
 
-Forward: Assert → contiguous → to Kernel → `reshape(1,)`
+forward：assert → contiguous → 调 kernel → `reshape(1,)`
 
-## Elements of a model
-- **Two paragraphs file**: different tile configuration at different stages of calculation
-- `pypto.cast(targets, DT_INT32)` — INT64 input needs to rotate INT32
-- `pypto.unsqueeze` + `pypto.gather` - Press index to extract elements
-- `pypto.mul(x, -1.0)` - Counterfeiting standard formulation (application of rule R2)
-- scalar output: `pypto.tensor([1], ...)` + `output[:] = scalar`
-- Element-by-Element loss(MSE/ Huber, etc.) simpler: all input `reshape(-1)` with 1D Kernel
+## 模式要点
+- **两段 tile**：不同计算阶段用不同 tile 配置
+- `pypto.cast(targets, DT_INT32)` — INT64 输入需转 INT32
+- `pypto.unsqueeze` + `pypto.gather` — 按 index 取元素
+- `pypto.mul(x, -1.0)` — 取反的标准写法（规则 R2 的应用）
+- 标量输出：`pypto.tensor([1], ...)` + `output[:] = scalar`
+- 逐元素 loss（MSE/Huber 等）更简单：所有输入 `reshape(-1)` 用 1D kernel

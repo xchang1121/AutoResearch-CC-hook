@@ -1,6 +1,6 @@
 ---
 name: triton-ascend-kahan-precision-fix
-description: Triton-ascend Large K Approximate accuracy fix: Kahan compensation and replacement simple add-up, eliminating the difference between the NPU Cube engine FP32 simulation path and the Triton sequence cumulative path of accuracy
+description: triton-ascend 大 K 归约精度修复：Kahan 补偿求和替代简单累加，消除 NPU Cube 引擎 FP32 仿真路径与 Triton 顺序累加路径的精度差异
 category: fix
 version: "1.0.0"
 metadata:
@@ -10,24 +10,24 @@ metadata:
   hardware: "Atlas A2, Atlas A3, Atlas A5"
 ---
 
-# Kahan compensation claim and accuracy repair
+# Kahan 补偿求和精度修复
 
-## Trigger Condition
+## 触发条件
 
-- Matmul / reduction Kernel verify hard_fail > 0 under K ≥ 4096
-- Mere normal (<1e-4) but mare oversize (>1e-2), indicating that a few points error are very large
+- matmul / reduction kernel 在大 K 维度（K ≥ 4096）下验证 hard_fail > 0
+- mere 正常（< 1e-4）但 mare 偏大（> 1e-2），说明少数点误差极大
 
-## Repair: Kahan compensation claim and sum
+## 修复：Kahan 补偿求和
 
 ```python
-# Error: Simple add-up, K-time error O (K × eps)
+# 错误：简单累加，K 大时误差 O(K × eps)
 acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 for k in range(0, K, BLOCK_K):
     a = tl.load(...)
     b = tl.load(...)
     acc += tl.dot(a, b)
 
-# Repair: Kahan compensation, error down to O(eps)
+# 修复：Kahan 补偿，误差降为 O(eps)
 acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 comp = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 for k in range(0, K, BLOCK_K):
@@ -40,35 +40,35 @@ for k in range(0, K, BLOCK_K):
     acc = t
 ```
 
-### Rationale
+### 原理
 
-Floating point addition does not satisfy the combination rule: `(a + b) + c ≠ a + (b + c)`. When `acc` is large and `partial` is very hourly, `acc + partial` loses `partial`'s low-level accuracy. Kahan Algorithm tracks each lost accuracy through a compensatory variable, `comp`, and is next added.
+浮点加法不满足结合律：`(a + b) + c ≠ a + (b + c)`。当 `acc` 很大而 `partial` 很小时，`acc + partial` 会丢失 `partial` 的低位精度。Kahan 算法通过一个补偿变量 `comp` 追踪每次加法丢失的精度，下次累加时补回。
 
-Gradual dismantling:
+逐步拆解：
 
 ```
-partial = tl.dot(a, b)       # This time. dot Result
-y = partial - comp           # Less the last one lost.accuracy(Compensation)
-t = acc + y                  # Gradient
-comp = (t - acc) - y         # We'll catch the missing one.accuracy
-acc = t                      # Update Thrust
+partial = tl.dot(a, b)       # 本次 dot 结果
+y = partial - comp           # 减去上次丢失的精度（补偿）
+t = acc + y                  # 累加
+comp = (t - acc) - y         # 捕获本次丢失的精度
+acc = t                      # 更新累加器
 ```
 
-- `y = partial - comp`: Recover the last part that was lost
-- `t = acc + y`: Actual cumulative execution
-- `comp = (t - acc) - y`: `(t - acc)` is the value actually added to acc minus `y` to get the low of this loss
-- `comp` is always zero on algebra, but it's rounded to error in the float operation
+- `y = partial - comp`：把上次丢失的部分补回来
+- `t = acc + y`：执行实际累加
+- `comp = (t - acc) - y`：`(t - acc)` 是实际加入 acc 的值，减去 `y` 得到本次丢失的低位
+- 代数上 `comp` 恒为零，但浮点运算中它捕获了舍入误差
 
-## Scope of application
+## 适用范围
 
-| scene | Whether it applies |
+| 场景 | 是否适用 |
 |------|---------|
 | matmul K ≥ 4096 | ✅ |
-| Reduction (sum/mean) dimensions | ✅ |
-| matmul K < 4096 | ❌ simple enough to add |
-| Elementwise / No Return | ❌ free of charge error |
+| reduction（sum/mean）大维度 | ✅ |
+| matmul K < 4096 | ❌ 简单累加足够 |
+| elementwise / 无归约 | ❌ 无累加误差 |
 
 ## Quick Checklist
 
-1. **hard_fail > 0 + mare > 1e-2 + K ≥ 4096**→**Kahan Compensation (§ Rehabilitation)
-2. **NPU vs NPU after Kahan still has hard_fail**→ to check Kernel logic (non-accumulative problem)
+1. **hard_fail > 0 + mare > 1e-2 + K ≥ 4096** → 加 Kahan 补偿（§修复）
+2. **Kahan 后 NPU vs NPU 仍有 hard_fail** → 检查 kernel 逻辑（非累加问题）

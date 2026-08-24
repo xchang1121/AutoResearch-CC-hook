@@ -1,6 +1,6 @@
 ---
 name: pypto-case-norm-layernorm
-description: "Example C: 2D Norm + Loop — Layer Norm, display forward down to 2D, kernel internal sum return + unified"
+description: "模式 C 示例：2D Norm + Loop — LayerNorm，展示 forward 降维为 2D、kernel 内 sum 归约 + 归一化"
 category: example
 version: "1.0.0"
 metadata:
@@ -9,9 +9,9 @@ metadata:
   operator_patterns: "norm,reduction,loop"
 ---
 
-# Mode C-1: 2D Norm — Layer Norm
+# 模式 C-1：2D Norm — LayerNorm
 
-Forward `reshape(batch, -1)` down to 2D, kernel along the bat-dimensional loop.
+forward 中 `reshape(batch, -1)` 降为 2D，kernel 沿 batch 维 loop。
 
 ```python
 BASIC_BATCH = 4
@@ -36,11 +36,11 @@ def create_layernorm_kernel(batch, hidden, eps):
     return kernel
 ```
 
-forward:`reshape(B, -1)` → kernel → `reshape(x.shape)`
-GroupNorum with mode: `reshape(B*G, -1)` → 2D Kernel in Forward.
+forward：`reshape(B, -1)` → kernel → `reshape(x.shape)`
+GroupNorm 同模式：forward 中 `reshape(B*G, -1)` → 2D kernel。
 
-## Elements of a model
-- `pypto.sum(dim=int)` — dim can only flyer int
-- = `sum * (1/size)` — no meaning API
-- Difference = `E[x²] - E[x]²` — double sum achieved
-- `set_vec_tile_shapes(1, 16384)` — 2D, 1D small batch, 2D large file
+## 模式要点
+- `pypto.sum(dim=int)` — dim 只能传单个 int
+- mean = `sum * (1/size)` — 没有 mean API
+- 方差 = `E[x²] - E[x]²` — 两次 sum 实现
+- `set_vec_tile_shapes(1, 16384)` — 2D，第一维小批量，第二维大 tile

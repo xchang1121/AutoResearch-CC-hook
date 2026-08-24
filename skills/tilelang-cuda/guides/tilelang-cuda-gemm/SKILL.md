@@ -1,6 +1,6 @@
 ---
 name: tilelang-cuda-gemm
-description: "TileLang CUDA GEMMCompleteness optimizes guidance, covering base templates,Swizzling,L2 Cache Rasterization,Auto-Pipelining,Persistent Kernel,Autotuning,Split-K,Stream-K,Fine-grained MMAand so on.tilelangOfficialexamples/gemm/ best practice. For allmatrix multiplicationand its variant ()BMM,FP8 GEMM,Int4 GEMM,Dequant GEMM) kernel code generation and optimization"
+description: "TileLang CUDA GEMM 完整性能优化指南，涵盖基础模板、Swizzling、L2 Cache Rasterization、Auto-Pipelining、Persistent Kernel、Autotuning、Split-K、Stream-K、Fine-grained MMA 等高级优化技术。基于 tilelang 官方 examples/gemm/ 最佳实践。适用于所有矩阵乘法及其变体（BMM、FP8 GEMM、Int4 GEMM、Dequant GEMM 等）的内核代码生成和优化场景"
 category: method
 version: "1.0.0"
 metadata:
@@ -16,13 +16,13 @@ structure:
     level5: "fine_grained_mma"
 ---
 
-# TileLang GEMM Performance Optimization Full Guide
+# TileLang GEMM 性能优化完全指南
 
-Ben Skill is organized on the basis of the tilelang official `examples/gemm/` and `docs/programming_guides/instructions.md`, covering all GEMM optimization techniques from base to high end.
+本 Skill 基于 tilelang 官方 `examples/gemm/` 和 `docs/programming_guides/instructions.md` 整理，覆盖从基础到高端的所有 GEMM 优化技术。
 
-## 1. Basic GEMM Templates
+## 1. 基础 GEMM 模板
 
-The core model for all GEMMs is as follows:
+所有 GEMM 的核心模式如下：
 
 ```python
 import tilelang
@@ -53,26 +53,26 @@ def matmul(M, N, K, block_M, block_N, block_K, dtype=T.float16, accum_dtype=T.fl
     return gemm
 ```
 
-### Key concepts
+### 关键概念
 
-1. **Memory level**
-   - `T.alloc_shared`: shared memory (__shared__)
-   - `T.alloc_fragment`: Storer Snippets (Tensor Core local)
-   - Data stream: Global → Shared → Fragment (GEMM) → Shared → Global
+1. **内存层次**
+   - `T.alloc_shared`: 共享内存 (__shared__)
+   - `T.alloc_fragment`: 寄存器片段 (Tensor Core local)
+   - 数据流: Global → Shared → Fragment(GEMM) → Shared → Global
 
-2. **Recommended value for block parameters**
-   - `block_M, block_N = 128, 128` (classic), `256, 256` (large matrix), `128, 256` (asymmetric)
-   - `block_K = 32` (recommended default), `64` (SM90+)
-   - `threads = 128` (classic GEMM value), `256` (some scenarios)
-   - `num_stages = 3` (recommended), `2` (minimal shared memory), `4` (SM90+)
+2. **分块参数推荐值**
+   - `block_M, block_N = 128, 128` (经典), `256, 256` (大矩阵), `128, 256` (非对称)
+   - `block_K = 32` (推荐默认), `64` (SM90+)
+   - `threads = 128` (GEMM 经典值), `256` (某些场景)
+   - `num_stages = 3` (推荐), `2` (最小共享内存), `4` (SM90+)
 
-3. **Cumulative accuracy**
-   - `accum_dtype=T.float32` guarantees accuracy, especially for float16 input
-   - FP8 scene requires `accum_dtype=T.float32` + 2xaccumulate mode
+3. **累积精度**
+   - `accum_dtype=T.float32` 保证精度，尤其对 float16 输入
+   - FP8 场景需要 `accum_dtype=T.float32` + 2x accumulate 模式
 
-## 2. Advanced Optimization: Swizzling + Rasterization + Parallel Copy
+## 2. 高级优化：Swizzling + Rasterization + Parallel Copy
 
-The following optimized combinations can significantly enhance GEMM performance:
+以下优化组合使用可显著提升 GEMM 性能：
 
 ```python
 import tilelang.language as T
@@ -93,20 +93,20 @@ def matmul_optimized(M, N, K, block_M, block_N, block_K, dtype=T.float16, accum_
             C_local = T.alloc_fragment((block_M, block_N), accum_dtype)
             C_shared = T.alloc_shared((block_M, block_N), dtype)
 
-            # Optimize 1: Swizzle shared memory playout → avoid bank condition
+            # 优化1: Swizzle shared memory layout → 避免 bank conflict
             T.annotate_layout({
                 A_shared: make_swizzle_layout(A_shared),
                 B_shared: make_swizzle_layout(B_shared),
             })
 
-            # Optimizing 2: Rasterization → Increase L2 Cache Hit Rate
+            # 优化2: Rasterization → 提升 L2 cache 命中率
             T.use_swizzle(panel_size=10, enable=True)
 
             T.clear(C_local)
             for idx in T.Pipelined(T.ceildiv(K, block_K), num_stages=3):
                 T.copy(A[by * block_M, idx * block_K], A_shared)
 
-                # Optimization 3: Parallel copy B → multi-line load
+                # 优化3: Parallel copy B → 多线程并行加载
                 for ko, j in T.Parallel(block_K, block_N):
                     B_shared[ko, j] = B[idx * block_K + ko, bx * block_N + j]
 
@@ -118,26 +118,26 @@ def matmul_optimized(M, N, K, block_M, block_N, block_K, dtype=T.float16, accum_
     return main
 ```
 
-### Optimization and detail.
+### 优化点详解
 
-| Optimizing technology | Role | When to use |
+| 优化技术 | 作用 | 何时使用 |
 |----------|------|----------|
-| `T.annotate_layout` | shared memory Swizzling, avoid bank compliance | Any GEMM |
-| `T.use_swizzle` | Grid-level L2 Cache grid | Large Matrix M,N > 2048 |
-| `T.Parallel(..., ...)` copy | Multi-line parallel global → load | When `T.copy` is a bottleneck |
-| Middle `C_shared` buffer | Avoid fragment→global writing directly | When Swizzle Layout Requires |
+| `T.annotate_layout` | 共享内存 Swizzling，避免 bank conflict | 任何 GEMM |
+| `T.use_swizzle` | 网格级 L2 cache 光栅化 | 大矩阵 M,N > 2048 |
+| `T.Parallel(..., ...)` copy | 多线程并行全局→共享加载 | 当 `T.copy` 是瓶颈时 |
+| 中间 `C_shared` 缓冲 | 避免 fragment→global 直接写入 | 需要 swizzle 布局时 |
 
-### ⚠ ️ note.
+### ⚠️ 注意事项
 
-- `T.annotate_layout` swizzle playout requires `from tilelang.cuda.intrinsics import make_mma_swizzle_layout`
-- Panel_size control particle size for `T.use_swizzle(panel_size=10)`, 10 is the recommended default
-- When using Parallel copy, the index of `B_shared` must contain the complete map of `bx`, `ko`, `j`
+- `T.annotate_layout` 的 swizzle layout 需要 `from tilelang.cuda.intrinsics import make_mma_swizzle_layout`
+- `T.use_swizzle(panel_size=10)` 的 panel_size 控制光栅化粒度，10 是推荐默认值
+- 当使用 Parallel copy 时，`B_shared` 的索引必须包含 `bx`, `ko`, `j` 的完整映射
 
 ## 3. Autotuning
 
-tilelang provides `@tilelang.autotune` and `AutoTuner` for automatic optimization:
+tilelang 提供 `@tilelang.autotune` 和 `AutoTuner` 进行自动调优：
 
-### 3.1 Manual search space
+### 3.1 手动搜索空间
 
 ```python
 import tilelang as tl
@@ -151,7 +151,7 @@ def ref_program(A, B):
 
 
 def get_configs(M, N, K):
-    """Generate modulated search space"""
+    """生成调优搜索空间"""
     import itertools
     block_M_list = [64, 128, 256]
     block_N_list = [64, 128, 256]
@@ -212,7 +212,7 @@ def autotune_gemm(M, N, K):
     return autotuner.run(warmup=3, rep=20)
 ```
 
-### 3.2 Search using Roller (BitBLAS) smart
+### 3.2 使用 Roller (BitBLAS) 智能搜索
 
 ```python
 from tilelang.carver.template import MatmulTemplate
@@ -243,7 +243,7 @@ def get_roller_configs(M, N, K, topk=20):
     return configs
 ```
 
-### 3.3 Heuristic Config version of SM
+### 3.3 SM 版本的 Heuristic Config
 
 ```python
 import torch
@@ -261,14 +261,14 @@ def get_heuristic_config():
     elif sm_version == 90:  # H100
         return {"block_M": 128, "block_N": 256, "block_K": 64,
                 "num_stages": 3, "thread_num": 256, "enable_rasteration": True}
-    else:  # Default
+    else:  # 默认
         return {"block_M": 128, "block_N": 256, "block_K": 32,
                 "num_stages": 0, "thread_num": 128, "enable_rasteration": True}
 ```
 
 ## 4. Persistent Kernel
 
-Persistent Kernel applies to a large number of output tile scenes, reducing kernel lanch overhead by limiting the grid to `sm_num` block:
+Persistent Kernel 适用于大量输出 tile 的场景，通过将网格限制为 `sm_num` 个 block 来减少 kernel launch overhead：
 
 ```python
 import tilelang.language as T
@@ -316,9 +316,9 @@ def matmul_persistent(M, N, K, block_M, block_N, block_K, threads, num_stages,
     return main
 ```
 
-### Persistent Kernel vs. T. Persistent
+### Persistent Kernel vs T.Persistent 原语
 
-Tilelang also supports the original language of `T.Persistent` (more concise):
+tilelang 还支持 `T.Persistent` 原语（更简洁）：
 
 ```python
     @T.prim_func
@@ -345,20 +345,20 @@ Tilelang also supports the original language of `T.Persistent` (more concise):
                 T.copy(C_local, C_shared)
                 T.copy(C_shared, C[bx * block_M, by * block_N])
 
-    return main_persistent  # Return this version
+    return main_persistent  # 返回这个版本
 ```
 
-### When to use Persistent Kernel
+### 何时使用 Persistent Kernel
 
-| scene | Recommendations | Reason |
+| 场景 | 推荐 | 原因 |
 |------|------|------|
-| Large Matrix (M,N > 4096) | ✅ Yes | Reduce kernel lanch overhead and increase SM utilization |
-| Small Matrix (M,N < 1024) | ❌ No | It's not worth the extra expenses. |
-| Multi-CTA scene | ✅ Yes | 2-CTA policyr better for SM100+ |
+| 大矩阵 (M,N > 4096) | ✅ 是 | 减少 kernel launch overhead，提升 SM 利用率 |
+| 小矩阵 (M,N < 1024) | ❌ 否 | 额外开销不值得 |
+| 多 CTA 场景 | ✅ 是 | 2-CTA persistent 对 SM100+ 效果更好 |
 
 ## 5. Split-K
 
-Sprit-K applies to the scene of K-dimensional extremes (the effect is obvious when K/M > 4):
+Split-K 适用于 K 维度极大的场景（K/M > 4 时效果明显）：
 
 ```python
 import tilelang.language as T
@@ -391,16 +391,16 @@ def matmul_splitk(M, N, K, block_M, block_N, block_K, split_k,
     return main
 ```
 
-### Sprit-K Points
+### Split-K 要点
 
-- **Extra grid dimension**: `split_k` as 3D
-- **Atomscumulation**: using `T.atomic_add` to merge parties
-- **Applicable scene**: K > M, K > N (e.g. K = 16384, M = N = 1024)
-- **Typical split_k value**: 2, 4, 8
+- **额外 grid 维度**: `split_k` 作为第 3 维
+- **原子累加**: 使用 `T.atomic_add` 合并 partial results
+- **适用场景**: K >> M, K >> N（如 K=16384, M=N=1024）
+- **典型 split_k 值**: 2, 4, 8
 
-## 6. Transpose B (B^T * AMode)
+## 6. Transpose B (B^T * A 模式)
 
-When shape for B is `(N, K)` instead of `(K, N)`:
+当输入 B 的形状为 `(N, K)` 而非 `(K, N)` 时：
 
 ```python
 @tilelang.jit(out_idx=[-1])
@@ -430,11 +430,11 @@ def matmul_transpose_b(M, N, K, block_M, block_N, block_K,
     return main
 ```
 
-**Keyword**: `transpose_B=True` Autoprocessing B conversion calculation.
+**关键字**: `transpose_B=True` 自动处理 B 的转置计算。
 
 ## 7. FP8 GEMM
 
-PP8 Use MMA commands instead of automatic T.gemm dispatch, need to be noted:
+FP8 使用 MMA 指令而非自动 T.gemm dispatch，需要注意：
 
 ```python
 import tilelang.language as T
@@ -465,7 +465,7 @@ def matmul_fp8(M, N, K, block_M, block_N, block_K, dtype, accum_dtype=T.float32)
     return gemm_fp8
 
 
-# Call
+# 调用
 # dtype = determine_fp8_type()  # e4m3
 # kernel = matmul_fp8(1024, 1024, 1024, 128, 128, 64, dtype)
 # a = torch.randn(M, K).cuda().to(dtype)
@@ -473,16 +473,16 @@ def matmul_fp8(M, N, K, block_M, block_N, block_K, dtype, accum_dtype=T.float32)
 # c = kernel(a, b)
 ```
 
-### FP8 Elements
+### FP8 要点
 
-- **shape with `transpose_B=True`**: FP8 GEMM for B is `(N, K)`
-- **dtype**: `determine_fp8_type()` returns e4m3; `determine_fp8_type("e5m2")` returns e5m2
-- **Accumulated accuracy**: Always using `accum_dtype=T.float32`
-- **Validation**: FP8 Validation with `calc_diff` instead of `torch.testing.assert_close`
+- **使用 `transpose_B=True`**: FP8 GEMM 需要 B 的形状为 `(N, K)`
+- **dtype**: `determine_fp8_type()` 返回 e4m3；`determine_fp8_type("e5m2")` 返回 e5m2
+- **累积精度**: 始终使用 `accum_dtype=T.float32`
+- **验证**: FP8 验证使用 `calc_diff` 而非 `torch.testing.assert_close`
 
-## 8. Fine-grained MMA (particle size MMA)
+## 8. Fine-grained MMA（细粒度 MMA）
 
-When an automatic `T.gemm` does not satisfy the demand (e. g. dequantize GEMM needs to customize playout), use `TensorCoreIntrinEmitter`:
+当自动 `T.gemm` 不满足需求时（如 dequantize GEMM 需要自定义 layout），使用 `TensorCoreIntrinEmitter`：
 
 ```python
 from tilelang.intrinsics import TensorCoreIntrinEmitter, make_mma_swizzle_layout
@@ -553,26 +553,26 @@ def dequant_gemm(M, N, K, in_dtype, out_dtype, accum_dtype):
     return main
 ```
 
-### Fine-grained MMA Applied scene
+### Fine-grained MMA 适用场景
 
-- **Dequantize GEMM**(W4A8, FP4, Int4): Need to go straight after dequantize MMA
-- **Custom playout**: Auto `T.gemm` 's playout does not meet demand
-- **Polarity**: Need to fully control the Idmatrix/mma/stmatrix sequence
+- **Dequantize GEMM** (W4A8, FP4, Int4): 需要在 dequantize 后直接进行 MMA
+- **自定义 layout**: 自动 `T.gemm` 的 layout 不满足需求
+- **极致性能**: 需要完全控制 ldmatrix/mma/stmatrix 序列
 
 ## 9. Profiling / Benchmark
 
-### 9.1 Use Profiller Classes
+### 9.1 使用 Profiler 类
 
 ```python
 kernel = matmul(4096, 4096, 4096, 128, 128, 32)
 profiler = kernel.get_profiler(tensor_supply_type=tilelang.TensorSupplyType.Randn)
 
-# correctness verification
+# 正确性验证
 profiler.assert_allclose(ref_program, atol=1e-2, rtol=1e-2)
 
-# Evaluation
-latency = profiler.do_bench(backend="event")    # CUDA Event (Default)
-# # CUPTI programmer (more precise)
+# 评测
+latency = profiler.do_bench(backend="event")    # CUDA Event (默认)
+# latency = profiler.do_bench(backend="cupti")  # CUPTI profiler (更精确)
 # latency = profiler.do_bench(backend="cudagraph")  # CUDA graph
 
 # TFLOPs
@@ -580,7 +580,7 @@ M, N, K = 4096, 4096, 4096
 tflops = 2 * M * N * K / latency * 1e-9
 ```
 
-### 9.2 Use do_bench function
+### 9.2 使用 do_bench 函数
 
 ```python
 from tilelang.profiler import do_bench
@@ -595,106 +595,106 @@ latency = do_bench(
 )
 ```
 
-### 9.3 Benchmark Parameters Recommended
+### 9.3 Benchmark 参数推荐
 
-| Parameters | Value | Annotations |
+| 参数 | 值 | 说明 |
 |------|-----|------|
-| `warmup` | 25ms | Warmup Target Time |
-| `rep` | 100ms | Target time for evaluation |
-| `backend` | "event" | Default, CUDA Event Time |
-| `backend` | "cupti" | CUPTI programr, more precise |
+| `warmup` | 25ms | warmup 目标时间 |
+| `rep` | 100ms | 评测目标时间 |
+| `backend` | "event" | 默认，CUDA Event 计时 |
+| `backend` | "cupti" | CUPTI profiler，更精确 |
 | `backend` | "cudagraph" | CUDA graph replay |
-| `return_mode` | "min" | Recommended. Minimal. |
+| `return_mode` | "min" | 推荐，取最小值 |
 
-## 10. Command speed check.
+## 10. 指令速查表
 
-### Data Move
+### 数据移动
 
-| Command | Purpose | Example: |
+| 指令 | 用途 | 示例 |
 |------|------|------|
-| `T.copy(src, dst)` | Sync Copy | `T.copy(A[...], A_shared)` |
-| `T.async_copy(src, dst)` | Step Copy (cp.async) | `T.async_copy(A[...], A_shared)` + `T.ptx_wait_group(0)` |
-| `T.tma_copy(src, dst)` | TMA Step Copy (SM90+) | `T.tma_copy(desc, A_shared)` |
+| `T.copy(src, dst)` | 同步拷贝 | `T.copy(A[...], A_shared)` |
+| `T.async_copy(src, dst)` | 异步拷贝 (cp.async) | `T.async_copy(A[...], A_shared)` + `T.ptx_wait_group(0)` |
+| `T.tma_copy(src, dst)` | TMA 异步拷贝 (SM90+) | `T.tma_copy(desc, A_shared)` |
 
-### Memory Allocation
+### 内存分配
 
-| Command | Purpose | Example: |
+| 指令 | 用途 | 示例 |
 |------|------|------|
-| `T.alloc_shared` | shared memory | `T.alloc_shared((128, 32), "float16")` |
-| `T.alloc_fragment` | Can not open message | `T.alloc_fragment((128, 128), "float")` |
-| `T.alloc_local` | Thread Local | `T.alloc_local((1,), "float32")` |
+| `T.alloc_shared` | 共享内存 | `T.alloc_shared((128, 32), "float16")` |
+| `T.alloc_fragment` | 寄存器片段 | `T.alloc_fragment((128, 128), "float")` |
+| `T.alloc_local` | 线程本地 | `T.alloc_local((1,), "float32")` |
 | `T.alloc_tmem` | Tensor Memory (SM100) | `T.alloc_tmem((128, 256), "float32")` |
 
-### Calculate
+### 计算
 
-| Command | Purpose | Example: |
+| 指令 | 用途 | 示例 |
 |------|------|------|
 | `T.gemm(A, B, C)` | Tile GEMM | `T.gemm(A_shared, B_shared, C_local)` |
-| `T.gemm(A, B, C, transpose_B=True)` | B conversion mode | `T.gemm(A_s, B_s, C_l, transpose_B=True)` |
-| `T.clear(buf)` | Clear. | `T.clear(C_local)` |
-| `T.reduce_max/min/sum` | Return | `T.reduce_sum(input, output, dim=0)` |
+| `T.gemm(A, B, C, transpose_B=True)` | B 转置模式 | `T.gemm(A_s, B_s, C_l, transpose_B=True)` |
+| `T.clear(buf)` | 清零 | `T.clear(C_local)` |
+| `T.reduce_max/min/sum` | 归约 | `T.reduce_sum(input, output, dim=0)` |
 
-### Cycle control
+### 循环控制
 
-| Command | Purpose | Example: |
+| 指令 | 用途 | 示例 |
 |------|------|------|
-| `T.Pipelined(n, stages)` | Software pipeline | `for k in T.Pipelined(..., num_stages=3)` |
-| `T.Parallel(d1, d2)` | Parallel Loop | `for i, j in T.Parallel(128, 128)` |
-| `T.serial(n)` | Serial Loop | `for ki in T.serial(block_K // 16)` |
-| `T.Persistent(...)` | Persistent loop | `for bx, by in T.Persistent([...], sm_num, block_id)` |
+| `T.Pipelined(n, stages)` | 软件流水线 | `for k in T.Pipelined(..., num_stages=3)` |
+| `T.Parallel(d1, d2)` | 并行循环 | `for i, j in T.Parallel(128, 128)` |
+| `T.serial(n)` | 串行循环 | `for ki in T.serial(block_K // 16)` |
+| `T.Persistent(...)` | Persistent 循环 | `for bx, by in T.Persistent([...], sm_num, block_id)` |
 
-### Synchronization and barriers
+### 同步和屏障
 
-| Command | Purpose |
+| 指令 | 用途 |
 |------|------|
-| `T.sync_threads()` | Thread Block Sync |
-| `T.ptx_wait_group(n)` | Waiting to make a copy of the walk |
-| `T.mbarrier_wait_parity(barrier, parity)` | MBarrier, wait. |
-| `T.warpgroup_arrive()` / `T.warpgroup_commit_batch()` / `T.warpgroup_wait(n)` | WMMA Sync |
+| `T.sync_threads()` | 线程块同步 |
+| `T.ptx_wait_group(n)` | 等待异步拷贝 |
+| `T.mbarrier_wait_parity(barrier, parity)` | MBarrier 等待 |
+| `T.warpgroup_arrive()` / `T.warpgroup_commit_batch()` / `T.warpgroup_wait(n)` | WGMMA 同步 |
 
-### Note and Optimization
+### 注解和优化
 
-| Command | Purpose |
+| 指令 | 用途 |
 |------|------|
-| `T.annotate_layout({buf: layout})` | Memory Layout Comment |
-| `T.use_swizzle(panel_size, enable)` | L2 Scanning |
-| `T.annotate_l2_hit_ratio(buf, ratio)` | L2 Cache Hint |
+| `T.annotate_layout({buf: layout})` | 内存布局注解 |
+| `T.use_swizzle(panel_size, enable)` | L2 光栅化 |
+| `T.annotate_l2_hit_ratio(buf, ratio)` | L2 缓存提示 |
 
-### Warp Operations
+### Warp 操作
 
-| Command | Purpose |
+| 指令 | 用途 |
 |------|------|
-| `T.shfl_sync(value, src_lane)` | Radio |
-| `T.shfl_down(value, delta)` | Move Down |
-| `T.shfl_xor(value, delta)` | XOR Exchange |
-| `T.warp_reduce_sum/max` | Warp Return |
-| `T.ballot(predicate)` | Vote. |
+| `T.shfl_sync(value, src_lane)` | 广播 |
+| `T.shfl_down(value, delta)` | 下移 |
+| `T.shfl_xor(value, delta)` | XOR 交换 |
+| `T.warp_reduce_sum/max` | Warp 归约 |
+| `T.ballot(predicate)` | 投票 |
 
-### Atomic Operations
+### 原子操作
 
-| Command | Purpose |
+| 指令 | 用途 |
 |------|------|
-| `T.atomic_add(dst, val)` | Atom plus |
-| `T.atomic_max/min(dst, val)` | Maximum/minimum atom |
+| `T.atomic_add(dst, val)` | 原子加 |
+| `T.atomic_max/min(dst, val)` | 原子最大/最小 |
 
-## 11. Common Errors
+## 11. 常见错误
 
-1. **Forget `T.clear(C_local)`**→ cumulative waste values cause errors
-2. **`num_stages` is too big**→ exceeds shared memory's limit
-3. **`T.sync_threads()` in Conditional Branch**→ Deadlock
-4. **FP8 failed or miscalculated without `transpose_B=True`**→
-5. **`T.annotate_layout` missing `make_mma_swizzle_layout` import**→ Bank conflicts
-6. **`T.copy` for incompatible scope**→ compilation failed
-7. **Border check missing in Persistent Kernel `bx * block_M < M`**→ Cross-border access
-8. **Split-K does not use atomic operation to merge results**→ data competition
+1. **忘记 `T.clear(C_local)`** → 累积垃圾值导致错误
+2. **`num_stages` 过大** → 超出共享内存限制
+3. **`T.sync_threads()` 在条件分支中** → 死锁
+4. **FP8 不使用 `transpose_B=True`** → 编译失败或错误结果
+5. **`T.annotate_layout` 缺少 `make_mma_swizzle_layout` import** → bank conflicts
+6. **`T.copy` 用于不兼容的 scope** → 编译失败
+7. **Persistent kernel 中缺少边界检查 `bx * block_M < M`** → 越界访问
+8. **Split-K 不使用原子操作合并结果** → 数据竞争
 
-## 12. Performance is improved, Checklist
+## 12. 性能调优 Checklist
 
-- [ ] Block size: Start with `block_M=128, block_N=128, block_K=32`
-- [ ] Cumulative accuracy: Use `accum_dtype=T.float32`
-- [ ] Pipeline: Setup `num_stages=3`
-- [ ] Swizzle: Add `T.annotate_layout` + `T.use_swizzle(panel_size=10)`
-- [ ] Large Matrix (M,N > 4096): Try Persistent Kernel
-- [ ] K > M,N: Try Split-K
-- [ ] Final Modifier: Search for optimal configuration using `AutoTuner`
-- [ ] Authentication: `profiler.assert_allclose(ref_program, atol=1e-2, rtol=1e-2)`
+- [ ] 分块大小: 从 `block_M=128, block_N=128, block_K=32` 开始
+- [ ] 累积精度: 使用 `accum_dtype=T.float32`
+- [ ] Pipeline: 设置 `num_stages=3`
+- [ ] Swizzle: 添加 `T.annotate_layout` + `T.use_swizzle(panel_size=10)`
+- [ ] 大矩阵 (M,N > 4096): 尝试 Persistent Kernel
+- [ ] K >> M,N: 尝试 Split-K
+- [ ] 最终调优: 使用 `AutoTuner` 搜索最佳配置
+- [ ] 验证: `profiler.assert_allclose(ref_program, atol=1e-2, rtol=1e-2)`

@@ -1,3 +1,15 @@
+# Copyright 2025-2026 Huawei Technologies Co., Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+
 """Device leasing.
 
 A device is held via a *lease* whose release is guaranteed by construction:
@@ -56,11 +68,11 @@ class DevicePool:
         if env_devices:
             try:
                 device_list = [int(x.strip()) for x in env_devices.split(",") if x.strip()]
-                logger.info(f"Use Environmental Variables OP_AUTORESEARCH_DEVICES_LIST: {device_list}")
+                logger.info(f"使用环境变量 OP_AUTORESEARCH_DEVICES_LIST: {device_list}")
             except ValueError:
                 logger.warning(
-                    f"Environmental variables OP_AUTORESEARCH_DEVICES_LIST Format error: {env_devices}, "
-                    f"Back to the incoming. device_list: {device_list}"
+                    f"环境变量 OP_AUTORESEARCH_DEVICES_LIST 格式错误: {env_devices}, "
+                    f"回退到传入的 device_list: {device_list}"
                 )
 
         if not device_list:

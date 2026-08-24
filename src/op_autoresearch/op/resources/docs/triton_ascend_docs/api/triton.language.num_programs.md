@@ -2,7 +2,7 @@
 ```python
 num_pids = tl.num_programs(axis)  # axis: 0, 1, or 2
 ```
-- **Parameters**: `axis` - dimensional axis (0, 1, 2)
-- **Return**: total number of programs on this axis
-- **Use**: Calculate grid size and boundary conditions
+- **参数**: `axis` - 维度轴 (0, 1, 2)
+- **返回**: 该轴上的总程序数
+- **用途**: 计算网格大小和边界条件
 

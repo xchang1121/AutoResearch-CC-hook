@@ -2,6 +2,6 @@
 ```python
 BLOCK_SIZE: tl.constexpr = 1024
 ```
-- **Practice**: Mark constant parameters at time of compilation
-- **Constraint**: must be stated in a function signature
+- **用途**: 标记编译时常量参数
+- **约束**: 必须在函数签名中声明
 

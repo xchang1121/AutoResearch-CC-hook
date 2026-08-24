@@ -1,6 +1,6 @@
 ---
 name: catlass-hardware-constraints
-description: "CATLASS TileShape and on-chip cache capacity constraints: L1/L0A/L0B/L0C budget formula, fp16/fp32 Pingpong double buffering, 512B alignment and layout effects on Tile selection."
+description: "CATLASS TileShape 与 on-chip 缓存容量约束：L1/L0A/L0B/L0C 预算公式、fp16/fp32 Pingpong 双缓冲、512B 对齐与排布对 Tile 选型的影响。调参前必读。"
 category: fundamental
 version: "1.0.0"
 metadata:
@@ -10,56 +10,56 @@ metadata:
   operator_patterns: "matmul, conv"
 ---
 
-# CATLASS Hardware Containment and Tile Selection
+# CATLASS 硬件约束与 Tile 选型
 
-Before changing `L1TileShape` / `L0TileShape`, whether or not the buffer zone is beyond the limit; most of the failure to compile `static_assert` is a problem.
+改 `L1TileShape` / `L0TileShape` 前，先算缓冲区是否超限；编译期 `static_assert` 失败多半是该问题。
 
-## Cache on film (Atlas A2 Quantities, Pingpong STAGES=2)
+## 片上缓存（Atlas A2 量级，Pingpong STAGES=2）
 
-| Buffer | Capacity | Purpose |
+| 缓冲 | 容量 | 用途 |
 |------|------|------|
-| L1 | 512 KB | A/B file double buffering |
-| L0A | 64 KB | A file double buffering |
-| L0B | 64 KB | B file double buffering |
-| L0C | 128 KB | C-cumulators (fp32 bytes/elements when added) |
+| L1 | 512 KB | A/B tile 双缓冲 |
+| L0A | 64 KB | A tile 双缓冲 |
+| L0B | 64 KB | B tile 双缓冲 |
+| L0C | 128 KB | C 累加（fp32 累加时按 4 字节/元素） |
 
-Atlas A5-level inter-generational capacity may differ, based on current `ArchTag` and warehouse files;**do not**hard-set the A2 formula to uncertified architecture.
+Atlas A5 等代际容量可能不同，以当前 `ArchTag` 与仓内文档为准；**不要**把 A2 公式硬套到未验证的架构。
 
-## fp16 + Pingpong (Elemental Budget)
+## fp16 + Pingpong（元素个数预算）
 
-Note `L1 = (m1, n1, k1)`, `L0 = (m0, n0, k0)`, element type width `es` (fp16 is 2), excise `ac` (fp32 is 4), double buffering times**2:
+记 `L1 = (m1, n1, k1)`，`L0 = (m0, n0, k0)`，元素类型宽 `es`（fp16 为 2），累加宽 `ac`（fp32 为 4），双缓冲乘 **2**：
 
 ```
-L1 Volume of Elements:  m1*k1 + n1*k1          (multiplier) es*2 Byte required ≤ 512KB)
-L0A Volume of Elements: m0*k0                  (× es*2 ≤ 64KB)
-L0B Volume of Elements: k0*n0                  (× es*2 ≤ 64KB)
-L0C Volume of Elements: m0*n0                  (× ac ≤ 128KB,fp32 (plus)
+L1 元素量:  m1*k1 + n1*k1          （乘 es*2 得字节，须 ≤ 512KB）
+L0A 元素量: m0*k0                  （× es*2 ≤ 64KB）
+L0B 元素量: k0*n0                  （× es*2 ≤ 64KB）
+L0C 元素量: m0*n0                  （× ac ≤ 128KB，fp32 累加）
 ```
 
-**Example (described algorithm)**: `L1=(128,256,256)`, `L0=(128,256,64)`, fp16, Pingpong
-→ L1 saves `128*256*4 + 256*256*4` by word, and is required to certify, on a case-by-case basis, that it is below 512KB.
+**示例（仅说明算法）**：`L1=(128,256,256)`、`L0=(128,256,64)`、fp16、Pingpong
+→ L1 字节约 `128*256*4 + 256*256*4`，需逐项代入验证是否低于 512KB。
 
-## fp32 When entering
+## fp32 输入时
 
-L1 A/B is often 4 bytes; `L0C` may still be added by fp32. fp32 scenes tend to lower `k1` or `m1/n1`, otherwise L1 will be reached first.
+L1 上 A/B 常按 4 字节计；`L0C` 仍可能按 fp32 累加。fp32 场景往往要把 `k1` 或 `m1/n1` 压低，否则 L1 先触顶。
 
-## Selective principle (not relevant to specific benchmark number)
+## 选型原则（与具体 benchmark 编号无关）
 
-1. **M/N/K alignment**: multiple of priority 16; RowMajor often requests**512B alignment**(about 256 elements under fp16), otherwise the padding kernel approach should be taken instead of wriggling Tile.
-2. **L0 relation to L1**: Regular `m0=m1`, `n0=n1`, `k0≤k1`; `k0 = k1/4` is the common starting point, not the only solution.
-3. **Full capacity before performance**: L1 is recalculated before any increase in `k1`; `k1` is smaller than problem K, the frequency of the outer K cycle increases.
-4. **Fragmentation**: RowMajor/ ColumnMajor is a different combination and priority should be given to ensuring removal efficiency**256 times L1**; zN etc. is less sensitive to alignment 256.
-5. **Small M or very small K**: too large Tile → base blocks are too small and underutilized; should**reduce m1/n1 or adjust k1**and accompany Swizzle instead of replacing example names.
+1. **M/N/K 对齐**：优先 16 的倍数；RowMajor 下常还要求 **512B 对齐**（fp16 下约 256 元素一行宽），否则应走 padding 类 kernel 思路，而不是硬拧 Tile。
+2. **L0 与 L1 关系**：常取 `m0=m1`、`n0=n1`，`k0≤k1`；`k0 = k1/4` 是常见起点，不是唯一解。
+3. **先过容量，再谈性能**：任意增大 `k1` 前都要重算 L1；`k1` 小于问题 K 时，外层 K 循环次数会增加。
+4. **排布**：RowMajor/ColumnMajor 组合不同，宜优先保证 **L1 上 256 倍数** 的搬运效率；zN 等格式对 256 对齐敏感度较低。
+5. **小 M 或极小 K**：Tile 过大 → 基本块数过少、核利用率差；应 **减小 m1/n1 或调整 k1**，并配合 Swizzle，而不是只换 example 名字。
 
-## 512B Alignment (RowMajor)
+## 512B 对齐（RowMajor）
 
-- Focus Matrix**Inner Axis**(e. g. RowMajor column orientation) Whether or not 512B alignment
-- Unarranged: expand size in padding or opt for example families with padding at the pageline stage, instead of changing Tile on the error Kernel
+- 关注矩阵 **内轴**（如 RowMajor 的列方向）是否 512B 对齐
+- 未对齐：用 padding 语义扩 shape，或在 pipeline 阶段选用带 padding 的 example 族，而不是在错误 kernel 上只改 Tile
 
-## Fragments and recommendations Tile shape (start point, re-check capacity and load)
+## 排布与推荐 Tile 形状（起点，需再验容量与负载）
 
-| A | B | L1 Start (Accountable) | Annotations |
+| A | B | L1 起点（需验算） | 说明 |
 |---|---|------------------|------|
-| RowMajor | RowMajor | (128, 256, 256) | Universal |
-| RowMajor | ColumnMajor | (128, 256, 256) | N Continuous removal friendly |
-| ColumnMajor | ColumnMajor | (256, 128, 256) | M Directional Priority |
+| RowMajor | RowMajor | (128, 256, 256) | 通用 |
+| RowMajor | ColumnMajor | (128, 256, 256) | N 连续搬运友好 |
+| ColumnMajor | ColumnMajor | (256, 128, 256) | M 方向优先 |

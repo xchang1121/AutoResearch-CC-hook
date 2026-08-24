@@ -1,6 +1,6 @@
 ---
 name: cpu-basics
-description: "CPU C++ operator Core Concept, Standard Structure Model, KernelBench code instruction and embedded extension method"
+description: "CPU C++ 算子核心概念、标准结构模式、KernelBench 代码规范和内嵌扩展方法"
 category: fundamental
 version: "1.0.0"
 metadata:
@@ -10,46 +10,46 @@ metadata:
   architecture: "x86_64, aarch64"
 ---
 
-# CPU C++ Programming Base
+# CPU C++ 编程基础
 
-## 1. Core concepts
+## 1. 核心概念
 
-### Kernel
-- **Definition**: using the C++ function registered with `PYBIND11_MODULE`, compiled and executed on CPU
-- **Characteristics**: Directly operating tensor data pointers to support multiple data types
-- **Form**: with PyTorch C++ extension, dynamically compiled and loaded through `load_inline`
+### 内核 (Kernel)
+- **定义**: 使用 `PYBIND11_MODULE` 注册的 C++ 函数，编译后在 CPU 上执行
+- **特点**: 直接操作张量数据指针，支持多种数据类型
+- **形式**: 使用 PyTorch C++ 扩展，通过 `load_inline` 动态编译加载
 
-### tensor Processing
-- **Consequence**: ensure continuity of the tensor RAM layout and avoid non-continuing access
-- **System harmonization**: internal calculations use a uniform type (priority float32/float64/int32/int64) and final conversion back to the original type
-- **Boundary check**: all arrays must check the border before visiting
+### 张量处理
+- **连续性**: 确保张量内存布局连续，避免非连续访问
+- **类型统一**: 内部计算使用统一类型（优先 float32/float64/int32/int64），最后转换回原类型
+- **边界检查**: 所有数组访问前必须检查边界
 
-### Memory management
-- **Automandate**: PyTorch Automanaging tensor Memory Life Cycle
-- **pointer operation**: direct operation data pointer for efficient calculation
-- **Type security**: ensure that the type of pointer matches the type of tensor
+### 内存管理
+- **自动管理**: PyTorch 自动管理张量内存生命周期
+- **指针操作**: 直接操作数据指针进行高效计算
+- **类型安全**: 确保指针类型与张量类型匹配
 
-## 2. Standard kernel structure (five-step model)
+## 2. 标准内核结构（五步模式）
 
-All CPU C++ kernels follow the same five-step structure model:
+所有 CPU C++ 内核都遵循相同的五步结构模式：
 
 ```cpp
 torch::Tensor standard_kernel(torch::Tensor x) {
-    // 1. Ensure that the input of tensor is continuous
+    // 1. 确保输入张量是连续的
     if (!x.is_contiguous()) {
         x = x.contiguous();
     }
-
-    // 2. Check data type to support multiple types
+    
+    // 2. 检查数据类型，支持多种类型
     torch::ScalarType dtype = x.scalar_type();
-    bool need_convert = (dtype != torch::kFloat32 && dtype != torch::kFloat64 &&
+    bool need_convert = (dtype != torch::kFloat32 && dtype != torch::kFloat64 && 
                         dtype != torch::kInt32 && dtype != torch::kInt64);
     torch::Tensor input = need_convert ? x.to(torch::kFloat32) : x;
 
-    // Create output tensor
+    // 3. 创建输出张量
     torch::Tensor output = torch::zeros_like(input);
 
-    // 4. Based on data type distribution
+    // 4. 根据数据类型分发计算
     if (input.scalar_type() == torch::kFloat32) {
         auto x_ptr = input.data_ptr<float>();
         auto out_ptr = output.data_ptr<float>();
@@ -80,7 +80,7 @@ torch::Tensor standard_kernel(torch::Tensor x) {
         }
     }
 
-    // 5. Conversion back to original type
+    // 5. 转换回原类型
     if (need_convert) {
         output = output.to(dtype);
     }
@@ -88,48 +88,48 @@ torch::Tensor standard_kernel(torch::Tensor x) {
 }
 ```
 
-## 3. KernelBench Standard Code Format
+## 3. KernelBench 标准代码格式
 
-**Important**: The resulting code must follow the KernelBench format specifications, using the**Python module embedded in the C++ code**.
+**重要**: 生成的代码必须遵循 KernelBench 格式规范，使用 **Python 模块内嵌 C++ 代码** 的方式。
 
-### Full examples of templates
+### 完整模板示例
 
-Reference Example position: `skills/cpp/docs/examples/torch_xxx_kernel.py`
+参考示例位置: `skills/cpp/docs/examples/torch_xxx_kernel.py`
 
 ```python
 import torch
 from torch.utils.cpp_extension import load_inline
 
-# Inline C++ Extension Code
+# 内联C++扩展代码
 cpp_source = """
 #include <torch/extension.h>
 
 torch::Tensor op_name_kernel(torch::Tensor x) {
-    // 1. Ensure that the input of tensor is continuous
+    // 1. 确保输入张量是连续的
     if (!x.is_contiguous()) {
         x = x.contiguous();
     }
-
-    // 2. Check data type to support multiple types
+    
+    // 2. 检查数据类型，支持多种类型
     torch::ScalarType dtype = x.scalar_type();
-    bool need_convert = (dtype != torch::kFloat32 && dtype != torch::kFloat64 &&
+    bool need_convert = (dtype != torch::kFloat32 && dtype != torch::kFloat64 && 
                         dtype != torch::kInt32 && dtype != torch::kInt64);
     torch::Tensor input = need_convert ? x.to(torch::kFloat32) : x;
 
-    // Create output tensor
+    // 3. 创建输出张量
     torch::Tensor output = torch::zeros_like(input);
 
-    // 4. Based on data type distribution
+    // 4. 根据数据类型分发计算
     if (input.scalar_type() == torch::kFloat32) {
         auto x_ptr = input.data_ptr<float>();
         auto out_ptr = output.data_ptr<float>();
         int64_t numel = input.numel();
         for (int64_t i = 0; i < numel; ++i) {
-            // Specific operator calculation logic
+            // 具体的算子计算逻辑
             out_ptr[i] = compute_logic(x_ptr[i]);
         }
     } else if (input.scalar_type() == torch::kFloat64) {
-        // Same logic, but use doule type
+        // 同样的逻辑，但使用 double 类型
         auto x_ptr = input.data_ptr<double>();
         auto out_ptr = output.data_ptr<double>();
         int64_t numel = input.numel();
@@ -152,7 +152,7 @@ torch::Tensor op_name_kernel(torch::Tensor x) {
         }
     }
 
-    // 5. Conversion back to original type
+    // 5. 转换回原类型
     if (need_convert) {
         output = output.to(dtype);
     }
@@ -164,7 +164,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 }
 """
 
-# Dynamically load C++ extensions
+# 动态加载C++扩展
 op_name_module = load_inline(
     name="custom_op_name",
     cpp_sources=cpp_source,
@@ -172,26 +172,26 @@ op_name_module = load_inline(
     verbose=True
 )
 
-# Python Interface Functions
+# Python接口函数
 def op_name(x: torch.Tensor) -> torch.Tensor:
     if x.device.type != "cpu":
         x = x.cpu()
     return op_name_module.op_name_kernel(x)
 ```
 
-### Key points
+### 关键要点
 
-1. **Embedded C++ code**: contains the full C++ source code using a three-quote string
-2. **Dynamic compile**: use `load_inline` to dynamic compile and load extensions
-3. **PYBIND11 Registration**: must register operator with `PYBIND11_MODULE` Macro
-4. **Python Interface**: Provides concise Python function packaging
-5. **Does not contain the test code**: do not include any test code in the resulting code
+1. **内嵌 C++ 代码**: 使用三引号字符串包含完整的 C++ 源码
+2. **动态编译**: 使用 `load_inline` 动态编译并加载扩展
+3. **PYBIND11 注册**: 必须使用 `PYBIND11_MODULE` 宏注册算子
+4. **Python 接口**: 提供简洁的 Python 函数包装
+5. **不包含测试代码**: 生成的代码中不要包含任何测试代码
 
-## 4. Three basic programming modes
+## 4. 三种基本编程模式
 
-### 4.1 Element-level mode of operation
+### 4.1 元素级操作模式
 
-Applies to simple operations such as activation function, element-by-fact operation.
+适用于激活函数、逐元素运算等简单操作。
 
 ```cpp
 // ReLU: max(0, x)
@@ -223,26 +223,26 @@ torch::Tensor relu_kernel(torch::Tensor x) {
 }
 ```
 
-### 4.2 Conclude operational modalities
+### 4.2 归约操作模式
 
-Applies to sum, max, min.
+适用于求和、最大值、最小值等聚合操作。
 
 ```cpp
-// Sum reduction: Summation along the specified dimensions
+// Sum reduction: 沿指定维度求和
 torch::Tensor sum_reduction_kernel(torch::Tensor x) {
     if (!x.is_contiguous()) x = x.contiguous();
     torch::ScalarType dtype = x.scalar_type();
     bool need_convert = (dtype != torch::kFloat32 && dtype != torch::kFloat64);
     torch::Tensor input = need_convert ? x.to(torch::kFloat32) : x;
-
+    
     int64_t numel = input.numel();
     torch::Tensor output;
-
+    
     if (input.scalar_type() == torch::kFloat32) {
         auto x_ptr = input.data_ptr<float>();
         float result = 0.0f;
         for (int64_t i = 0; i < numel; ++i) {
-            result += x_ptr[i];  // Peace be with you.
+            result += x_ptr[i];  // 求和归约
         }
         output = torch::tensor({result}, torch::kFloat32);
     } else if (input.scalar_type() == torch::kFloat64) {
@@ -253,39 +253,39 @@ torch::Tensor sum_reduction_kernel(torch::Tensor x) {
         }
         output = torch::tensor({result}, torch::kFloat64);
     }
-
+    
     if (need_convert) output = output.to(dtype);
     return output;
 }
 ```
 
-### 4.3 Border security disposal model
+### 4.3 边界安全处理模式
 
-Ensure that all operations have proper border checks and error processing.
+确保所有操作都有适当的边界检查和错误处理。
 
 ```cpp
 torch::Tensor safe_operation_kernel(torch::Tensor x) {
-    // 1. Examination of tensor validity
+    // 1. 检查张量有效性
     TORCH_CHECK(x.numel() > 0, "Input tensor cannot be empty");
     TORCH_CHECK(x.dim() > 0, "Input tensor must have at least one dimension");
-
-    // 2. Ensuring continuity of tensor
+    
+    // 2. 确保张量连续性
     if (!x.is_contiguous()) {
         x = x.contiguous();
     }
-
-    // 3. Type checks and conversions
+    
+    // 3. 类型检查和转换
     torch::ScalarType dtype = x.scalar_type();
     bool need_convert = (dtype != torch::kFloat32 && dtype != torch::kFloat64);
     torch::Tensor input = need_convert ? x.to(torch::kFloat32) : x;
     torch::Tensor output = torch::zeros_like(input);
-
-    // 4. Secure data processing
+    
+    // 4. 安全的数据处理
     if (input.scalar_type() == torch::kFloat32) {
         auto x_ptr = input.data_ptr<float>();
         auto out_ptr = output.data_ptr<float>();
         int64_t numel = input.numel();
-
+        
         for (int64_t i = 0; i < numel; ++i) {
             out_ptr[i] = std::max(0.0f, x_ptr[i]);
         }
@@ -293,35 +293,35 @@ torch::Tensor safe_operation_kernel(torch::Tensor x) {
         auto x_ptr = input.data_ptr<double>();
         auto out_ptr = output.data_ptr<double>();
         int64_t numel = input.numel();
-
+        
         for (int64_t i = 0; i < numel; ++i) {
             out_ptr[i] = std::max(0.0, x_ptr[i]);
         }
     }
-
+    
     if (need_convert) output = output.to(dtype);
     return output;
 }
 ```
 
-## 5. Core API Reference
+## 5. 核心 API 参考
 
-### tensor Type Check & Convert
+### 张量类型检查与转换
 
 ```cpp
-// Type check
+// 类型检查
 torch::ScalarType dtype = x.scalar_type();
 bool is_float32 = (dtype == torch::kFloat32);
 bool is_float64 = (dtype == torch::kFloat64);
 bool is_int32 = (dtype == torch::kInt32);
 bool is_int64 = (dtype == torch::kInt64);
 
-// Type Conversion
-torch::Tensor input = x.to(torch::kFloat32);  // Convert to float32
-torch::Tensor output = result.to(dtype);      // Convert back to the original type
+// 类型转换
+torch::Tensor input = x.to(torch::kFloat32);  // 转换为 float32
+torch::Tensor output = result.to(dtype);      // 转换回原类型
 ```
 
-### Continuous inspection
+### 连续性检查
 
 ```cpp
 if (!x.is_contiguous()) {
@@ -329,99 +329,99 @@ if (!x.is_contiguous()) {
 }
 ```
 
-### Data pointer acquisition
+### 数据指针获取
 
 ```cpp
-// Float32 Pointer
+// float32 指针
 auto x_ptr = input.data_ptr<float>();
 auto out_ptr = output.data_ptr<float>();
 
-// Float64 Pointer
+// float64 指针
 auto x_ptr = input.data_ptr<double>();
 auto out_ptr = output.data_ptr<double>();
 
-// Int32 Pointer
+// int32 指针
 auto x_ptr = input.data_ptr<int32_t>();
 auto out_ptr = output.data_ptr<int32_t>();
 
-// Int64 Pointer
+// int64 指针
 auto x_ptr = input.data_ptr<int64_t>();
 auto out_ptr = output.data_ptr<int64_t>();
 ```
 
-### tensor Creation and Properties
+### 张量创建与属性
 
 ```cpp
-// Create output tensor
-torch::Tensor output = torch::zeros_like(input);  // The sameshapeniltensor
-torch::Tensor output = torch::ones_like(input);   // The sameshapeUnitstensor
-torch::Tensor output = input.clone();             // Cloningtensor
+// 创建输出张量
+torch::Tensor output = torch::zeros_like(input);  // 同形状零张量
+torch::Tensor output = torch::ones_like(input);   // 同形状单位张量
+torch::Tensor output = input.clone();             // 克隆张量
 
-// tensor Properties
-int64_t numel = input.numel();           // Total number of elements
-int64_t dim = input.dim();               // Dimensions
-torch::IntArrayRef shape = input.sizes(); // shape
+// 张量属性
+int64_t numel = input.numel();           // 元素总数
+int64_t dim = input.dim();               // 维度数
+torch::IntArrayRef shape = input.sizes(); // 形状
 ```
 
-### Border checks
+### 边界检查
 
 ```cpp
 TORCH_CHECK(x.numel() > 0, "Input tensor cannot be empty");
 TORCH_CHECK(x.dim() > 0, "Input tensor must have at least one dimension");
 ```
 
-## 6. Programming constraints and best practice
+## 6. 编程约束与最佳实践
 
-### Rules to be followed
+### 必须遵循的规则
 
-1. **Boundary check**: all arrays must check the border before visiting
-2. **Type security**: ensure that the type of pointer matches the type of tensor
-3. **Consequence assurance**: ensuring continuity of tensor memory prior to processing
-4. **Type support**: priority support for float32/float64/int32/int64, other types of automatic conversion
+1. **边界检查**: 所有数组访问前必须检查边界
+2. **类型安全**: 确保指针类型与张量类型匹配
+3. **连续性保证**: 处理前确保张量内存连续
+4. **类型支持**: 优先支持 float32/float64/int32/int64，其他类型自动转换
 
-### Principles of kernel design
+### 内核设计原则
 
-1. **Single function**: One thing for each function
-2. **Parameters Simple**: Avoid complex data structure transfer
-3. **Avoid dynamic distribution**: kernel avoid new/delete
-4. **Clear note**: Add sufficient note to explain the calculation logic
+1. **单一职责**: 每个函数只做一件事
+2. **参数简单**: 避免复杂的数据结构传递
+3. **避免动态分配**: 内核内避免 new/delete
+4. **清晰注释**: 添加充分的注释说明计算逻辑
 
-### OpenMP Parallel Programming Constraint
+### OpenMP并行编程约束
 
-1. **⚠️ Key Constraint**: OpenMPruntimeAPI call position limit
-   - **No scenes allowed**:Don't be here.SIMDRegional, parallel regionsintervening codeMedium Call`omp_get_thread_num()`Wait.OpenMPruntimeAPI
-   - **Correct use**: OpenMP API should be called in the normal code path in the parallel area, not in the restricted context of compiler
-   - **Example of error**:
+1. **⚠️ 关键约束**: OpenMP运行时API调用位置限制
+   - **禁止场景**: 不得在SIMD区域、并行区域的intervening code中调用`omp_get_thread_num()`等OpenMP运行时API
+   - **正确用法**: OpenMP API应在并行区域内的正常代码路径中调用,而非在编译器受限的上下文中
+   - **错误示例**:
      ```cpp
-     // ❌ error: Call OpenMP API in restricted context
-     std::mt19937 gen(seed + omp_get_thread_num());  // Compiler error!
+     // ❌ 错误:在受限上下文中调用OpenMP API
+     std::mt19937 gen(seed + omp_get_thread_num());  // 编译错误!
      ```
-   - **Correct example**:
+   - **正确示例**:
      ```cpp
-     // ✅ Correct: Normal Call within Parallel Area
+     // ✅ 正确:在并行区域内正常调用
      #pragma omp parallel
      {
-         int tid = omp_get_thread_num();  // Correct.
+         int tid = omp_get_thread_num();  // 正确
          std::mt19937 gen(seed + tid);
      }
      ```
-2. **Language security**: ensuring an example of an independent random number generator for each thread
-3. **Data competition**: Avoid multiple threads writing the same memory position at the same time
+2. **线程安全**: 确保每个线程有独立的随机数生成器实例
+3. **数据竞争**: 避免多个线程同时写入同一内存位置
 
-### Code Style Requirements
+### 代码风格要求
 
-1. **Does not contain test code**: Generated code does not contain any test code
-2. **Embedded C++ format**: C++ code must be written in three quote strings
-3. **Keep format clear**: appropriate indentation and line breaks
-4. **Descriptive naming**: using clear variable and function names
+1. **不包含测试代码**: 生成的代码不要包含任何测试代码
+2. **内嵌 C++ 格式**: C++ 代码必须写在三引号字符串中
+3. **保持格式清晰**: 适当的缩进和换行
+4. **描述性命名**: 使用清晰的变量名和函数名
 
-## 7. More Example References
+## 7. 更多示例参考
 
-For more complete examples of operator realization, please refer to:
+更多完整的算子实现示例，请参考：
 
-- **Base document**: `skills/cpp/docs/basic_docs.md`
-- **optimization recommendation**: `skills/cpp/docs/suggestion_docs.md`
-- **API Handbook**: `skills/cpp/docs/api/api.md`
-- **Code template**: `skills/cpp/docs/examples/torch_xxx_kernel.py`
+- **基础文档**: `skills/cpp/docs/basic_docs.md`
+- **优化建议**: `skills/cpp/docs/suggestion_docs.md`
+- **API 手册**: `skills/cpp/docs/api/api.md`
+- **代码模板**: `skills/cpp/docs/examples/torch_xxx_kernel.py`
 
-These documents provide a complete guide and reference template for implementation.
+这些文档提供了完整的实现指南和参考模板。

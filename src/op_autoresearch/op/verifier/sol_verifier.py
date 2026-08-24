@@ -21,29 +21,29 @@ PROF_SOL_GENERATION_TEMPLATE_PATH = os.path.join(
 )
 
 def generate_sol_verify_project(verifier, impl_code: str, verify_dir: str, device_id: int = 0):
-    """Generate SOL-ExecBench to the specified directory"""
-    logger.info(f"[{verifier.op_name}] Start Generating SOL-ExecBench Validation of projects, directories: {verify_dir}, device_id={device_id}")
-
+    """生成 SOL-ExecBench 验证项目文件到指定目录"""
+    logger.info(f"[{verifier.op_name}] 开始生成 SOL-ExecBench 验证项目，目录: {verify_dir}, device_id={device_id}")
+    
     sol_problem_dir = verifier.config.get("sol_problem_dir")
     if not sol_problem_dir or not os.path.exists(sol_problem_dir):
         raise ValueError(f"sol_problem_dir is missing or does not exist: {sol_problem_dir}")
-
-    # 1. Copies of the SOL Core Document
+        
+    # 1. 拷贝 SOL 核心文件
     for file_name in ["definition.json", "workload.jsonl", "reference.py"]:
         src_file = os.path.join(sol_problem_dir, file_name)
         dst_file = os.path.join(verify_dir, file_name)
         if not os.path.exists(src_file):
             raise FileNotFoundError(f"Missing required SOL file: {src_file}")
         shutil.copy2(src_file, dst_file)
-
-    # 2. Copy sol_correctness.py
+        
+    # 2. 拷贝 sol_correctness.py
     sol_correctness_src = os.path.join(get_project_root(), "op", "resources", "utils", "sol_correctness.py")
     sol_correctness_dst = os.path.join(verify_dir, "sol_correctness.py")
     if not os.path.exists(sol_correctness_src):
         raise FileNotFoundError(f"Missing sol_correctness.py: {sol_correctness_src}")
     shutil.copy2(sol_correctness_src, sol_correctness_dst)
 
-    # 3. Creation of a specific implementation document
+    # 3. 创建具体实现文件
     dsl_adapter = get_dsl_adapter(verifier.dsl)
     if getattr(dsl_adapter, "kernel_arg_is_directory", False):
         dsl_adapter.prepare_config(verifier.config, task_info=None)
@@ -64,25 +64,25 @@ def generate_sol_verify_project(verifier, impl_code: str, verify_dir: str, devic
             dsl_adapter = get_dsl_adapter(verifier.dsl)
             import_statements = dsl_adapter.get_import_statements(verifier.framework)
         except Exception as e:
-            logger.error(f"[{verifier.op_name}] DSL importstatement generation failed: {e}")
+            logger.error(f"[{verifier.op_name}] DSL import语句生成失败: {e}")
             raise
 
         try:
             with open(impl_file, "w", encoding="utf-8") as f:
                 f.write(import_statements + impl_code)
         except Exception as e:
-            logger.error(f"[{verifier.op_name}] Failed to achieve file creation: {impl_file}, Error: {e}")
+            logger.error(f"[{verifier.op_name}] 实现文件创建失败: {impl_file}, 错误: {e}")
             raise
 
-    # 4. Generate authentication scripts
+    # 4. 生成验证脚本
     verify_file = os.path.join(verify_dir, f"verify_{verifier.op_name}.py")
     template_path = os.path.join(get_project_root(), "op", "resources", "templates", "verify_sol_template.j2")
-
+    
     try:
         with open(template_path, "r", encoding="utf-8") as f:
             template = Template(f.read())
     except Exception as e:
-        logger.error(f"[{verifier.op_name}] Failed to load template file: {template_path}, Error: {e}")
+        logger.error(f"[{verifier.op_name}] 模板文件加载失败: {template_path}, 错误: {e}")
         raise
 
     try:
@@ -90,7 +90,7 @@ def generate_sol_verify_project(verifier, impl_code: str, verify_dir: str, devic
         dsl_adapter = get_dsl_adapter(verifier.dsl)
         backend_adapter = get_backend_adapter(verifier.backend)
     except Exception as e:
-        logger.error(f"[{verifier.op_name}] AdaptersInitialization failed: {e}")
+        logger.error(f"[{verifier.op_name}] Adapters初始化失败: {e}")
         raise
 
     try:
@@ -101,7 +101,7 @@ def generate_sol_verify_project(verifier, impl_code: str, verify_dir: str, devic
             module_name = dsl_impl_import.split(" ")[1]
             import_name = dsl_impl_import.split(" ")[3].strip()
             dsl_impl_import = f"import importlib.util\nimport sys\nspec = importlib.util.spec_from_file_location('{module_name}', '{module_name}.py')\nmodule = importlib.util.module_from_spec(spec)\nsys.modules['{module_name}'] = module\nspec.loader.exec_module(module)\n{import_name} = getattr(module, '{import_name}')"
-
+        
         dsl_adapter.prepare_config(verifier.config, task_info=None)
         special_setup = dsl_adapter.get_special_setup_code(
             framework=verifier.framework
@@ -109,14 +109,14 @@ def generate_sol_verify_project(verifier, impl_code: str, verify_dir: str, devic
         dsl_imports += "\n" + dsl_impl_import
         if special_setup:
             dsl_imports += "\n" + special_setup
-
+        
         backend_adapter.setup_environment(device_id, verifier.arch)
         create_impl_code = verifier._prepare_code_lines(dsl_adapter.create_impl_module(verifier.framework, framework_adapter))
         device_setup_code = verifier._prepare_code_lines(framework_adapter.get_device_setup_code(verifier.backend, verifier.arch, device_id))
-
+        
         sol_execbench_src_dir = os.path.abspath(os.path.join(get_project_root(), "..", "..", "thirdparty", "sol-execbench", "src"))
-
-        # Render Template
+        
+        # 渲染模板
         verify_script = template.render(
             op_name=verifier.op_name,
             framework=verifier.framework,
@@ -129,17 +129,17 @@ def generate_sol_verify_project(verifier, impl_code: str, verify_dir: str, devic
             create_impl_code=create_impl_code,
             sol_execbench_src_dir=sol_execbench_src_dir
         )
-
+        
         with open(verify_file, "w", encoding="utf-8") as f:
             f.write(verify_script)
-
+            
     except Exception as e:
-        logger.error(f"[{verifier.op_name}] Authentication script generation failed: {e}")
+        logger.error(f"[{verifier.op_name}] 验证脚本生成失败: {e}")
         raise
 
 
 def _get_sol_common_template_vars(verifier, device_id: int):
-    """Retrieving public variables for the SOL profile template (shared with base and source template)"""
+    """获取 SOL profile 模板的公共变量（供 base 和 generation 模板共用）"""
     framework_adapter = get_framework_adapter(verifier.framework)
     dsl_adapter = get_dsl_adapter(verifier.dsl)
     backend_adapter = get_backend_adapter(verifier.backend)
@@ -190,28 +190,28 @@ def generate_sol_profile_project(verifier, verify_dir: str, device_id: int = 0,
                                   warmup_times: int | None = None,
                                   run_times: int | None = None,
                                   skip_base: bool = False):
-    """Generate SOL-ExecBench Performance Test Project Files to a specified directory
+    """生成 SOL-ExecBench 性能测试项目文件到指定目录
 
-    CorrelBench's gen_profile_project generated two profile scripts:
-    -Profile_{op_name}_base.py to measure access.run
-    -profile_{op_name}_generation.py to measure the performance achieved by generation
+    与 KernelBench 的 gen_profile_project 对应，生成两个 profile 脚本：
+    - profile_{op_name}_base.py      测量 reference.run 的性能
+    - profile_{op_name}_generation.py 测量生成实现的性能
 
-    Both scripts output JSON files compatible with KernelBench
-    (base_profile_result.json / generation_profile_result.json),
-    Downstream profiler_utils.run_profile_scripts_and_collect_results can be used directly.
+    两个脚本均输出与 KernelBench 兼容的 JSON 文件
+    (base_profile_result.json / generation_profile_result.json)，
+    下游 profiler_utils.run_profile_scripts_and_collect_results 可直接使用。
     """
     warmup_times = resolve_warmup_times(warmup_times)
     run_times = resolve_run_times(run_times)
     logger.info(
-        f"[{verifier.op_name}] Start Generating SOL-ExecBench The performance test project,"
-        f"Contents: {verify_dir}, device_id={device_id}"
+        f"[{verifier.op_name}] 开始生成 SOL-ExecBench 性能测试项目，"
+        f"目录: {verify_dir}, device_id={device_id}"
     )
 
     sol_problem_dir = verifier.config.get("sol_problem_dir")
     if not sol_problem_dir or not os.path.exists(sol_problem_dir):
         raise ValueError(f"sol_problem_dir is missing or does not exist: {sol_problem_dir}")
 
-    # Ensure that SOL data files exist (gen_verify_project is usually copied)
+    # 确保 SOL 数据文件存在（gen_verify_project 通常已经拷贝过）
     for file_name in ["definition.json", "workload.jsonl", "reference.py"]:
         dst_file = os.path.join(verify_dir, file_name)
         if not os.path.exists(dst_file):
@@ -220,7 +220,7 @@ def generate_sol_profile_project(verifier, verify_dir: str, device_id: int = 0,
                 raise FileNotFoundError(f"Missing required SOL file: {src_file}")
             shutil.copy2(src_file, dst_file)
 
-    # Ensure that sol_correctness.py exists
+    # 确保 sol_correctness.py 存在
     sol_correctness_dst = os.path.join(verify_dir, "sol_correctness.py")
     if not os.path.exists(sol_correctness_dst):
         sol_correctness_src = os.path.join(
@@ -243,7 +243,7 @@ def generate_sol_profile_project(verifier, verify_dir: str, device_id: int = 0,
                      "thirdparty", "sol-execbench", "src")
     )
 
-    # Generate base profile script (measurement of reference.run)
+    # 生成 base profile 脚本（测量 reference.run 的性能）
     if not skip_base:
         try:
             with open(PROF_SOL_BASE_TEMPLATE_PATH, "r", encoding="utf-8") as f:
@@ -261,20 +261,20 @@ def generate_sol_profile_project(verifier, verify_dir: str, device_id: int = 0,
             base_path = os.path.join(verify_dir, f"profile_{verifier.op_name}_base.py")
             with open(base_path, "w", encoding="utf-8") as f:
                 f.write(base_script)
-            logger.info(f"[{verifier.op_name}] SOL base profile Script written: {base_path}")
+            logger.info(f"[{verifier.op_name}] SOL base profile 脚本已写入: {base_path}")
         except Exception as e:
-            logger.error(f"[{verifier.op_name}] SOL base profile Script Generation Failed: {e}")
+            logger.error(f"[{verifier.op_name}] SOL base profile 脚本生成失败: {e}")
             raise
     else:
-        logger.info(f"[{verifier.op_name}] Skip SOL base profile Generateskip_base=True)")
+        logger.info(f"[{verifier.op_name}] 跳过 SOL base profile 生成（skip_base=True）")
 
     if not profile_generation_enabled:
-        logger.info(f"[{verifier.op_name}] Skip SOL generation profile Generate (Previous round) verify Not adopted)")
+        logger.info(f"[{verifier.op_name}] 跳过 SOL generation profile 生成（上一轮 verify 未通过）")
         return
 
     common_vars = _get_sol_common_template_vars(verifier, device_id)
 
-    # Generate Generation profile scripts (measure the performance of generation)
+    # 生成 generation profile 脚本（测量生成实现的性能）
     try:
         with open(PROF_SOL_GENERATION_TEMPLATE_PATH, "r", encoding="utf-8") as f:
             gen_template = Template(f.read())
@@ -294,7 +294,7 @@ def generate_sol_profile_project(verifier, verify_dir: str, device_id: int = 0,
         gen_path = os.path.join(verify_dir, f"profile_{verifier.op_name}_generation.py")
         with open(gen_path, "w", encoding="utf-8") as f:
             f.write(gen_script)
-        logger.info(f"[{verifier.op_name}] SOL generation profile Script written: {gen_path}")
+        logger.info(f"[{verifier.op_name}] SOL generation profile 脚本已写入: {gen_path}")
     except Exception as e:
-        logger.error(f"[{verifier.op_name}] SOL generation profile Script Generation Failed: {e}")
+        logger.error(f"[{verifier.op_name}] SOL generation profile 脚本生成失败: {e}")
         raise

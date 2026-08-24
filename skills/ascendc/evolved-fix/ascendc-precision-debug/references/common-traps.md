@@ -1,54 +1,54 @@
-# Common accuracy trap details
+# 常见精度陷阱详解
 
-## Trap 1: FP16 accuracy is inadequate
+## 陷阱1：FP16 精度不足
 
-### Symptom
-- Simple calculations have obvious errors.
-- FP16 error is clearly greater than FP32
-- Multiple cumulative error accumulations
+### 症状
+- 简单计算也有明显误差
+- FP16 误差明显大于 FP32
+- 多次累加后误差累积
 
-### Reason
-PP16 Only about 3-4 bits (FP32 about 6-7 bits) are vulnerable to the loss of accuracy in calculations requiring high accuracy.
+### 原因
+FP16 只有约 3-4 位有效数字（FP32 约 6-7 位），在需要高精度的计算中容易丢失精度。
 
-### Solutions
+### 解决方案
 
-**Mixed accuracy design principles**:
-- Input/output maintenance FP16 (saving bandwidth and storage)
-- Critical intermediate calculation FP32 (upgrade accuracy)
-- Aggregation Operations Priority FP32
+**混合精度设计原则**：
+- 输入/输出保持 FP16（节省带宽和存储）
+- 关键中间计算用 FP32（提升精度）
+- 累加类操作优先用 FP32
 
 ```cpp
-// Critical middle value FP32
+// 关键中间值用 FP32
 float sum_fp32 = 0.0f;
 for (int i = 0; i < n; ++i) {
-    sum_fp32 += static_cast<float>(values[i]);  // Turn first to FP32 Gradient
+    sum_fp32 += static_cast<float>(values[i]);  // 先转为 FP32 累加
 }
-output = static_cast<half>(sum_fp32);  // Finally, turn around. FP16
+output = static_cast<half>(sum_fp32);  // 最后转回 FP16
 ```
 
-**Typical application**: Reduce, Sum, Mean, Softmax, etc.
+**典型应用**：Reduce、Sum、Mean、Softmax 等
 
-### Plan Phase prevention
-When developing the operator development plan, ask voluntarily:
-> "What is the operator to accuracy? Do you want to use FP32 to upgrade accuracy in the intermediate calculation? "
+### Plan 阶段预防
+在制定算子开发 Plan 时，主动询问：
+> "该算子对精度要求如何？是否需要在中间计算过程中使用 FP32 提升精度？"
 
 ---
 
-## Trap 2: exp/log spill
+## 陷阱2：exp/log 溢出
 
-### Symptom
-- Inf (infinite)
-- NN (non-value) appears in output
-- Large input value results abnormal
+### 症状
+- 输出出现 Inf（无穷大）
+- 输出出现 NaN（非数值）
+- 大输入值结果异常
 
-### Reason
-- exp(x) overflow at x > 88 (FP16)
-- log(x) was not defined at x≤0
+### 原因
+- exp(x) 在 x > 88 时溢出（FP16）
+- log(x) 在 x ≤ 0 时无定义
 
-### Solutions: numerically stable Softmax
+### 解决方案：数值稳定的 Softmax
 
 ```cpp
-// Minus maximum, then ext, avoid spilling.
+// 先减去最大值，再 exp，避免溢出
 half max_val = input[0];
 for (int i = 1; i < size; ++i) {
     max_val = max(max_val, input[i]);
@@ -56,7 +56,7 @@ for (int i = 1; i < size; ++i) {
 
 half exp_sum = 0.0h;
 for (int i = 0; i < size; ++i) {
-    half shifted = input[i] - max_val;  // Key! Make the maximum input is0
+    half shifted = input[i] - max_val;  // 关键！使最大输入为0
     half exp_val = Exp(shifted);
     exp_sum += exp_val;
     output[i] = exp_val;
@@ -67,96 +67,96 @@ for (int i = 0; i < size; ++i) {
 }
 ```
 
-**The principle of numerical stability**:
-- After subtracting maximum value, maximum input becomes 0, ext. (0) = 1
-- Other inputs become negative, ext. (negative) < 1
-- Avoided exp spills
+**数值稳定原理**：
+- 减去最大值后，最大输入变为 0，exp(0) = 1
+- 其他输入变为负数，exp(负数) < 1
+- 避免了 exp(大正数) 溢出
 
-### Other numerical stabilization techniques
+### 其他数值稳定技巧
 
 ```cpp
-// Stable log-sum-exp (for log-softmax)
+// 稳定的 log-sum-exp（用于 log-softmax）
 half max_val = ReduceMax(input);
 half sum_exp = 0.0h;
 for (int i = 0; i < size; ++i) {
     sum_exp += Exp(input[i] - max_val);
 }
-output = max_val + Log(sum_exp);  // Value stable log(sum(exp(x)))
+output = max_val + Log(sum_exp);  // 数值稳定的 log(sum(exp(x)))
 
-// Stable Sigmoid
+// 稳定的 sigmoid
 half sigmoid = 1.0h / (1.0h + Exp(-x));
 
-// Avoid excessive alternatives to ext(x)
-// If you know the range of x, you can precut it.
-half safe_exp = Exp(min(x, 10.0h));  // Maximum limit index is 10
+// 避免 exp(x) 过大的替代方案
+// 如果知道 x 的范围，可以预先截断
+half safe_exp = Exp(min(x, 10.0h));  // 限制最大指数为 10
 ```
 
 ---
 
-## Trap 3: Cutoff offset (Catastropic Regulation)
+## 陷阱3：减法抵消（Catastrophic Cancellation）
 
-### Symptom
-- When the two near numbers fell, the error suddenly got bigger.
-- a ≈ b, a -b results inaccurate
+### 症状
+- 两个接近的数相减时，误差突然变大
+- a ≈ b 时，a - b 结果不准确
 
-### Reason
-When the numbers are close to each other, the valid numbers are lost in large quantities, leading to an increase in relative error.
+### 原因
+当两个接近的数相减时，有效数字会大量丢失，导致相对误差增大。
 
-### Example:
+### 示例
 ```
-FP16: 1.234 - 1.233 = 0.001(Perhaps it's just... 1 Bits effective)
+FP16: 1.234 - 1.233 = 0.001（可能只有 1 位有效数字）
 ```
 
-### Solutions
+### 解决方案
 
-**Method 1: Reordered formulae**
+**方法1：重排计算公式**
 ```cpp
-// Original formula (value unstable)
+// 原始公式（数值不稳定）
 half result = sqrt(x + 1) - sqrt(x);
 
-// Stable version (reasonable)
+// 稳定版本（有理化）
 half result = 1.0h / (sqrt(x + 1) + sqrt(x));
 ```
 
-**method 2: Upgrade of the center accuracy**
+**方法2：提升中间精度**
 ```cpp
-// Use FP32 for subtraction operations
+// 使用 FP32 进行减法运算
 float diff_fp32 = static_cast<float>(a) - static_cast<float>(b);
 half result = static_cast<half>(diff_fp32);
 ```
 
-**Methodology 3: Use of mathematical equivalents**
+**方法3：使用数学等价变换**
 ```cpp
-// For example: Calculating 1 - cos(x)
-// Unstable: 1 - cos(x)
-// Stability:2 * sin(x/2)^2
+// 例如：计算 1 - cos(x)
+// 不稳定：1 - cos(x)
+// 稳定：2 * sin(x/2)^2
 ```
 
 ---
 
-## Trap 4: Reduce Operation accuracy Loss
+## 陷阱4：Reduce 操作精度损失
 
-### Symptom
-- Reduce, the result is that error is bigger than the element-by-fact operation.
-- Sum/Mean et al. accuracy inadequate
+### 症状
+- Reduce 结果误差比逐元素操作大
+- Sum/Mean 等聚合操作精度不足
 
-### Reason
-The Reduce operation involved multiple additions, and the lack of FP16 accuracy led to the accumulation of error.
+### 原因
+Reduce 操作涉及多次累加，FP16 精度不足导致误差累积。
 
-### Solutions
+### 解决方案
 
 ```cpp
-// Use FP32 loader
+// 使用 FP32 累加器
 float sum_fp32 = 0.0f;
 for (int i = 0; i < size; ++i) {
     sum_fp32 += static_cast<float>(input[i]);
 }
 output = static_cast<half>(sum_fp32);
 
-// ReduceMax/ReduceMin is unaffected and can maintain FP16
-half max_val = ReduceMax(input);  // FP16 Enough.
+// ReduceMax/ReduceMin 不受影响，可以保持 FP16
+half max_val = ReduceMax(input);  // FP16 足够
 
-// ReduceSum/ReduceMean recommends FP32
+// ReduceSum/ReduceMean 建议使用 FP32
 float mean_fp32 = 0.0f;
 for (int i = 0; i < size; ++i) {
     mean_fp32 += static_cast<float>(input[i]);
@@ -164,333 +164,333 @@ for (int i = 0; i < size; ++i) {
 mean_fp32 /= static_cast<float>(size);
 ```
 
-> **PP32 Thrust is still insufficient**(restricted fp64 reference / big K contract K~1e3-1e4 / drop):
-> See [high-precision-reduction.md] (high-precision-reduction.md) - Compensated-Neumaier,
-> TwoProduct, block compensation matmul, HF32 trap, and when the hardware ceiling should stop.
+> **FP32 累加器仍不够时**（严格对标 fp64 参考 / 大 K 归约 K~1e3-1e4 / 深相消）：
+> 见 [high-precision-reduction.md](high-precision-reduction.md)——补偿求和（guarded-Neumaier）、
+> TwoProduct（精确积）、分块补偿 matmul、HF32 陷阱、以及何时是硬件天花板该停手。
 
 ---
 
-## Trap 5: Remove Zero Risk
+## 陷阱5：除零风险
 
-### Symptom
-- Output appears, NAN.
-- An abnormally large value appears in the output
+### 症状
+- 输出出现 NaN
+- 输出出现异常大的数值
 
-### Solutions
+### 解决方案
 
 ```cpp
-// Method 1: Add small constant (Epsilon)
+// 方法1：添加小常数（Epsilon）
 half eps = 1e-7h;
 half safe_div = numerator / (denominator + eps);
 
-// Method 2: Conditional judgement
+// 方法2：条件判断
 half eps = 1e-7h;
 half safe_div = (abs(denominator) < eps) ? 0.0h : numerator / denominator;
 
-// Method 3: Use maximum value protection
+// 方法3：使用最大值保护
 half safe_div = numerator / max(denominator, eps);
 ```
 
 ---
 
-## Trap 6: Hardware constraints are not satisfactory
+## 陷阱6：硬件约束不满足
 
-### Symptom
-- Unusual results for specific input sizes
-- Normal size is normal, border is wrong.
+### 症状
+- 特定输入规模结果异常
+- 正常规模正常，边界规模错误
 
-### Typical case: SoftmaxV5
+### 典型案例：SoftmaxV5
 
-**Found**: ReduceMax/ReduceSum calculates incorrectly when column < 8
+**发现**：ReduceMax/ReduceSum 在列数 < 8 时计算不正确
 
-**Reason**: Hardware constraint
+**原因**：硬件 reduce 操作的约束
 
-**Solution**:
+**解决方案**：
 ```cpp
-// Add Input Authentication
+// 添加输入验证
 if (cols < 8) {
     printf("Error: cols must be >= 8 (got %d)\n", cols);
     return;
 }
 
-// or specify constraints in the document
-// Known limits: Columns must be ≥ 8
+// 或在文档中明确说明约束
+// 已知限制：列数必须 ≥ 8
 ```
 
-### Common hardware constraints
+### 常见硬件约束
 
-| Type of binding | Request | Inspection methods |
+| 约束类型 | 要求 | 检查方法 |
 |---------|------|---------|
-| Reduce Operations | Minimum number of elements ≥ 8 | Check reduce dimensions |
-| Data Alignment | 32 Byte Alignment | Check the length of the tail axis |
-| Single processing cap | Limited by UB | Big data needs a segment |
+| Reduce 操作 | 最小元素数 ≥ 8 | 检查 reduce 维度大小 |
+| 数据对齐 | 32 字节对齐 | 检查尾轴长度 |
+| 单次处理上限 | 受 UB 容量限制 | 大数据需要分块 |
 
-**32 Byte Reference**:
-| data type | Bytes per Element | 32 byte alignment elements |
+**32 字节对齐参考**：
+| 数据类型 | 每元素字节数 | 32 字节对齐元素数 |
 |---------|-------------|----------------|
-| FP16 | 2 bytes | 16 elements |
-| FP32 | 4 bytes | 8 elements |
-| INT8 | 1 byte | 32 elements |
+| FP16 | 2 字节 | 16 个元素 |
+| FP32 | 4 字节 | 8 个元素 |
+| INT8 | 1 字节 | 32 个元素 |
 
 ---
 
-## Trap 7: Type conversion accuracy loss
+## 陷阱7：类型转换精度损失
 
-### Symptom
-- FP32 → FP16 has fallen accuracy
-- Multiple conversion cumulative error
+### 症状
+- FP32 → FP16 转换后精度下降
+- 多次转换累积误差
 
-### Solutions
+### 解决方案
 
 ```cpp
-// Avoid unnecessary type conversion
-// Not recommended: frequent conversion
+// 避免不必要的类型转换
+// 不推荐：频繁转换
 half temp = static_cast<half>(float_value);
 float result = static_cast<float>(temp);
 
-// Recommendation: maintain a type
-float result = float_value;  // Use as much as possible. FP32 Calculate
+// 推荐：保持一种类型
+float result = float_value;  // 尽量用 FP32 计算
 
-// Convert only if necessary
+// 只在必要时转换
 half output = static_cast<half>(final_result_fp32);
 ```
 
 ---
 
-## Trap 8: Cast API RoundMode with error ⭐
+## 陷阱8：Cast API RoundMode 使用错误 ⭐
 
-### Symptom
-- Postcast data is completely wrong (not accuracy, data confusion)
-- The multiline data output is identical.
-- Error related to RoundMode selection, not accuracy loss
+### 症状
+- Cast 后数据完全错误（不是精度问题，是数据混乱）
+- 多行数据输出完全相同
+- 错误与 RoundMode 选择有关，而非精度损失
 
-### Reason
-Error selecting `RoundMode` parameter for Cast API. Key perception:
+### 原因
+Cast API 的 `RoundMode` 参数选择错误。关键认知：
 
-**Semantics of `CAST_NONE`**: The `CAST_RINT` model is expressed in the conversion of accuracy's loss,**the accuracy's loss is not included in the list**.
+**`CAST_NONE` 的语义**：在转换有精度损失时表示 `CAST_RINT` 模式，**不涉及精度损失时表示不舍入**。
 
-### Use correctly
+### 正确用法
 
-| Convert direction | RoundMode | Reason |
+| 转换方向 | RoundMode | 原因 |
 |---------|-----------|------|
-| half → float | `CAST_NONE` | Low → High accuracy, no accuracy loss, no rounding |
-| float → half | `CAST_ROUND` | High →'s low accuracy, with accuracy's loss, needs to be rounded. |
+| half → float | `CAST_NONE` | 低→高精度，无精度损失，不需要舍入 |
+| float → half | `CAST_ROUND` | 高→低精度，有精度损失，需要舍入 |
 
-### Example of error
+### 错误示例
 
 ```cpp
-// ❌ Error: half → float used CAST_ROUND
+// ❌ 错误：half → float 使用 CAST_ROUND
 AscendC::Cast<float, half>(xLocal, xLocalHalf, AscendC::RoundMode::CAST_ROUND, cols);
-// Result: Data is completely wrong, multiple lines are the same
+// 结果：数据完全错误，多行输出相同
 ```
 
-### Correct Example
+### 正确示例
 
 ```cpp
-// ✅ Correct: half → float used CAST_NONE
+// ✅ 正确：half → float 使用 CAST_NONE
 AscendC::Cast<float, half>(xLocal, xLocalHalf, AscendC::RoundMode::CAST_NONE, cols);
 
-// ✅ Correct: float → half used CAST_ROUND
+// ✅ 正确：float → half 使用 CAST_ROUND
 AscendC::Cast<half, float>(yLocalHalf, xLocal, AscendC::RoundMode::CAST_ROUND, cols);
 ```
 
-### RoundMode full description
+### RoundMode 完整说明
 
 ```cpp
 enum class RoundMode {
-    CAST_NONE = 0,   // NoneaccuracyNot rounded at loss, yes.accuracyEquivalence of loss CAST_RINT
-    CAST_RINT,       // 50% double rounded (bankers rounded)
-    CAST_FLOOR,      // Infinitely rounded
-    CAST_CEIL,       // It's a roundup.
-    CAST_ROUND,      // Rounded
-    CAST_TRUNC,      // Rounded to zero
-    CAST_ODD,        // Recent Neighbors Rounded
-    CAST_HYBRID,     // Random rounding (specified scene)
+    CAST_NONE = 0,   // 无精度损失时不舍入，有精度损失时等同 CAST_RINT
+    CAST_RINT,       // 四舍六入五成双（银行家舍入）
+    CAST_FLOOR,      // 向负无穷舍入
+    CAST_CEIL,       // 向正无穷舍入
+    CAST_ROUND,      // 四舍五入
+    CAST_TRUNC,      // 向零舍入
+    CAST_ODD,        // 最近邻奇数舍入
+    CAST_HYBRID,     // 随机舍入（特定场景）
 };
 ```
 
-### Field case: SoftmaxV5 FP16 Mixed accuracy
+### 实战案例：SoftmaxV5 FP16 混合精度
 
 ```cpp
 __aicore__ inline void ComputeFp16()
 {
-    // Step 1: half → float (low → height accuracy)
+    // Step 1: half → float（低→高精度）
     AscendC::Cast<float, half>(xLocal, xLocalHalf, AscendC::RoundMode::CAST_NONE, cols);
-
-    // Step 2: perform softmax calculations on FP32
+    
+    // Step 2: 在 FP32 上进行 softmax 计算
     // ... ReduceMax, Adds, Exp, ReduceSum, Muls ...
-
-    // Step 3: float → half(High)→Lowaccuracy)
+    
+    // Step 3: float → half（高→低精度）
     AscendC::Cast<half, float>(yLocalHalf, xLocal, AscendC::RoundMode::CAST_ROUND, cols);
 }
 ```
 
-### Preventive measures
+### 预防措施
 
-1. **Before using Cast API, the official document must be consulted to confirm RundMode**
-2. **Low accuracy → High accuracy: Use `CAST_NONE`**
-3. **High accuracy → Low accuracy: Use `CAST_ROUND` or other rounding mode**
+1. **使用 Cast API 前，必须查阅官方文档确认 RoundMode**
+2. **低精度 → 高精度：使用 `CAST_NONE`**
+3. **高精度 → 低精度：使用 `CAST_ROUND` 或其他舍入模式**
 
 ---
 
-## Trap 9: All output is 0 ⭐ ⭐ ⭐
+## 陷阱9：输出全为 0 ⭐⭐⭐
 
-### Symptom
-- Output data is all 0 or random error
-- Expected value but actual value 0
+### 症状
+- 输出数据全部为 0 或随机错误
+- 预期有值但实际为 0
 
-### Reason 1: pipeline Synchronization (EnQue/DeQue Missing) ⭐ ⭐ ⭐
+### 原因1：流水线同步问题（EnQue/DeQue 缺失）⭐⭐⭐
 
-**Core issue**: DataCopy is a step DMA, return immediately.
+**核心问题**：DataCopy 是异步 DMA，立即返回。直接使用搬运后的数据可能读到未完成的旧数据。
 
-| Mode | Code | Evaluation |
+| 模式 | 代码 | 评价 |
 |------|------|------|
-| ❌ error | `DataCopy(x, gm, n); Compute(x);` | Synchronising folder |
-| ✅ Correct | `DataCopy → EnQue → DeQue → Compute` | Recommendations |
-| ⚠ ️ debug | `DataCopy → PipeBarrier → Compute` | Authentication for |
+| ❌ 错误 | `DataCopy(x, gm, n); Compute(x);` | 缺少同步 |
+| ✅ 正确 | `DataCopy → EnQue → DeQue → Compute` | 推荐 |
+| ⚠️ 调试 | `DataCopy → PipeBarrier → Compute` | 验证用 |
 
 ```cpp
-// ❌ error
+// ❌ 错误
 LocalTensor<T> x = allocator.Alloc<T, 64>();
 DataCopy(x, xGm, count);
-Cast<half, int8_t>(xHalf, x, ...);  // ⛔️ Data may not be available
+Cast<half, int8_t>(xHalf, x, ...);  // ⛔️ 数据可能未就绪
 
-// ✅ Correct: EnQue/DeQue
+// ✅ 正确：EnQue/DeQue
 void CopyIn() {
     LocalTensor<T> x = inQueue.AllocTensor<T>();
     DataCopy(x, xGm, count);
     inQueue.EnQue(x);
 }
 void Compute() {
-    LocalTensor<T> x = inQueue.DeQue<T>();  // Waiting for data to be ready
+    LocalTensor<T> x = inQueue.DeQue<T>();  // 等待数据就绪
     Cast<half, int8_t>(xHalf, x, ...);
     inQueue.FreeTensor(x);
 }
 
-// ⚠ ️ transfer testimonial: temporary plus Pipe Barrier
+// ⚠️ 调试验证：临时加 PipeBarrier
 DataCopy(x, xGm, count);
-PipeBarrier<PIPE_ALL>();  // If the result is correct, confirm it's a problem of synchronization.
+PipeBarrier<PIPE_ALL>();  // 若结果正确则确认是同步问题
 ```
 
-### Reason 2: DataCopy non-32 byte alignment
+### 原因2：DataCopy 非 32 字节对齐
 
-**Question**: `DataCopy(dst, src, count)` requires `count * sizeof(T)` to be 32 bytes aligned.
+**问题**：`DataCopy(dst, src, count)` 要求 `count * sizeof(T)` 是 32 字节对齐。
 
-| data type | 32B Alignment Elements |
+| 数据类型 | 32B 对齐元素数 |
 |---------|---------------|
 | FP16 | 16, 32, 48... |
 | FP32/INT32 | 8, 16, 24... |
 | INT8 | 32, 64, 96... |
 
 ```cpp
-// ❌ error: 8 byte incoherent
+// ❌ 错误：8 字节非对齐
 DataCopy(indicesGm, indicesLocal, 2);  // 2 * 4 = 8B
 
-// ✅ Correct: Use DataCopyPad
+// ✅ 正确：使用 DataCopyPad
 DataCopyExtParams p{1, rowsThisCore * sizeof(int32_t), 0, 0};
 DataCopyPad(indicesGm, indicesLocal, p);
 ```
 
-### Reason 3: GlobalTensor. SetValue
+### 原因3：GlobalTensor.SetValue
 
-**Question**: GlobalTensor. SetValue may not be in force.
+**问题**：GlobalTensor.SetValue 可能不生效。
 
 ```cpp
-// ❌ Avoid
+// ❌ 避免
 outGm.SetValue(0, 10);
 
-// ✅ Recommendations
+// ✅ 推荐
 LocalTensor<T> tmp = buf.Get<T>();
 tmp.SetValue(0, value);
 DataCopyPad(dstGm, tmp, {1, sizeof(T), 0, 0});
 ```
 
-### Diagnostic process
+### 诊断流程
 
 ```
-Output All As 0?
+输出全为 0？
 │
-├─ [1] InspectionpipelineSync ⭐⭐⭐
-│   └─ DataCopy Later. EnQue/DeQue?
-│       └─ Yes → Add Synchronization (on a temporary basis) PipeBarrier Validation)
+├─ [1] 检查流水线同步 ⭐⭐⭐
+│   └─ DataCopy 后有 EnQue/DeQue？
+│       └─ 否 → 添加同步（临时用 PipeBarrier 验证）
 │
-├─ [2] Check Data Alignment
-│   └─ count * sizeof(T) Yes. 32 A multiple?
-│       └─ Yes → Change DataCopyPad
+├─ [2] 检查数据对齐
+│   └─ count * sizeof(T) 是 32 的倍数？
+│       └─ 否 → 改用 DataCopyPad
 │
-└─ [3] Inspection GlobalTensor
-    └─ It's working. SetValue?
-        └─ Yes. → Change LocalTensor + DataCopyPad
+└─ [3] 检查 GlobalTensor
+    └─ 使用了 SetValue？
+        └─ 是 → 改用 LocalTensor + DataCopyPad
 ```
 
-### Field cases
+### 实战案例
 
-**Abs operator output all 0**:
-- Reason: DataCopy directly after Cast, missing sync
-- Rehabilitation: shift to the EnQue/DeQue mechanism
+**Abs 算子输出全为 0**：
+- 原因：DataCopy 后直接 Cast，缺少同步
+- 修复：改用 EnQue/DeQue 机制
 
-**Arg Max 40 Nuclear Failure**:
-- Reason: 8B per nuclear output, not 32B alignment
-- Repair: Change to DataCopyPad
+**ArgMax 40核失败**：
+- 原因：每核输出 8B，非 32B 对齐
+- 修复：改用 DataCopyPad
 
 ---
 
-## Trap 10: MX block quantification format Cast formula floor offset caused NAN
+## 陷阱10：MX 块量化格式 Cast 公式 floor 偏移导致 NaN
 
-### Symptom
+### 症状
 
-- operator output tensor has a large number of NNs (typically 50-80%)
-- NAN is concentrated in continuous areas of certain rows (larger rows of amax at the time of quantification)
-- Change to mxfp8 / mxfp4 after MX block quantification format
-- NN decreases without disappearing after replacing scale with constant (e. g. e8m0 = 0x7F, decoded scale = 1.0)
+- 算子输出张量出现大量 NaN（典型 50-80%）
+- NaN 集中在某些行的连续区域（对应量化时 amax 较大的行）
+- 切换到 mxfp8 / mxfp4 等 MX 块量化格式后出现
+- 把 scale 替换为常量（如 e8m0 = 0x7F，decoded scale = 1.0）后 NaN 减少但不消失（说明问题不在 scale 路径）
 
-### Reason
+### 原因
 
-E8M0 code uses floor offset instead of ceil offset:
+E8M0 scale 编码使用了 floor 偏移而不是 ceil 偏移：
 
 ```cpp
-// ❌ floor offset
+// ❌ floor 偏移
 e8m0_byte = biased_exp_amax - emax_quant_dtype;
 ```
 
-Floor offset `amax / decoded_scale` may fall between `[quant_dtype_max, 2 × quant_dtype_max)` (for e4m3 = `[448, 896)`). `Cast' quantified dtype, fp32, RINT' will output NAN (for fp8_e4m3 as `0x7F`) over dtype_max.
+floor 偏移下 `amax / decoded_scale` 可能落在 `[quant_dtype_max, 2 × quant_dtype_max)` 区间（对 e4m3 = `[448, 896)`）。`Cast<量化 dtype, fp32, RINT>` 对超过 dtype_max 的输入会产出 NaN（对 fp8_e4m3 为 `0x7F`）。
 
-### Solutions
+### 解决方案
 
-Change to ciel offset:
+改用 ceil 偏移：
 
 ```cpp
-// ✅ ceil offset
+// ✅ ceil 偏移
 e8m0_byte = (biased_exp_amax - emax_quant_dtype) + 1;
 ```
 
-ceil offset ensures that `amax / decoded_scale ≤ quant_dtype_max`, Cast doesn't spill.
+ceil 偏移确保 `amax / decoded_scale ≤ quant_dtype_max`，Cast 不溢出。
 
-### Query Process
+### 排查流程
 
-1. Check if NN is distributed in a specific row → is an → skeptical formula for quantitative path values
-2. Replace the original scale runback with stub scale = neutral constant (0x7F = 1.0)
-   - If NN disappears → root cause in scale path (playout / index etc.)
-   - If NN is still in → root cause in Cast numeric formula (this trap)
-3. Insert `AscendC::printf` sampling before and after Quantification Cast
-   - NN byte → confirmed Cast overflow after Cast prefp32 values are normal + Cast
-4. Check E8M0 generation code, select ciel offset
+1. 检查 NaN 是否分布在特定行 → 是 → 怀疑量化路径数值公式
+2. 用 stub scale = 中性常量（0x7F = 1.0）替换原 scale 重跑
+   - 若 NaN 消失 → 根因在 scale 路径（layout / 索引等）
+   - 若 NaN 仍在 → 根因在 Cast 数值公式（本陷阱）
+3. 在量化 Cast 前后插 `AscendC::printf` 采样
+   - Cast 前 fp32 数值正常 + Cast 后出现 NaN 字节 → 确认 Cast 溢出
+4. 检查 E8M0 生成代码，选用 ceil 偏移
 
-Parameter contrast: `emax_quant_dtype` take values can be found in [api-precision.md MX block quantitative format accuracy path] (../../ascendc-api-best-practices/references/api-precision.md).
+参数对照：`emax_quant_dtype` 取值见 [api-precision.md MX 块量化格式精度路径](../../ascendc-api-best-practices/references/api-precision.md)。
 
 ---
 
-## The trap inventory.
+## 陷阱排查清单
 
-When faced with accuracy problems, check sequentially:
+当遇到精度问题时，按顺序检查：
 
-- [ ] **Is the output all 0?**(Check DataCopy Alignment / GlobalTensor. SetValue) ⭐ ⭐ ⭐
-- [ ] Has Cast API been used? (Checks whether RoundMode is correct) ⭐
-- [ ] Has a FP16 builder been used? (replaced with FP32)
-- [ ] Is there an exp/log operation? (Check spill)
-- [ ] Is there a reduction of close to a number? (reset formulae or increase accuracy)
-- [ ] Is there a Reduce operation? (using FP32 loader)
-- [ ] Is there a division? (Except zero protection)
-- [ ] Satisfactory hardware constraints? (Accompanying, minimum elements)
-- [ ] Is the type conversion reasonable? (avoid unnecessary conversion)
-- [ ] **MX Block Quantification Format Can the Cast formula be offset by ceil?**(floor offset will make max/ scale super dtype max cause NAN)
+- [ ] **输出是否全为 0？**（检查 DataCopy 对齐 / GlobalTensor.SetValue）⭐⭐⭐
+- [ ] 是否使用了 Cast API？（检查 RoundMode 是否正确） ⭐
+- [ ] 是否使用了 FP16 累加器？（改用 FP32）
+- [ ] 是否有 exp/log 操作？（检查溢出）
+- [ ] 是否有接近数的减法？（重排公式或提升精度）
+- [ ] 是否有 Reduce 操作？（使用 FP32 累加器）
+- [ ] 是否有除法？（检查除零保护）
+- [ ] 是否满足硬件约束？（对齐、最小元素数）
+- [ ] 类型转换是否合理？（避免不必要转换）
+- [ ] **MX 块量化格式 Cast 公式是否用 ceil 偏移？**（floor 偏移会让 amax/scale 超 dtype max 导致 NaN）

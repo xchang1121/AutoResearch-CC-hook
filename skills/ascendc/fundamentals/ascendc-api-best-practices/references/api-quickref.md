@@ -1,130 +1,130 @@
-# API Quick Reference
+# API 快速参考
 
-Ascend C API uses the Core Decision Index.
-
----
-
-## Contents
-
-1. [Core Principles expedited](#Core Principles expedited)
-2. [decision tree: What am I supposed to use?](# decide what api should I use)
-3. [See detailed documents by scene](#see detailed documents by scene)
+Ascend C API 使用核心决策索引。遇到具体问题时，按需查阅详细文档。
 
 ---
 
-## Core principles fast track
+## 目录
+
+1. [核心原则速查](#核心原则速查)
+2. [决策树：我应该用什么API？](#决策树我应该用什么api)
+3. [按场景查阅详细文档](#按场景查阅详细文档)
+
+---
+
+## 核心原则速查
 
 ### 1. DataCopy vs DataCopyPad
 
-**Principle: priority for DataCopyPad**
+**原则：优先使用 DataCopyPad**
 
-| scene | API | Reason |
+| 场景 | API | 原因 |
 |-----|-----|------|
-| All GM ↔ UB handles | `DataCopyPad` | Harmonized alignment/non-matching |
-| Determines that data is strict 32 byte alignment | `DataCopy` | Simple scene available |
+| 所有 GM ↔ UB 搬运 | `DataCopyPad` | 统一处理对齐/非对齐 |
+| 确定数据严格 32 字节对齐 | `DataCopy` | 简单场景可用 |
 
-**Detailed use**:[api-datacopy.md](api-datacopy.md)
+**详细用法**：[api-datacopy.md](api-datacopy.md)
 
-### 2. Cast RoundMode Selection
+### 2. Cast RoundMode 选择
 
-| Convert direction | RoundMode | Reason |
+| 转换方向 | RoundMode | 原因 |
 |---------|-----------|------|
-| half → float | `CAST_NONE` | Low → High accuracy, no loss |
-| float → half | `CAST_ROUND` | High → Low accuracy to round |
-| half → int32_t | `CAST_ROUND` | Quantified scene |
-| int32_t → float | `CAST_NONE` | Integer → Floating Point |
+| half → float | `CAST_NONE` | 低→高精度，无损失 |
+| float → half | `CAST_ROUND` | 高→低精度，需舍入 |
+| half → int32_t | `CAST_ROUND` | 量化场景 |
+| int32_t → float | `CAST_NONE` | 整数→浮点 |
 
-**Detailed use**:[api-precision.md](api-precision.md)
+**详细用法**：[api-precision.md](api-precision.md)
 
-### 3. TBuf vs TQue Selection
+### 3. TBuf vs TQue 选择
 
-| scene | Type | Annotations |
+| 场景 | 类型 | 说明 |
 |------|------|------|
-| MTE2/MTE3 Move buffer zone | `TQue<VECIN/VECOUT>` | `InitBuffer(que, num, size)` |
-| Pure Victor calculates the buffer zone | `TBuf<VECCALC>` | `InitBuffer(buf, size)` |
+| MTE2/MTE3 搬运缓冲区 | `TQue<VECIN/VECOUT>` | `InitBuffer(que, num, size)` |
+| 纯 Vector 计算缓冲区 | `TBuf<VECCALC>` | `InitBuffer(buf, size)` |
 
-**Detailed use**:[api-buffer.md](api-buffer.md)
+**详细用法**：[api-buffer.md](api-buffer.md)
 
-### 4. pipeline Sync
+### 4. 流水线同步
 
-**Principle**: EnQue/ DeQue must synchronize MTE and Victor
+**原则**：必须用 EnQue/DeQue 同步 MTE 和 Vector
 
-**Core model**:
+**核心模式**：
 ```
 CopyIn → EnQue → DeQue → Compute → EnQue → DeQue → CopyOut
 ```
 
-**Detailed use**:[api-pipeline.md](api-pipeline.md)
+**详细用法**：[api-pipeline.md](api-pipeline.md)
 
-### 5. Victor API limit
+### 5. Vector API repeatTime 限制
 
-**Core limit**: maximum value when repeattime is uint8_t 255
+**核心限制**：repeatTime 为 uint8_t 时，最大值 255
 
-**Process**: Host side limit R_max or Kernel side in batch processing
+**处理方法**：Host 侧限制 R_max 或 Kernel 侧分批处理
 
-**Detailed use**:[api-repeat-limits.md](api-repeat-limits.md)
+**详细用法**：[api-repeat-limits.md](api-repeat-limits.md)
 
-### 6. Reduce API Selection
+### 6. Reduce API 选择
 
-| scene | Interface | Annotations |
+| 场景 | 接口 | 说明 |
 |-----|------|------|
-| Independent on a line-by-line basis | Level 2: `ReduceMax(dst, src, tmp, count)` | No matches, count pass rLength |
-| Cross-line BatchReduce | Pattern: `ReduceMax<T, Pattern::AR>(...)` | 32 byte alignment required |
+| 逐行独立 Reduce | Level 2: `ReduceMax(dst, src, tmp, count)` | 无对齐要求，count 传 rLength |
+| 跨行批量 Reduce | Pattern: `ReduceMax<T, Pattern::AR>(...)` | 需 32 字节对齐 |
 
-**Detailed use**:[api-reduce.md](api-reduce.md) | [PatternInterface Details](api-reduce-pattern.md)
+**详细用法**：[api-reduce.md](api-reduce.md) | [Pattern 接口详解](api-reduce-pattern.md)
 
 ---
 
-## Decision tree: What am I supposed to use?
+## 决策树：我应该用什么API？
 
-### Q1: Need GM ↔ UB data?
+### Q1: 需要 GM ↔ UB 搬运数据？
 
 ```
-Yes. → DataCopyPad(Recommended)
-   → DataCopy(when only certain)32Byte Alignment)
+是 → DataCopyPad（推荐）
+   → DataCopy（仅当确定32字节对齐时）
 
-Yes → Go on.
+否 → 继续
 ```
 
-### Q2: Need accuracy conversion?
+### Q2: 需要精度转换？
 
 ```
 half → float → CAST_NONE
 float → half → CAST_ROUND
-Other → Access api-precision.md
+其他 → 查阅 api-precision.md
 ```
 
-### Q3: Need to allocate the UB buffer zone?
+### Q3: 需要分配 UB 缓冲区？
 
 ```
-Involving MTE Removal → TQue + InitBuffer(que, num, size)
-Pure Vector Calculate → TBuf + InitBuffer(buf, size)
+涉及 MTE 搬运 → TQue + InitBuffer(que, num, size)
+纯 Vector 计算 → TBuf + InitBuffer(buf, size)
 ```
 
-### Q4: Data error/random value encountered?
+### Q4: 遇到数据错误/随机值？
 
 ```
-1. Check if missing EnQue/DeQue → api-pipeline.md
-2. Inspection DataCopyPad Parameters → api-datacopy.md
-3. Inspection Reduce API of tmpBuffer Type → api-reduce.md
- 4. Check for multi-line processing rowOffset Calculate → api-reduce.md
- 5. Inspection repeatTime Whether to overflow → api-repeat-limits.md
+1. 检查是否缺少 EnQue/DeQue → api-pipeline.md
+2. 检查 DataCopyPad 参数 → api-datacopy.md
+3. 检查 Reduce API 的 tmpBuffer 类型 → api-reduce.md
+ 4. 检查多行处理时的 rowOffset 计算 → api-reduce.md
+ 5. 检查 repeatTime 是否溢出 → api-repeat-limits.md
 ```
 
-### Q5: Need to mix accuracy calculations (FP16 input, FP32 intermediate calculation)?
+### Q5: 需要混合精度计算（FP16 输入，FP32 中间计算）？
 
 ```
-Access api-precision.md MixingaccuracyMode
+查阅 api-precision.md 的混合精度模式
 ```
 
 ---
 
-## View detailed documents by scene
+## 按场景查阅详细文档
 
-| scene | Documentation | Core content |
+| 场景 | 文档 | 核心内容 |
 |-----|------|---------|
-| Data handling (GM↔UB) | [api-datacopy.md](api-datacopy.md) | DataCopyPad Parameters, Strude Calculating, Unmatched |
-| accuracy Conversion/Mixing accuracy | [api-precision.md](api-precision.md) | Cast RoundMode, FP16 Mixed accuracy Mode |
-| UB buffer zone management | [api-buffer.md](api-buffer.md) | TBuf/TQue Selection, Double Buffer, Batch Removal |
-| pipeline Sync | [api-pipeline.md](api-pipeline.md) | EnQue/DeQue Synchronization Mechanism, Scheduling |
-| repeatTime limit | [api-repeat-limits.md](api-repeat-limits.md) | Batch processing |
+| 数据搬运（GM↔UB） | [api-datacopy.md](api-datacopy.md) | DataCopyPad 参数、stride 计算、非对齐处理 |
+| 精度转换/混合精度 | [api-precision.md](api-precision.md) | Cast RoundMode、FP16 混合精度模式 |
+| UB 缓冲区管理 | [api-buffer.md](api-buffer.md) | TBuf/TQue 选择、Double Buffer、批量搬运 |
+| 流水线同步 | [api-pipeline.md](api-pipeline.md) | EnQue/DeQue 同步机制、时序图 |
+| repeatTime 限制 | [api-repeat-limits.md](api-repeat-limits.md) | 分批处理 |

@@ -1,8 +1,22 @@
-"""
-Baseline Profiller: Premeasure baseline performance
+# Copyright 2026 Huawei Technologies Co., Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-For the volve/adaptive_search scene, separate caseline once before the start,
-Avoids double measurements for all tasks. Supports KernelBench, SOL-ExecBench and CANN-Bench bench_ type.
+"""
+Baseline Profiler: 预先测量 baseline 性能
+
+用于 evolve/adaptive_search 场景，在开始前单独 profile baseline 一次，
+避免所有任务重复测量。支持 KernelBench、SOL-ExecBench 和 CANN-Bench 三种 bench_type。
 """
 
 import os
@@ -49,27 +63,27 @@ async def profile_baseline_once(
     timeout: Optional[int] = None,
 ) -> Optional[float]:
     """
-    Prefile baseline once (measuring framework performance only)
+    预先 profile baseline 一次（只测量框架实现的性能）
 
-    Automatically selects the baseline program for KernelBech or SOL-ExecBench according to config[\"bench_type\"].
+    根据 config["bench_type"] 自动选择 KernelBench 或 SOL-ExecBench 的 baseline profiling 流程。
 
-    device is managed by workinger's data_pool Acquire/release.
-    Consistency with normal verifiy/file process.
+    设备分配通过 worker 的 device_pool acquire/release 管理，
+    与正常 verify/profile 流程保持一致。
 
     Args:
-        Op_name: operator name
-        task_dec: job description (KernelBench: framework code; SOL: Chinese description text)
-        dsl: DSL type
-        framework: framework
-        Back: backend
-        Arch: Structure
-        config: Configure Dictionary
-        Warmup_times: number of preheats
-        Run_times: Run number of times
-        Timeout: Timeout
+        op_name: 算子名称
+        task_desc: 任务描述（KernelBench: 框架代码；SOL: 中文描述文本）
+        dsl: DSL 类型
+        framework: 框架
+        backend: 后端
+        arch: 架构
+        config: 配置字典
+        warmup_times: 预热次数
+        run_times: 运行次数
+        timeout: 超时时间
 
     Returns:
-        float: baseline time (microseconds), failed to return None
+        float: baseline 时间（微秒），失败返回 None
     """
     warmup_times = resolve_warmup_times(warmup_times)
     run_times = resolve_run_times(run_times)
@@ -105,7 +119,7 @@ async def _profile_kernelbench_baseline(
     run_times: int,
     timeout: int
 ) -> Optional[float]:
-    """Baseline program in KernelBech mode (old logic)"""
+    """KernelBench 模式的 baseline profiling（原有逻辑）"""
     worker = None
     cache_cfg = load_verifier_data_cache_config(config)
     cache_key = None
@@ -141,13 +155,13 @@ async def _profile_kernelbench_baseline(
             cached_time_us = extract_baseline_time_us(cached_entry)
             if cached_time_us is not None:
                 logger.info(
-                    f"[{op_name}] ✅ Local hit. baseline cache: {cached_time_us:.2f}us, "
+                    f"[{op_name}] ✅ 命中本地 baseline cache: {cached_time_us:.2f}us, "
                     f"cache_file={cache_file}, cache_key={cache_key}"
                 )
                 return cached_time_us
             if cached_entry:
                 logger.warning(
-                    f"[{op_name}] baseline cache Invalid content, remove old caches and remeasure: "
+                    f"[{op_name}] baseline cache 内容无效，删除旧缓存并重新测量: "
                     f"cache_file={cache_file}, cache_key={cache_key}"
                 )
                 delete_baseline_result_from_cache(
@@ -156,7 +170,7 @@ async def _profile_kernelbench_baseline(
                     cache_key=cache_key,
                 )
 
-        logger.info(f"[{op_name}] 🚀 Start in advance. profile baseline(One test only)...")
+        logger.info(f"[{op_name}] 🚀 开始预先 profile baseline（只测一次）...")
 
         async with AsyncExitStack() as stack:
             if cache_cfg.enabled and cache_cfg.cache_baseline_result and cache_key:
@@ -176,13 +190,13 @@ async def _profile_kernelbench_baseline(
                 cached_time_us = extract_baseline_time_us(cached_entry)
                 if cached_time_us is not None:
                     logger.info(
-                        f"[{op_name}] ✅ Local hit during the waiting period baseline cache: {cached_time_us:.2f}us, "
+                        f"[{op_name}] ✅ 等待期间命中本地 baseline cache: {cached_time_us:.2f}us, "
                         f"cache_file={cache_file}, cache_key={cache_key}"
                     )
                     return cached_time_us
                 if cached_entry:
                     logger.warning(
-                        f"[{op_name}] baseline cache Invalid content, remove old caches and remeasure: "
+                        f"[{op_name}] baseline cache 内容无效，删除旧缓存并重新测量: "
                         f"cache_file={cache_file}, cache_key={cache_key}"
                     )
                     delete_baseline_result_from_cache(
@@ -194,7 +208,7 @@ async def _profile_kernelbench_baseline(
             worker_manager = get_worker_manager()
             worker = await worker_manager.select(backend=backend, arch=arch)
             if not worker:
-                logger.warning(f"[{op_name}] Unable to access workerSkip the advance. profile baseline")
+                logger.warning(f"[{op_name}] 无法获取 worker，跳过预先 profile baseline")
                 return None
             stack.push_async_callback(worker_manager.release, worker)
 
@@ -225,7 +239,7 @@ async def _profile_kernelbench_baseline(
             if result.get('success', False):
                 baseline_time_us = result.get('time_us')
                 if baseline_time_us and baseline_time_us > 0 and baseline_time_us < float('inf'):
-                    logger.info(f"[{op_name}] ✅ Baseline profile Completed: {baseline_time_us:.2f}us")
+                    logger.info(f"[{op_name}] ✅ Baseline profile 完成: {baseline_time_us:.2f}us")
                     _save_baseline_profile_scripts(verifier, op_name, task_desc, warmup_times, run_times, device_id)
                     if cache_cfg.enabled and cache_cfg.cache_baseline_result and cache_key:
                         written_path = write_baseline_result_to_cache(
@@ -249,23 +263,23 @@ async def _profile_kernelbench_baseline(
                         )
                         if written_path:
                             logger.info(
-                                f"[{op_name}] baseline Results written locally cache: "
+                                f"[{op_name}] baseline 结果已写入本地 cache: "
                                 f"cache_file={written_path}, cache_key={cache_key}, "
                                 f"cache_dir={cache_cfg.cache_dir}"
                             )
                     return baseline_time_us
                 else:
-                    logger.warning(f"[{op_name}] Baseline profile The result is invalid: {baseline_time_us}")
+                    logger.warning(f"[{op_name}] Baseline profile 结果无效: {baseline_time_us}")
             else:
                 error_log = result.get('log', 'Unknown error')
-                logger.warning(f"[{op_name}] Baseline profile Failed: {error_log}")
+                logger.warning(f"[{op_name}] Baseline profile 失败: {error_log}")
 
             return None
     except TimeoutError as e:
-        logger.warning(f"[{op_name}] Wait. baseline cache lock Overtime, skip ahead. profile baseline: {e}")
+        logger.warning(f"[{op_name}] 等待 baseline cache lock 超时，跳过预先 profile baseline: {e}")
         return None
     except Exception as e:
-        logger.warning(f"[{op_name}] Advance profile baseline Failed: {e}")
+        logger.warning(f"[{op_name}] 预先 profile baseline 失败: {e}")
         return None
 
 async def _try_read_baseline_cache(
@@ -278,13 +292,13 @@ async def _try_read_baseline_cache(
     cached_time_us = extract_baseline_time_us(cached_entry)
     if cached_time_us is not None:
         logger.info(
-            f"[{op_name}] ✅ Local hit. {bench_label} baseline cache: {cached_time_us:.2f}us, "
+            f"[{op_name}] ✅ 命中本地 {bench_label} baseline cache: {cached_time_us:.2f}us, "
             f"cache_file={cache_file}, cache_key={cache_key}"
         )
         return cached_time_us
     if cached_entry:
         logger.warning(
-            f"[{op_name}] {bench_label} baseline cache Invalid content, remove old caches and remeasure: "
+            f"[{op_name}] {bench_label} baseline cache 内容无效，删除旧缓存并重新测量: "
             f"cache_file={cache_file}, cache_key={cache_key}"
         )
         delete_baseline_result_from_cache(
@@ -318,15 +332,15 @@ def _handle_profile_result(
     """Handle profile result: validate, save, cache. Returns baseline_time_us or None."""
     if not result.get('success', False):
         error_log = result.get('log', 'Unknown error')
-        logger.warning(f"[{op_name}] {bench_label} Baseline profile Failed: {error_log}")
+        logger.warning(f"[{op_name}] {bench_label} Baseline profile 失败: {error_log}")
         return None
 
     baseline_time_us = result.get('time_us')
     if not baseline_time_us or baseline_time_us <= 0 or baseline_time_us >= float('inf'):
-        logger.warning(f"[{op_name}] {bench_label} Baseline profile The result is invalid: {baseline_time_us}")
+        logger.warning(f"[{op_name}] {bench_label} Baseline profile 结果无效: {baseline_time_us}")
         return None
 
-    logger.info(f"[{op_name}] ✅ {bench_label} Baseline profile Completed (geometric average): {baseline_time_us:.2f}us")
+    logger.info(f"[{op_name}] ✅ {bench_label} Baseline profile 完成（几何平均）: {baseline_time_us:.2f}us")
     _save_baseline_result_json(
         profile_dir, op_name, baseline_time_us,
         times_us, warmup_times, run_times, backend,
@@ -356,7 +370,7 @@ def _handle_profile_result(
                 "bench_type": bench_type,
             },
         )
-    logger.info(f"[{op_name}] {bench_label} Baseline profile Script and result saved to: {profile_dir}")
+    logger.info(f"[{op_name}] {bench_label} Baseline profile 脚本及结果已保存到: {profile_dir}")
     return baseline_time_us
 
 
@@ -380,7 +394,7 @@ def _build_cache_key(cache_cfg, op_name, cache_framework_code, framework, backen
         cache_file = get_baseline_cache_file_path(cache_cfg, op_name=op_name, cache_key=cache_key)
         return cache_key, cache_file
     except Exception as exc:
-        logger.info(f"[{op_name}] baseline cache key Build failed, Skip cache: {exc}")
+        logger.info(f"[{op_name}] baseline cache key 构建失败，跳过 cache: {exc}")
         return None, None
 
 
@@ -424,7 +438,7 @@ async def _run_cached_baseline_profile(
             if cached is not None:
                 return cached
 
-        logger.info(f"[{op_name}] 🚀 Start in advance. {bench_label} baseline profile(One test only)...")
+        logger.info(f"[{op_name}] 🚀 开始预先 {bench_label} baseline profile（只测一次）...")
 
         async with AsyncExitStack() as stack:
             if cache_cfg.enabled and cache_cfg.cache_baseline_result and cache_key:
@@ -442,7 +456,7 @@ async def _run_cached_baseline_profile(
             worker_manager = get_worker_manager()
             worker = await worker_manager.select(backend=backend, arch=arch)
             if not worker:
-                logger.warning(f"[{op_name}] Unable to access workerSkip the advance. {bench_label} baseline profile")
+                logger.warning(f"[{op_name}] 无法获取 worker，跳过预先 {bench_label} baseline profile")
                 return None
             stack.push_async_callback(worker_manager.release, worker)
             device_id = await stack.enter_async_context(
@@ -481,10 +495,10 @@ async def _run_cached_baseline_profile(
             )
 
     except TimeoutError as e:
-        logger.warning(f"[{op_name}] Wait. {bench_label} baseline cache lock Overtime, skip ahead. profile baseline: {e}")
+        logger.warning(f"[{op_name}] 等待 {bench_label} baseline cache lock 超时，跳过预先 profile baseline: {e}")
         return None
     except Exception as e:
-        logger.warning(f"[{op_name}] {bench_label} baseline profile Failed: {e}")
+        logger.warning(f"[{op_name}] {bench_label} baseline profile 失败: {e}")
         import traceback
         logger.debug(traceback.format_exc())
         return None
@@ -501,10 +515,10 @@ async def _prepare_sol_profile(worker, verifier, profile_dir, device_id,
     config = verifier.config
     sol_problem_dir = config.get("sol_problem_dir")
     if not sol_problem_dir:
-        raise ValueError("Config ['sol_problem_dir'] not configured")
+        raise ValueError("config['sol_problem_dir'] 未配置")
     sol_problem_dir = os.path.expandvars(os.path.expanduser(str(sol_problem_dir)))
     if not os.path.isdir(sol_problem_dir):
-        raise FileNotFoundError(f"SOL case Directory does not exist: {sol_problem_dir}")
+        raise FileNotFoundError(f"SOL case 目录不存在: {sol_problem_dir}")
 
     for file_name in ["definition.json", "workload.jsonl", "reference.py"]:
         src = os.path.join(sol_problem_dir, file_name)
@@ -575,10 +589,10 @@ async def _prepare_cann_profile(worker, verifier, profile_dir, device_id,
     config = verifier.config
     cann_problem_dir = config.get("cann_problem_dir")
     if not cann_problem_dir:
-        raise ValueError("Config ['cann_problem_dir'] not configured")
+        raise ValueError("config['cann_problem_dir'] 未配置")
     cann_problem_dir = os.path.expandvars(os.path.expanduser(str(cann_problem_dir)))
     if not os.path.isdir(cann_problem_dir):
-        raise FileNotFoundError(f"CANN case Directory does not exist: {cann_problem_dir}")
+        raise FileNotFoundError(f"CANN case 目录不存在: {cann_problem_dir}")
 
     for file_name in ["proto.yaml", "golden.py", "cases.yaml"]:
         src = os.path.join(cann_problem_dir, file_name)
@@ -658,7 +672,7 @@ async def _profile_sol_baseline(
     """SOL-ExecBench baseline profiling."""
     sol_problem_dir_for_cache = config.get("sol_problem_dir", "")
     if not sol_problem_dir_for_cache:
-        logger.warning(f"[{op_name}] config['sol_problem_dir'] Unconfigured, Skip Forward SOL baseline profile")
+        logger.warning(f"[{op_name}] config['sol_problem_dir'] 未配置，跳过预先 SOL baseline profile")
         return None
     sol_cache_identity = build_sol_problem_cache_identity(sol_problem_dir_for_cache)
     return await _run_cached_baseline_profile(
@@ -708,7 +722,7 @@ def _save_baseline_result_json(
     bench_type: str,
     times_label: str,
 ) -> None:
-    """Write the result as base_profile_result.json to base_dir"""
+    """将 baseline profile 结果写为 base_profile_result.json，保存到 profile_dir"""
     try:
         method_prefix = f"{bench_type}_base"
         method = f"{method_prefix}_profiler_npu" if backend == "ascend" else f"{method_prefix}_loop_timer"
@@ -728,13 +742,13 @@ def _save_baseline_result_json(
         result_file = os.path.join(profile_dir, "base_profile_result.json")
         with open(result_file, "w", encoding="utf-8") as f:
             json.dump(result_data, f, indent=2)
-        logger.info(f"[{op_name}] base_profile_result.json Written: {result_file}")
+        logger.info(f"[{op_name}] base_profile_result.json 已写入: {result_file}")
     except Exception as e:
-        logger.warning(f"[{op_name}] Writing base_profile_result.json Failed: {e}")
+        logger.warning(f"[{op_name}] 写入 base_profile_result.json 失败: {e}")
 
 
 def _pack_directory(dir_path: str) -> bytes:
-    """Pack directory as tar byte"""
+    """将目录打包为 tar 字节流"""
     tar_buffer = io.BytesIO()
     with tarfile.open(fileobj=tar_buffer, mode='w') as tar_file:
         for root, dirs, files in os.walk(dir_path):
@@ -749,7 +763,7 @@ def _save_baseline_profile_scripts(verifier, op_name: str, task_desc: str,
                                    warmup_times: int, run_times: int,
                                    device_id: int = 0) -> None:
     """
-    Save KernelBench case profile script to log directory
+    保存 KernelBench baseline profile 脚本到 log 目录
     """
     try:
         baseline_dir = os.path.join(
@@ -766,21 +780,21 @@ def _save_baseline_profile_scripts(verifier, op_name: str, task_desc: str,
                                               warmup_times=warmup_times,
                                               run_times=run_times)
 
-        logger.info(f"[{op_name}] Baseline profile Script saved to: {baseline_dir}")
+        logger.info(f"[{op_name}] Baseline profile 脚本已保存到: {baseline_dir}")
 
     except Exception as e:
-        logger.warning(f"[{op_name}] Save baseline profile Script failed: {e}")
+        logger.warning(f"[{op_name}] 保存 baseline profile 脚本失败: {e}")
 
 
 def set_baseline_in_config(config: Dict[str, Any], baseline_time_us: float) -> None:
     """
-    Sets the cache baseon time to config
+    将缓存的 baseline 时间设置到 config 中
 
     Args:
-        config: Configure Dictionary
-        Baseline_time_us: baseline time (microseconds)
+        config: 配置字典
+        baseline_time_us: baseline 时间（微秒）
     """
-    # Set only if baseline_time_us is valid
+    # 只有当 baseline_time_us 是有效值时才设置
     if baseline_time_us is None or baseline_time_us <= 0 or baseline_time_us >= float('inf'):
         return
 

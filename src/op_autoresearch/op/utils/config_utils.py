@@ -1,3 +1,17 @@
+# Copyright 2025 Huawei Technologies Co., Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import logging
 from pathlib import Path
 from typing import Optional, Dict, Iterable
@@ -122,10 +136,10 @@ def arch_hint(backend: str) -> str:
 
 def check_backend_arch(backend: str, arch: str):
     """
-    Verify backend match with architecture
+    验证后端与架构的匹配关系
     Args:
-        Back: Calculate backend name (ascend/cuda/cpu)
-        Arch: Hardware architecture name
+        backend: 计算后端名称(ascend/cuda/cpu)
+        arch: 硬件架构名称
     """
     if backend not in ("ascend", "cuda", "cpu"):
         raise ValueError("backend must be ascend, cuda or cpu")
@@ -144,25 +158,25 @@ def is_supported_arch(backend: str, arch: str) -> bool:
 
 def normalize_dsl(dsl: str, backend: str = None) -> str:
     """
-    Normalize the DSL type by converting the generic Triton based on Backend to Triton_cuda or Triton_ascend
-
+    规范化DSL类型，将通用的triton根据backend转换为triton_cuda或triton_ascend
+    
     Args:
-        dsl: Realization type
-        Backend: Hardware backend name (ascend/cuda/cpu) for automatic conversion to triton
-
+        dsl: 实现类型
+        backend: 硬件后端名称(ascend/cuda/cpu)，用于自动转换triton
+        
     Returns:
-        A standardized DSL type
-
+        规范化后的DSL类型
+        
     Raises:
-        ValueError: If dsl is \"triton\" but Backend does not provide or is invalid
+        ValueError: 如果dsl为"triton"但backend未提供或无效
     """
     dsl = dsl.lower()
 
-    # If it's already a normative type, go straight back.
+    # 如果已经是规范化的类型，直接返回
     if dsl in _ALL_DSLS:
         return dsl
-
-    # If it's a generic triton, it needs to be converted according to Backend.
+    
+    # 如果是通用的triton，需要根据backend转换
     if dsl == "triton":
         if backend is None:
             raise ValueError(
@@ -180,16 +194,16 @@ def normalize_dsl(dsl: str, backend: str = None) -> str:
                 f"dsl='triton' cannot be used with backend='{backend}'. "
                 "Please use 'triton_cuda' (for CUDA) or 'triton_ascend' (for Ascend) explicitly."
             )
-
-    # Other cases returned directly
+    
+    # 其他情况直接返回
     return dsl
 
 
 def check_dsl(dsl: str):
     """
-    Validate Implementation Type
+    验证实现类型
     Args:
-        dsl: Realization type (triton_cuda/triton_ascend/triton-russia/swft/torch/pypto, etc.)
+        dsl: 实现类型(triton_cuda/triton_ascend/triton-russia/swft/torch/pypto等)
     """
     if dsl not in _ALL_DSLS:
         raise ValueError(
@@ -199,10 +213,10 @@ def check_dsl(dsl: str):
 
 
 def check_task_type(task_type: str):
-    """Validate a task type.
-
+    """
+    验证任务类型
     Args:
-        task_type: task type (prescription_only/profile)
+        task_type: 任务类型(precision_only/profile)
     """
     if task_type not in ["precision_only", "profile"]:
         raise ValueError("task_type must be precision_only or profile")
@@ -243,12 +257,12 @@ VALID_CONFIGS = _build_valid_configs()
 
 def check_task_config(framework: str, backend: str, arch: str, dsl: str):
     """
-    Harmonized authentication of dependency between configuration parameters
+    统一验证配置参数之间的依赖关系
     Args:
-        framework: framework type
-        Backend: Hardware backend name
-        Arch: Hardware architecture name
-        dsl: Realizable type (raditon to triton_cuda or triton_ascend)
+        framework: 框架类型
+        backend: 硬件后端名称
+        arch: 硬件架构名称
+        dsl: 实现类型（会自动转换triton为triton_cuda或triton_ascend）
     """
     normalized_dsl = normalize_dsl(dsl, backend)
 
@@ -282,97 +296,97 @@ def collect_and_save_all_examples(
     source_dirs: Dict[str, Path],
 ) -> Optional[Path]:
     """
-    Summarize Allexamplesand save to a unified directorydatabase/all_examples/{arch}/{dsl}
-
-    This function consolidates the sample files from different source directories into the directory, and Python files and other files are saved separately.
-    - Python files saved to: data/all_examples/{arch}/ {dsl}/code/
-    - Save other files to: data/all_examples/{arch}/{dsl}/docs/
-
+    汇总所有examples并保存到统一目录 database/all_examples/{arch}/{dsl}
+    
+    此函数将来自不同源目录的示例文件统一复制到目录中，Python文件和其他文件分别保存。
+    - Python文件保存到: database/all_examples/{arch}/{dsl}/code/
+    - 其他文件保存到: database/all_examples/{arch}/{dsl}/docs/
+    
     Args:
-        Arch: Hardware architecture name
-        dsl: DSL type
-        Project_root_path: root path of the item
-        Source_dirs: Source Dictionary in { \"prefix\": Path(\"source_dir\")}
-                    The file will be copied and renamed \"{prefix}_{original filename}\"
-                    For example: \"user\": Path (\"user_examples/\"), \"local\": Path ( \"local_examples/\")
-
+        arch: 硬件架构名称
+        dsl: DSL类型
+        project_root_path: 项目根路径
+        source_dirs: 源目录字典，格式为 {"prefix": Path("source_dir")}
+                    文件会被复制并重命名为 "{prefix}_{原文件名}"
+                    例如: {"user": Path("user_examples/"), "local": Path("local_examples/")}
+    
     Returns:
-        Path: Unify the root path to save the directory, and return None if it fails
+        Path: 统一保存目录的根路径，如果失败则返回None
     """
     if not arch or not dsl:
-        logger.warning("Arch or dsl is empty and cannot summarize the example code")
+        logger.warning("arch或dsl为空，无法汇总示例代码")
         return None
-
-    # Create a single save directory
+    
+    # 创建统一的保存目录
     base_dir = project_root_path / "database" / "all_examples" / arch / dsl
     code_dir = base_dir / "code"
     doc_dir = base_dir / "docs"
-
+    
     code_dir.mkdir(parents=True, exist_ok=True)
     doc_dir.mkdir(parents=True, exist_ok=True)
-
+    
     saved_code_count = 0
     saved_doc_count = 0
-
-    # Walk through all source directories
+    
+    # 遍历所有源目录
     for prefix, source_dir in source_dirs.items():
         if not source_dir or not isinstance(source_dir, Path):
-            logger.warning(f"Skip invalid source directory: {prefix} -> {source_dir}")
+            logger.warning(f"跳过无效的源目录: {prefix} -> {source_dir}")
             continue
-
+            
         if not source_dir.exists():
-            logger.warning(f"Source directory does not exist, Skip: {source_dir}")
+            logger.warning(f"源目录不存在，跳过: {source_dir}")
             continue
-
+        
         try:
-            # If a directory, copy all the files in it
+            # 如果是目录，复制其中的所有文件
             if source_dir.is_dir():
                 for file_path in source_dir.glob("*"):
                     if not file_path.is_file():
                         continue
-
+                    
                     try:
                         with open(file_path, "r", encoding="utf-8") as f:
                             content = f.read().strip()
                         if content:
-                            # Select the destination directory by file extension
+                            # 根据文件扩展名选择目标目录
                             if file_path.suffix == ".py":
                                 target_dir = code_dir
                                 saved_code_count += 1
                             else:
                                 target_dir = doc_dir
                                 saved_doc_count += 1
-
-                            # Destination filename: prefix_original filename
+                            
+                            # 目标文件名：前缀_原文件名
                             save_path = target_dir / f"{prefix}_{file_path.name}"
                             with open(save_path, "w", encoding="utf-8") as f:
                                 f.write(content)
                     except Exception as e:
-                        logger.warning(f"Copy File {file_path} Failed: {e}")
-
-            # If a single file, copy it directly.
+                        logger.warning(f"复制文件 {file_path} 失败: {e}")
+            
+            # 如果是单个文件，直接复制
             elif source_dir.is_file():
                 try:
                     with open(source_dir, "r", encoding="utf-8") as f:
                         content = f.read().strip()
                     if content:
-                        # Select the destination directory by file extension
+                        # 根据文件扩展名选择目标目录
                         if source_dir.suffix == ".py":
                             target_dir = code_dir
                             saved_code_count += 1
                         else:
                             target_dir = doc_dir
                             saved_doc_count += 1
-
+                        
                         save_path = target_dir / f"{prefix}_{source_dir.name}"
                         with open(save_path, "w", encoding="utf-8") as f:
                             f.write(content)
                 except Exception as e:
-                    logger.warning(f"Copy File {source_dir} Failed: {e}")
-
+                    logger.warning(f"复制文件 {source_dir} 失败: {e}")
+                    
         except Exception as e:
-            logger.warning(f"Process Source Directory {prefix}:{source_dir} An error occurred: {e}")
-
-    logger.info(f"Summary completed, stored together {saved_code_count} individualPythonFile To: {code_dir}")
-    logger.info(f"Summary completed, stored together {saved_doc_count} Other file to: {doc_dir}")
+            logger.warning(f"处理源目录 {prefix}:{source_dir} 时发生错误: {e}")
+    
+    logger.info(f"汇总完成，共保存 {saved_code_count} 个Python文件到: {code_dir}")
+    logger.info(f"汇总完成，共保存 {saved_doc_count} 个其他文件到: {doc_dir}")
     return code_dir

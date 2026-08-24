@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Huawei Technologies Co., Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """CANN-Bench task loading and prompt construction utilities.
 
 Pattern follows sol_utils.py: only does path detection and prompt construction.
@@ -58,17 +72,17 @@ def get_cann_task_desc_for_prompt(problem_dir: str | Path) -> str:
 
     parts = []
     if desc:
-        parts.append(f"## operatorDescription\n{desc}")
+        parts.append(f"## 算子描述\n{desc}")
     parts.append(
-        f"## operatorDefinitions (proto.yaml)\n```yaml\n"
+        f"## 算子定义 (proto.yaml)\n```yaml\n"
         f"{yaml.dump(proto, allow_unicode=True, default_flow_style=False)}\n```"
     )
-    parts.append(f"## Golden reference implementation\n```python\n{golden_code}\n```")
+    parts.append(f"## Golden 参考实现\n```python\n{golden_code}\n```")
 
     op = proto.get("operator", {})
     precision_thresholds = op.get("precision_thresholds")
     if precision_thresholds:
-        parts.append(f"## accuracyThreshold Overwrite\n{precision_thresholds}")
+        parts.append(f"## 精度阈值覆盖\n{precision_thresholds}")
 
     return "\n\n".join(parts)
 

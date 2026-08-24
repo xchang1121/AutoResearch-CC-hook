@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Standalone agent-driven operator kernel optimization workspace"
 readme = "README.md"
 requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
 dependencies = [
   "httpx>=0.24",
   "jinja2>=3.1",

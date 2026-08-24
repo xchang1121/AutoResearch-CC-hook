@@ -1,6 +1,6 @@
 ---
 name: triton-ascend-case-reduction-weighted-swiglu
-description: "3D integration of operator (Weighted SwiGLU Backward) Optimization: Reshape downsizes the first two dimensions to simplify the parallel strategy, avoids hyperUB, assigns larger fraction sizes to reduce axes with priority for full UB, and the greater likelihood of grid having larger numbers can be applied to 3Dtensor-by-Element +reduce integration"
+description: "3D融合算子（Weighted SwiGLU Backward）优化：Reshape降维将前两维合并简化并行策略，行二次切分避免超UB，在优先占满UB前提下为reduce轴分配较大切分尺寸，grid数较大时可能性能更优，适用于3D张量逐元素+reduce融合的场景"
 category: case
 version: "1.0.0"
 metadata:
@@ -9,16 +9,16 @@ metadata:
   hardware: "Atlas A2, Atlas A3"
 ---
 
-# Weighted SwigLU Backward Integration operator Optimization
+# Weighted SwiGLU Backward 融合算子优化
 
-## Task characteristics
-- **Data Dimensions**:(16, 1024, 2048) × 3,3DIntegrationoperator
-- **Characteristics**: Element-by-Element operation, last axis of reduce
+## 任务特征
+- **数据尺寸**：(16, 1024, 2048) × 3，3D融合算子
+- **特点**：先逐元素操作，再reduce最后一根轴
 
-## Optimize 1: Reshape dimension
+## 优化 1：Reshape 降维
 
 ```python
-# Merge the first two dimensions (B & M) into a single dimension BM
+# 将前两个维度(B, M)合并为单个维度BM
 x_reshaped = x.reshape(BM, N)
 weight_reshaped = weight.reshape(BM, N)
 grad_reshaped = grad.reshape(BM, N)
@@ -28,9 +28,9 @@ grad_weight_reshaped = grad_weight.reshape(BM, N)
 grad_x_reshaped = grad_x.reshape(BM)
 ```
 
-**Strength**: streamline parallel strategies, optimize memory access models and improve the efficiency of kernel implementation.
+**优势**：简化并行策略，优化内存访问模式，提高内核执行效率。
 
-## Optimizing 2: Line Double-Stract
+## 优化 2：行二次切分
 
 ```python
 for bm_start in range(0, BLOCK_SIZE_BM, SUB_BLOCK_SIZE_BM):
@@ -38,27 +38,27 @@ for bm_start in range(0, BLOCK_SIZE_BM, SUB_BLOCK_SIZE_BM):
     bm_mask = bm_offsets < BM
 ```
 
-## Autotune Configuration
+## Autotune 配置
 
 ```python
-# (AI core=40)
-# 1. Grid = 512 > 40, reduce axle smaller, UB full - > 1105.84 us
+# （AI core=40）
+# 1. grid=512>40，reduce轴切分较小，UB占满 -> 1105.84 us
 triton.Config({'BLOCK_SIZE_BM': 32, 'SUB_BLOCK_SIZE_BM': 32, 'BLOCK_SIZE_N': 128})
 
-# Grid = 1024>40, reduce axle split to 256 - > 1110.47 us
+# 2. grid=1024>40，reduce轴切分增至256 -> 1110.47 us
 triton.Config({'BLOCK_SIZE_BM': 16, 'SUB_BLOCK_SIZE_BM': 16, 'BLOCK_SIZE_N': 256})
 
-# Grid = 2048>40, reduce axle split to 512 - > 1091.26 us best
+# 3. grid=2048>40，reduce轴切分增至512 -> 1091.26 us 最优
 triton.Config({'BLOCK_SIZE_BM': 8, 'SUB_BLOCK_SIZE_BM': 8, 'BLOCK_SIZE_N': 512})
 
-# Grid =32 < 40, reduce axle is larger and UB is full - > 1098.53 us
+# 4. grid=32<40，reduce轴切分较大，UB占满 -> 1098.53 us
 triton.Config({'BLOCK_SIZE_BM': 512, 'SUB_BLOCK_SIZE_BM': 8, 'BLOCK_SIZE_N': 512})
 
-# Grid = 40 with tails, reduce axles are larger, UB is full - > 1094.60 us
+# 5. grid=40，有尾块，reduce轴切分较大，UB占满 -> 1094.60 us
 triton.Config({'BLOCK_SIZE_BM': 416, 'SUB_BLOCK_SIZE_BM': 8, 'BLOCK_SIZE_N': 512})
 ```
 
-### Summary
-1. Reshape's down dots can simplify parallel strategies and optimize memory access
-2. Allocation of larger cut sizes for reduce axis with priority for full UB.
-3. When Grid is larger, the likelihood is better (configuration 3)
+### 总结
+1. Reshape降维可简化并行策略，优化内存访问
+2. 在优先占满UB前提下为reduce轴分配较大切分尺寸
+3. Grid数较大时，可能性能更优（配置3）

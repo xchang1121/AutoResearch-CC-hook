@@ -14,24 +14,24 @@ metadata:
 This file lists rules whose violation causes a compile or runtime error
 on Ascend. They apply to every kernel in this DSL — no exceptions.
 
-## Syntax: No. of use
+## 禁止使用的语法
 
-- `return` / `break` / `continue` → Use mask control
-- lmbda → inline function or tl.where
-- Chain-based boolean calculation → step-by-step calculation
-- tensor Direct Index → tl.load / tl.store
-- Negative offset in if-else → tl.maxum (offset, 0)
-- Complex tl. where → if-else
-- Disables disassembly from `tl.where(cond, ptr_a, ptr_b)` selection pointer, address, or memory offset → to static if/else branch, or create load/store after mask
-- Prohibits replacing with → for while recycling
-- Start/stop forbids the mix of runtime variables and constexpr → with the full range+ cycle runtime if
-- Reduction scalar results are not available for `[0]` indexes, e. g. using `result = tl.sum(x, axis=0)` directly after `result`
+- `return` / `break` / `continue` → 使用 mask 控制
+- lambda → 内联函数或 tl.where
+- 链式布尔运算 → 分步计算 mask
+- 张量直接索引 → tl.load / tl.store
+- if-else 中负偏移 → tl.maximum(offset, 0)
+- 复杂 tl.where → if-else
+- 禁止用 `tl.where(cond, ptr_a, ptr_b)` 选择指针、地址或内存偏移 → 拆成静态 if/else 分支，或分别构造 mask 后 load/store
+- 禁止用 while 循环 → for 替代
+- 禁止 range() 的 start/stop 混用运行时变量和 constexpr → 用全 constexpr 的 range + 循环体内运行时 if 跳过
+- reduction scalar 结果不可 `[0]` 索引，例如 `result = tl.sum(x, axis=0)` 后直接使用 `result`
 
-## Wheel Cycle Substitution (Ascend)
+## While 循环替代（Ascend）
 
-**Static cap**(converted constant): Direct `for i in range(N_ITERS)`
+**静态上限**（编译时常量）: 直接 `for i in range(N_ITERS)`
 
-**Dynamic cap**(runtime parameter):
+**动态上限**（运行时参数）:
 ```python
 @triton.jit
 def kernel(ptr, n_iters, TILE: tl.constexpr, MAX_ITERS: tl.constexpr):
@@ -42,19 +42,19 @@ def kernel(ptr, n_iters, TILE: tl.constexpr, MAX_ITERS: tl.constexpr):
             tl.store(ptr + offset, data * 2)
 ```
 
-## Slice Operations
+## 切片操作
 
-- Python Slicing Ban `b[0]` `b[i:j]`
-- Modular: `tl.get_element(tensor, (index,))`
-- Slice: `tl.extract_slice(tensor, offsets, sizes, strides)`
-- Insert: `tl.insert_slice(full, sub, offsets, sizes, strides)`
-- Prohibits the use of tl.ange tensor to get_election
-- Prevents the return of scalar to `[0]`, for example `tl.sum(...)[0]`
+- 禁止 Python 切片 `b[0]` `b[i:j]`
+- 单元素: `tl.get_element(tensor, (index,))`
+- 切片: `tl.extract_slice(tensor, offsets, sizes, strides)`
+- 插入: `tl.insert_slice(full, sub, offsets, sizes, strides)`
+- 禁止对 tl.arange 张量用 get_element
+- 禁止对 reduction 返回的 scalar 再做 `[0]`，例如 `tl.sum(...)[0]`
 
-## Other restrictions
+## 其他限制
 
-- tl.constexpr is only used in kernel parameters, host side is not available
-- Output tensor uses torch.emtty/ empty_like (avoiding initial zeros/ones costs)
-- scalar conversion only `scalar.to(type)` is forbidden `tl.float16(scalar)`
-- BLONK_SIZE must be less than 65536
-- `tl.dot` uses fp32 accumulator: `acc = tl.zeros((BM, BN), dtype=tl.float32)`, and `tl.dot(a, b, acc)`
+- tl.constexpr 仅在内核参数中使用，host 侧不可用
+- 输出张量用 torch.empty / empty_like（避免 zeros/ones 初始化开销）
+- 标量转换仅 `scalar.to(type)`，禁止 `tl.float16(scalar)`
+- BLOCK_SIZE 必须小于 65536
+- `tl.dot` 累加时显式使用 fp32 accumulator：`acc = tl.zeros((BM, BN), dtype=tl.float32)`，再 `tl.dot(a, b, acc)`

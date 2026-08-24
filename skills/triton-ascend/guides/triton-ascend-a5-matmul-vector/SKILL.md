@@ -1,89 +1,89 @@
 ---
 name: triton-ascend-a5-matmul-vector
-description: "The guide is selected when the core calculation for operator is matrix multiplication's after-element operation (e.g., bias plus, ReLU activation, disability add, quantification, etc.). The guide uses two-part movement: a full cycle + a full cycle vector scope + monobuff + a pair of graphic synchronized events. Covers Cube/Vector data stream, ROW_SPLIT split, sub_vec_id index, visible sync_block_set/wait pair, plain mattel recommend writing, key binding speed check, etc. does not apply to pure Vectr/Vect data stream, ROW_SPLIT split, sub_vec_id index, visible sync_block_set/wait pair, plain kernel recommend, key binding speed check."
+description: "适用于 A5（Ascend950）Cube/Vector 协同编程的 MatMul + Vector 后处理融合优化指南。当算子的核心计算是矩阵乘法后接逐元素操作（如 bias 加法、ReLU 激活、残差加、量化等）时应选择此指南。本指南采用两段式调度：一个 cube scope 整段循环 + 一个 vector scope 整段循环 + 单 buffer + 一对显式同步事件。覆盖 Cube/Vector 数据流、ROW_SPLIT 拆分、sub_vec_id 索引、显式 sync_block_set/wait 配对、plain matmul kernel 推荐写法、关键约束速查等。不适用于纯 Vector 逐元素运算、也不适用于无后处理的纯 MatMul。"
 category: guide
 version: "1.0.0"
 metadata:
   backend: ascend
   dsl: triton_ascend
   hardware: "Atlas A5"
-  note: "A5 (Ascend950) Cube/Vector Family and Interface MatMul + Victor Post-Process Integration"
+  note: "A5(Ascend950) Cube/Vector 亲和接口 MatMul + Vector 后处理融合"
   operator_type: "matmul"
   requires_affinity: true
 ---
 
-# MatMul + Victor Co-programming Optimization Guide
+# MatMul + Vector 协同编程优化指南
 
-## 0. When does it have to be written?
+## 0. 何时用亲和写法
 
-A5CompassionAPI(`al.scope` / `al.fixpipe` / `al.sync_block_set/wait` / `bl.alloc`Real proceeds.**Not fromfixpipeIn itself**  And from it can make  GEMMResults"Don't drop.GMJust give it to me.vectorPost-processing."——Save one.(M, N)VolumeGMCentretensorAnd opencube/vectorThe flow of water overlaps.
+A5 亲和 API（`al.scope` / `al.fixpipe` / `al.sync_block_set/wait` / `bl.alloc`）的真实收益**不来自 fixpipe 本身**，而来自它能让 GEMM 的结果"不落 GM、直接交给 vector 做后处理"——省掉一份 (M, N) 量级的 GM 中间张量、并打开 cube/vector 流水重叠。
 
-This determines the benefits of probity and writing for a kernel form:**CV integration**- `tl.dot` (cube) and integrated vector reprocessing (GELU / ReLU / Sigmoid / Softmax / Bias-add / Scale / Mask / Reduce / Quantification, etc.) in a kernel.
+这就决定了亲和写法对一种 kernel 形态会有收益：**CV 融合**——一个 kernel 里既有 `tl.dot`（cube），又有可融合的 vector 后处理（GELU / ReLU / Sigmoid / Softmax / Bias-add / Scale / Mask / Reduce / 量化等）。
 
-### 0.1 Three hard rules
+### 0.1 三条硬性规则
 
-#### Rule A: Pure MatMul**Absolutely not**with a proximate interface - must be native Triton
+#### 规则 A：纯 MatMul **绝对不要**用亲和接口实现 — 必须用原生 Triton
 
-> Application: operator's kernel**only**`tl.dot`,**there is no**integrated vector reprocessing. For example:
-> - `matmul` operator (`Y = X @ W`);
-> - `grad_fc2_weight = grad_output.T @ gelu_output`,
->   `grad_fc1_weight = grad_fc1_output.T @ hidden_state`,
+> 适用：算子的 kernel 体内**只有** `tl.dot`，**没有任何**可融合的 vector 后处理。例如：
+> - `matmul` 算子（`Y = X @ W`）；
+> - `grad_fc2_weight = grad_output.T @ gelu_output`、
+>   `grad_fc1_weight = grad_fc1_output.T @ hidden_state`、
 >   `grad_hidden_state = grad_fc1_output @ fc1_weight`
 
-**Must**be written in original Triton - `tl.make_block_ptr` + `tl.load` + `tl.dot` + `tl.store`,**absolutely prohibited**to write to `al.scope` / `al.fixpipe` / `bl.alloc`. Reason:
+**必须**写成原生 Triton —— `tl.make_block_ptr` + `tl.load` + `tl.dot` + `tl.store`，**绝对禁止**写入 `al.scope` / `al.fixpipe` / `bl.alloc` 任何一个。原因：
 
-1. Acc calculated on L0C is the NZ format, and the original `tl.store(GM_block_ptr, acc)` will automatically lower the compiler on the cube path to**hidden fixpe (L0C → GM)**intangible GM - this is the best hardware command path for cube data exports.
-2. If `al.fixpipe(acc, c_ub)` manually moves the data to UB and writes GM in `bl.to_tensor + tl.store`,**it will be more than once**L0C→ UB→GM in transit,**more than a pair of events**cube/vector sync, and it will lock the vector unit in vain.
-3. At the same time, the UB transit path can easily introduce accuracy questions on ROW_SPLIT / sub_vec_id / non-alignedshape.
+1. cube 算完的 acc 在 L0C 上是 NZ 格式，原生 `tl.store(GM_block_ptr, acc)` 在 cube 路径下编译器会自动 lower 成**隐式 fixpipe(L0C → GM)** 直写 GM —— 这就是 cube 数据出口最优的硬件指令路径。
+2. 如果手动套上 `al.fixpipe(acc, c_ub)` 把数据先搬到 UB、再用 `bl.to_tensor + tl.store` 写 GM，会**多一次** L0C→UB→GM 的中转搬运、**多一对** cube/vector sync 事件，并把 vector 单元无意义地锁住。
+3. 同时，UB 中转那条路径在 ROW_SPLIT / sub_vec_id / non-aligned shape 上容易引入精度问题。
 
-The recommended template for pure matmul Kernel is given in 6.1.
+纯 matmul kernel 的推荐模板见 6.1。
 
-#### Rule B: Pure Victor (without `tl.dot`) does not mean anything to them by using native Triton vector, relative and API
+#### 规则 B：纯 Vector（无 `tl.dot`）使用原生 Triton vector 写法，亲和 API 对它们没有意义
 
-Softmax / playnorm / reduce / pure elementwise and others operator all fall into this category.
+softmax / layernorm / reduce / pure elementwise 等算子都属于这一类。
 
 ---
 
-## 1. Apply scene
+## 1. 适用场景
 
-Many of the core calculations for operator are "matrix multiplication + Element-by-Element Reprocessing" such as:
+许多算子的核心计算模式是"矩阵乘法 + 逐元素后处理"，例如：
 
-- **Linear + bias**:`Y = X @ W + bias`
-- **MatMul + ReLU**:`Y = ReLU(X @ W)`
-- **MatMul+Waste+**: `Y = X @ W + residual`
-- **MatMul + GELU**:`Y = GELU(X @ W)`
-- **MatMul + Quantification**: `Y = quantize(X @ W)`
+- **Linear + bias**：`Y = X @ W + bias`
+- **MatMul + ReLU**：`Y = ReLU(X @ W)`
+- **MatMul + 残差加**：`Y = X @ W + residual`
+- **MatMul + GELU**：`Y = GELU(X @ W)`
+- **MatMul + 量化**：`Y = quantize(X @ W)`
 
-This type of operator can be used on Atlas A5 to achieve efficient integration through Cube/Vector collaborative programming: Cube is responsible for matrix multiplication, Vector is responsible for reprocessing, delivering intermediate results through `al.fixpipe` on the film, avoiding backwriting of GM rereading costs.
+这类算子在 Atlas A5 上可以利用 Cube/Vector 协同编程实现高效融合：Cube 负责矩阵乘法，Vector 负责后处理，通过 `al.fixpipe` 在片上传递中间结果，避免数据回写 GM 再读取的开销。
 
-## 2. Schedule structure (used-cv Kernel)
+## 2. 调度结构（fused-cv kernel）
 
-**Key design principles**: do not write cube and vector as "block-by-block interlocking". The correct formulation is**Two-part format**:
+**关键设计原则**：不要把 cube 和 vector 写成"逐 block 交错穿插"。正确写法是 **两段式**：
 
-- cube scope:`for tile in [0..N): dot(K-loop) → fixpipe → c_ub; sync_set(cube→vector, EVT0); sync_wait(vector→cube, EVT1)`;
-- vector scope: `for file in [0. N]: sync_wait (cube→vector, EVT0); read c_ub → reprocessing → store GM; sync_set (vector →cube, EVT1) '.
+- cube scope：`for tile in [0..N): dot(K-loop) → fixpipe → c_ub; sync_set(cube→vector, EVT0); sync_wait(vector→cube, EVT1)`；
+- vector scope：`for tile in [0..N): sync_wait(cube→vector, EVT0); read c_ub → 后处理 → store GM; sync_set(vector→cube, EVT1)`。
 
-EVT0 = data-ready, EVT1 = buffer-free. Single buffer `c_ub` cross file reuse, without EVT1, cube second fixpage will overwrite ub before vector is finished, trigger WAW, and result**all tile output is equal to last tile**written.
+EVT0 = data-ready，EVT1 = buffer-free。单 buffer `c_ub` 跨 tile 复用，如果没有 EVT1，cube 第二次 fixpipe 会在 vector 还没读完前覆盖 ub，触发 WAW，结果**所有 tile 的输出都等于最后一次写入的 tile**。
 
-## 3. Data stream
+## 3. 数据流
 
-`GM(input/weight) → tl.load (cube) → L0C(fp32 acc) → al.fixpipe(NZ2ND,ROW_SPLIT) → UB c_ub(BM/2, BN) → bl.to_tensor (vector) →Reprocessing→ tl.store → GM`
+`GM(input/weight) → tl.load (cube) → L0C(fp32 acc) → al.fixpipe(NZ2ND,ROW_SPLIT) → UB c_ub(BM/2, BN) → bl.to_tensor (vector) → 后处理 → tl.store → GM`
 
-## 4. Structure design for fused-cv Kernel
+## 4. fused-cv kernel 的结构设计
 
-### 4.1 Buffer Distribution
+### 4.1 Buffer 分配
 
 ```python
 c_ub = bl.alloc(tl.float32, (BLOCK_M // 2, BLOCK_N), al.ascend_address_space.UB)
 ```
 
-- Line dimensions use `BLOCK_M // 2`: Every sub-vector core in `ROW_SPLIT` mode sees only half of the lines.
-- dtype with `tl.float32`:Cube L0C loader is fp32, fixpipe directly removed.
-- Shape must be `tl.constexpr`.
+- 行维度使用 `BLOCK_M // 2`：`ROW_SPLIT` 模式下每个 sub-vector core 只看到一半行。
+- dtype 用 `tl.float32`：Cube L0C 累加器是 fp32，fixpipe 直接搬出。
+- shape 必须是 `tl.constexpr`。
 
-> Simplified variant: If no sub-vector split is required, `FixpipeDualDstMode.ROW_SPLIT`, Buffer Shape can be saved by using `(BLOCK_M, BLOCK_N)`, vector side without `sub_vec_id` offsets, simpler and more stable writing.
+> 简化变体：如果不需要 sub-vector 拆分，可以省掉 `FixpipeDualDstMode.ROW_SPLIT`，buffer shape 直接用 `(BLOCK_M, BLOCK_N)`，vector 端不带 `sub_vec_id` 偏移，写法更简单也更稳。
 
-### 4.2 CubeScope — matrix multiplication + fixpipe
+### 4.2 Cube Scope — 矩阵乘法 + fixpipe
 
 ```python
 with al.scope(core_mode="cube"):
@@ -106,13 +106,13 @@ with al.scope(core_mode="cube"):
         al.sync_block_wait("vector", "cube", 1, al.PIPE.PIPE_V, al.PIPE.PIPE_FIX)
 ```
 
-Key points:
+要点：
 
-- `tl.dot(a, b, acc)` Three Operating Numbers for K V reduce; `acc` must be visible `tl.zeros` initialized (L0C does not guarantee zero).
-- `al.fixpipe(NZ2ND, ROW_SPLIT)` expands the NZ fractal of L0C into ND line priority and automatically cuts to two sub-vectors by line.
-- Set/wait: set with `PIPE_FIX → PIPE_V`, wait with `PIPE_V → PIPE_FIX`, match with id.
+- `tl.dot(a, b, acc)` 三操作数形式做 K 维 reduce；`acc` 必须显式 `tl.zeros` 初始化（L0C 不保证清零）。
+- `al.fixpipe(NZ2ND, ROW_SPLIT)` 把 L0C 的 NZ 分形展开成 ND 行优先并自动按行切给两个 sub-vector。
+- 每 tile 一对 set/wait：set 用 `PIPE_FIX → PIPE_V`，wait 用 `PIPE_V → PIPE_FIX`，event id 一定要配对一致。
 
-### 4.3 Victor Spope - Reprocessing + Storage
+### 4.3 Vector Scope — 后处理 + 存储
 
 ```python
 with al.scope(core_mode="vector"):
@@ -122,7 +122,7 @@ with al.scope(core_mode="vector"):
 
         al.sync_block_wait("cube", "vector", 0, al.PIPE.PIPE_FIX, al.PIPE.PIPE_V)
         tile = bl.to_tensor(c_ub)                       # (BM/2, BN) fp32
-        tile = tl.maximum(tile, 0.0)                    # Post-treatment (%1)ReLU Example:
+        tile = tl.maximum(tile, 0.0)                    # 后处理（ReLU 示例）
 
         # C_blk: (M,N), block_shape=(BM/2, BN), order=(1,0)
         # offsets=(block_m*BM + sub_vec_id*(BM/2), block_n*BN)
@@ -131,39 +131,39 @@ with al.scope(core_mode="vector"):
         al.sync_block_set("vector", "cube", 1, al.PIPE.PIPE_V, al.PIPE.PIPE_FIX)
 ```
 
-Key points:
+要点：
 
-- `al.sub_vec_id()` returns 0 or 1,**output line offset must be added to `sub_vec_id * (BLOCK_M // 2)`**, otherwise two sub-vecs write to overwrite on the same paragraph GM.
-- Bias post-treatment (broadcast): `bias_tile = tl.load(bias_ptr + col_off + tl.arange(0, BLOCK_N)); tile = tile + bias_tile[None, :]`.
-- Upon completion of ub `sync_set(EVT_BUF_FREE)`, allow cube to enter the next file.
+- `al.sub_vec_id()` 返回 0 或 1，**输出行偏移必须加 `sub_vec_id * (BLOCK_M // 2)`**，否则两个 sub-vec 写到同一段 GM 上发生覆盖。
+- bias 类后处理（broadcast）：`bias_tile = tl.load(bias_ptr + col_off + tl.arange(0, BLOCK_N)); tile = tile + bias_tile[None, :]`。
+- 写完 ub 后立刻 `sync_set(EVT_BUF_FREE)`，让 cube 可以进入下一 tile。
 
-### 4.4 Common design elements for used-cv Kernel
+### 4.4 fused-cv kernel 的常见设计要点
 
-1. **Post-treatment at the end of vector scope**: cube fixpipe, vector `bl.to_tensor(c_ub)` takes the file, does elementwise/ redation, then `tl.store` goes out.
-2. **Additional input involved in the reprocessing process**(e.g. `fc1_output` in GELU') read GM directly by vector with `tl.load`,**no cume**.
+1. **后处理放在 vector scope**：cube fixpipe 完之后，vector `bl.to_tensor(c_ub)` 拿 tile，做 elementwise / reduction，再 `tl.store` 出去。
+2. **后处理涉及到的额外输入**（例如 GELU' 里的 `fc1_output`）由 vector 端用 `tl.load` 直接读 GM，**不必走 cube**。
 
-## 5. Synchronize event pairing speed check
+## 5. 同步事件配对速查
 
-| Event | Direction | sender_pipe → receiver_pipe | Meaning |
+| Event | 方向 | sender_pipe → receiver_pipe | 含义 |
 |-------|------|-----------------------------|------|
-| 0 | cube → vector | `PIPE_FIX` → `PIPE_V` | "Tile's already in c_ub." |
-| 1 | vector → cube | `PIPE_V` → `PIPE_FIX` | "c_ub, I'm finished. I can overwrite." |
+| 0 | cube → vector | `PIPE_FIX` → `PIPE_V` | "tile 已经在 c_ub 里了" |
+| 1 | vector → cube | `PIPE_V` → `PIPE_FIX` | "c_ub 我读完了，可以覆写" |
 
-**The twinning principle**: set/wait five-dollar group `(producer, consumer, event_id, src_pipe, dst_pipe)` must be fully consistent. Few set or more wait → dead locks; PIPE writes against →'s failure to hit.
+**配对原则**：set/wait 五元组 `(producer, consumer, event_id, src_pipe, dst_pipe)` 必须完全一致。少 set 或多 wait → 死锁；PIPE 写反 → 命中不到事件。
 
-## 6. Recommended formulation for plain matmul Kernel (**pure matmul)
-### 6.1 Recommended template (no reprocessing GEMM)
+## 6. plain matmul kernel 的推荐写法（**纯 matmul 不要用亲和**）
+### 6.1 推荐模板（无后处理 GEMM）
 
 ```python
 @triton.jit
 def _matmul_kernel(A_ptr, B_ptr, C_ptr, M, N, K, ...):
-    """No reprocessing GEMM: Pure raw TritonNo use is permitted. al.scope / al.fixpipe / bl.alloc.
-    Import stride,BLOCK constexpr,K_LOOP/NUM_BLOCKS/NUM_BLOCKS_N/CORE_NUM."""
+    """无后处理 GEMM：纯原生 Triton。禁止使用 al.scope / al.fixpipe / bl.alloc。
+    传入 stride、BLOCK constexpr、K_LOOP/NUM_BLOCKS/NUM_BLOCKS_N/CORE_NUM。"""
     pid = tl.program_id(0)
     for block_idx in range(pid, NUM_BLOCKS, CORE_NUM):
         block_m, block_n = block_idx // NUM_BLOCKS_N, block_idx % NUM_BLOCKS_N
 
-        # A_blk/B_blk/C_blk: tl.make_block_ptr Standard 3 package, order=(1)
+        # A_blk/B_blk/C_blk: tl.make_block_ptr 标准三件套, order=(1,0)
         # A=(M,K)@(block_m*BLOCK_M, 0) (BLOCK_M, BLOCK_K)
         # B=(K,N)@(0, block_n*BLOCK_N) (BLOCK_K, BLOCK_N)
         # C=(M,N)@(block_m*BLOCK_M, block_n*BLOCK_N) (BLOCK_M, BLOCK_N)
@@ -179,14 +179,14 @@ def _matmul_kernel(A_ptr, B_ptr, C_ptr, M, N, K, ...):
         tl.store(C_blk, acc, boundary_check=(0, 1))
 ```
 
-Key points:
+要点：
 
-- `boundary_check=(0, 1), padding_option="zero"` has to be added, otherwise the data will be read undefined when M / N / K is not aligned.
-- Do not pass `disable_auto_inject_block_sync=True` / `debug=True` -- these two are prosthetic, original Triton walking standard lowering.
+- `boundary_check=(0, 1), padding_option="zero"` 必须加，否则 M / N / K 不对齐时 tail block 会读到未定义数据。
+- 不要传 `disable_auto_inject_block_sync=True` / `debug=True`——这两个是亲和写法专用，原生 Triton 走标准 lowering。
 
-## 7. Key constraints quick check.
+## 7. 关键约束速查
 
-1. **fixpe exit and exit**: must be called in cube scope, src is acc (L0C) for `tl.dot`, dst must be a buffer (UB/L1/L0x) for `bl.alloc`, pass GM block_ptr for `TypeError('dst is not of buffer type')`.
-2. **`bl.alloc` Shape must constexpr**; neither is `bl.subview` / `bl.to_tensor(target_shape=...)`. Runtime integer (e. g. `n_routed_experts`) reports `get_buffer_ty()`'s error.
-3. **set/wait full pair of five-dollar groups**: `(producer, consumer, event_id, src_pipe, dst_pipe)` no match for dead locks/discards; event id 0-15. Cube and Victor for cycles must have exactly the same block sequence (the starting point/step length).
-4. **`disable_auto_inject_block_sync=True` is used only for pronunciation**; plain matmul/ pure vector Kernel is not passed. `al.fixpipe / al.copy / al.scope / bl.alloc` is only A5 available.
+1. **fixpipe 出入口**：必须在 cube scope 内调用，src 是 `tl.dot` 的 acc（L0C），dst 必须是 `bl.alloc` 的 buffer（UB / L1 / L0x），传 GM block_ptr 报 `TypeError('dst is not of buffer type')`。
+2. **`bl.alloc` shape 必须 constexpr**；同理 `bl.subview` / `bl.to_tensor(target_shape=...)` 也是。runtime 整型（如 `n_routed_experts`）会报 `get_buffer_ty()` 错。
+3. **set/wait 五元组完全配对**：`(producer, consumer, event_id, src_pipe, dst_pipe)` 任一处不一致就死锁/丢事件；event id 0~15。Cube 与 Vector 两个 for 循环必须遍历完全相同的 block 序列（起点/步长一致）。
+4. **`disable_auto_inject_block_sync=True` 仅亲和写法用**；plain matmul / pure vector kernel 一律不传。`al.fixpipe / al.copy / al.scope / bl.alloc` 仅 A5 可用。

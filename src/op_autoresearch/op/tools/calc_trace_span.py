@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Calculates the time span for the Chrome Trace file.
+计算 Chrome Trace 文件的时间跨度。
 
-Range definition: The time difference between the earliest ts to the latest (ts + dur) for all ph = = \"X\" events.
+跨度定义：所有 ph == "X" 的事件中，最早 ts 到最晚 (ts + dur) 的时间差。
 """
 
 import argparse
@@ -13,12 +13,12 @@ from pathlib import Path
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Calculating the time span of ph=X in trackEvents"
+        description="计算 traceEvents 中 ph==X 的时间跨度"
     )
     parser.add_argument(
         "input",
         type=Path,
-        help="Trace JSON file path"
+        help="trace JSON 文件路径"
     )
     return parser.parse_args()
 
@@ -26,7 +26,7 @@ def parse_args() -> argparse.Namespace:
 def calc_span(trace_events: list[dict]) -> float:
     x_events = [e for e in trace_events if e.get("ph") == "X"]
     if not x_events:
-        raise ValueError("Event not found ph=X")
+        raise ValueError("未找到 ph==X 的事件")
 
     min_ts = min(float(e.get("ts", 0) or 0) for e in x_events)
     max_end = max(
@@ -41,7 +41,7 @@ def main() -> None:
     input_path = args.input
 
     if not input_path.exists():
-        raise FileNotFoundError(f"File does not exist: {input_path}")
+        raise FileNotFoundError(f"文件不存在: {input_path}")
 
     with input_path.open("r", encoding="utf-8") as f:
         data = json.load(f)

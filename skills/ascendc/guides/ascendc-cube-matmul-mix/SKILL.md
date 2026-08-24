@@ -1,41 +1,41 @@
 ---
 name: ascendc-cube-matmul-mix
-description: Ascend C Cube(Matmul/Volume/Attention)operator MIXStart a fight with landing. Coverage: How to getCubeIt's really nuclear.NPUI've been executed.profilerCapture (rather than running)AIV/vector),MultiCoreMatmulTiling of baseK/SetSingleShape/Multi-nucleotide traps,L0A/L0B/L0CCapacity constraints,workspaceCombination,MTE2→VSynchronize,Release/DebugCompile differences. Trigger keyword:matmul,cube,AIC, mix nuclear,MIX,GetTensorC,Iterate,REGIST_MATMUL_OBJ,ml0/nl0/kl0=0,blockDimDeadlock.L0BSpills, all results.0/NaN,no_npuQuantified matrix multiplier,grouped_matmul,attention.
+description: Ascend C Cube（Matmul/卷积/Attention）算子 MIX 启动与落地实战。覆盖：如何让 Cube 核真正在 NPU 上执行并被 profiler 捕获（而非只跑 AIV/vector）、MultiCoreMatmulTiling 的 baseK/SetSingleShape/多核切分陷阱、L0A/L0B/L0C 容量约束、workspace 装配、MTE2→V 同步、Release/Debug 编译差异。触发关键词：matmul、cube、AIC、混合核、MIX、GetTensorC、Iterate、REGIST_MATMUL_OBJ、ml0/nl0/kl0=0、blockDim 死锁、L0B 溢出、结果全 0/NaN、no_npu、量化矩阵乘、grouped_matmul、attention。
 ---
 
-# Ascend C Cube operator MIX Start and Land
+# Ascend C Cube 算子 MIX 启动与落地
 
-If the Cube (AIC) operator is pulled up with the "vector Nuclear Launch" mode, the AIC phase does not perform → at all, and the results are zero/not initialized, and profiler cannot capture NPU Kernel. The following is the eight key points where Cube operator is actually running, counting and captured, and any error is silently produced "0 / NN/ Deadlock/ accuracy error".
+Cube（AIC）算子若用「向量核启动方式」拉起，AIC 相位根本不执行 → 结果全 0/未初始化，profiler 也抓不到 NPU kernel。以下是让 Cube 算子真正跑起来、算对、且被捕获的 8 个关键点，任何一个错都会静默产生「全 0 / NaN / 死锁 / 精度错」。经实测（int8 quant_matmul，Ascend910_9362）逐一验证。
 
-## 1. Start with MIX instead of vector-only
-- Naked Chevron `<<<blockDim,l2Ctrl,stream>>>` is**AIV-only**, Cube phase is not running.
-- Correct manner: `ascendc_library()` (`$ASCEND_HOME/tools/tikcpp/ascendc_kernel_cmake/ascendc.cmake`) compiles kernel, produces `aclrtlaunch_<kernel>.h`, pulls up (MIX) with `ACLRT_LAUNCH_KERNEL(<kernel>)(blockDim, stream, args...)`. Or moves the standard op framework (op_host+op_kernel+ops-info registration).
-- PureCXXThe project will be sufficient:`include(ascendc.cmake); ascendc_library(k STATIC kernel.cpp)`.**Don't.**and ASC-language(`.asc`/`find_package(ASC)`)Mixed——Coexistence can be destroyed in silence.device-binaryRegisterkernelPull up but not executed.`set(ASCEND_CANN_PACKAGE_PATH ${ASCEND_HOME_PATH} FORCE)`.
+## 1. 用 MIX 启动，而非 vector-only 启动
+- 裸 chevron `<<<blockDim,l2Ctrl,stream>>>` 是 **AIV-only**，Cube 相位不跑。
+- 正确方式：`ascendc_library()`（`$ASCEND_HOME/tools/tikcpp/ascendc_kernel_cmake/ascendc.cmake`）编译 kernel，生成 `aclrtlaunch_<kernel>.h`，用 `ACLRT_LAUNCH_KERNEL(<kernel>)(blockDim, stream, args...)` 拉起（MIX）。或走标准 op 框架（op_host+op_kernel+ops-info 注册）。
+- 纯 CXX 工程即可：`include(ascendc.cmake); ascendc_library(k STATIC kernel.cpp)`。**不要**和 ASC-language(`.asc`/`find_package(ASC)`)混用——共存会静默破坏 device-binary 注册（kernel 拉起但不执行）。需要 `set(ASCEND_CANN_PACKAGE_PATH ${ASCEND_HOME_PATH} FORCE)`。
 
-## 2. Workspace / Tiling must be the last two parameters of Kernel
-framework takes sys workspace from the "second last" parameter to `GetSysWorkSpacePtr()` (`REGIST_MATMUL_OBJ` uses it). L1/L0 status of → matmul is written in the wrong order into a small Tiling Buffer → MTE crosses the border. The end of the signature is fixed as `..., workspace, tiling`.
+## 2. workspace / tiling 必须是 kernel 的最后两个参数
+框架从「倒数第二个」参数取 sys workspace 给 `GetSysWorkSpacePtr()`（`REGIST_MATMUL_OBJ` 用它）。顺序错 → matmul 的 L1/L0 staging 写进一个很小的 tiling buffer → MTE 越界。签名收尾固定为 `..., workspace, tiling`。
 
-## 3. Tiling (MultiCoreMatmulTiling)
-- `SetFixSplit(baseM, baseN, baseK)`'s**baseK must be visible**: Pass `-1` (auto) get `ml0/nl0/kl0=0` → under int8.
-- `SetTraverse(MatrixTraverse::FIRSTM)`: There is no way that the Iterate is in the wrong position for → in the sequence with the Kernel handwritten `(cnt%roundM, cnt/roundM)`.
-- `SetSingleShape(sM, sN, K)`: Each core is responsible for the `sM×sN` area. >1 GetTiling often needs it to succeed (otherwise `res=-1`, baseM/baseN=0).
+## 3. Tiling（MultiCoreMatmulTiling）三个必设项
+- `SetFixSplit(baseM, baseN, baseK)` 的 **baseK 必须显式**：传 `-1`（自动）在 int8 下会得到 `ml0/nl0/kl0=0` → device fault。
+- `SetTraverse(MatrixTraverse::FIRSTM)`：不设则 Iterate 遍历序与 kernel 手写 `(cnt%roundM, cnt/roundM)` 对不上 → 摆放错位。
+- `SetSingleShape(sM, sN, K)`：每核负责 `sM×sN` 区域。>1 核时 GetTiling 常需要它才成功（否则 `res=-1`, baseM/baseN=0）。
 
-## 4. BlockDim ≤ Physical AIC Number (otherwise MIX starts deadlock)
-`blockDim > Physical AIC '**hangs**(not drops). tile cannot tile a core in many cases; instead, the `SetSingleShape` area is amplified by base increment until `area number ≤ Physical AIC ', with multiple base file (`roundM=ceil(singleCoreM/baseM)`) per core within the area. `get_usedCoreNum()` is blockdim.
+## 4. blockDim ≤ 物理 AIC 数（否则 MIX 启动死锁）
+`blockDim > 物理 AIC` 会**挂死**（不是丢块）。tile 很多时不能一 tile 一核；而是把 `SetSingleShape` 区域按 base 增量放大，直到 `区域数 ≤ 物理 AIC 数`，每核在区域内走多个 base tile（`roundM=ceil(singleCoreM/baseM)`）。`get_usedCoreNum()` 即 blockDim。
 
-## 5. L0 Capacity (int8, 64KB per block L0)
-`baseM·baseK ≤ 64K` (L0A), `baseK·baseN ≤ 64K` (L0B), `baseM·baseN·4 ≤ 128K` (L0C, in32). `128×128×512` is perfect. Common pit: `baseN=256 + baseK=512` → L0B = 128K spills out → more than K-chunk shape**silently miscalculated**.
+## 5. L0 容量（int8，每块 L0 均 64KB）
+`baseM·baseK ≤ 64K`（L0A）、`baseK·baseN ≤ 64K`（L0B）、`baseM·baseN·4 ≤ 128K`（L0C, int32）。`128×128×512` 三者刚好。常见坑：`baseN=256 + baseK=512` → L0B=128K 溢出 → 多 K-chunk 形状**静默算错**。
 
-## 6. MTE2 → V Sync (load scale/bias followed by vector operation)
-`DataCopy`(MTE2  Like a  per-channel scaleCopyUBI'll be right back.`Mul`(V),**I have to.**Use it.VECIN Que(`AllocTensor→DataCopy→EnQue→DeQue→Use it.→FreeTensor`)or `SetFlag/WaitFlag<HardEvent::MTE2_V>`Naked.`PipeBarrier<PIPE_V>`Lines onlyVOrders, no queuesMTE2→V → MulRun away!→SmallM shape NaN(Big)MAs a resultCastCover up.latencyI'm lucky, that's why.bugIt's hidden.
+## 6. MTE2 → V 同步（加载 scale/bias 后接 vector 运算）
+`DataCopy`（MTE2，如把 per-channel scale 拷进 UB）后紧接 `Mul`（V），**必须** 用 VECIN Que（`AllocTensor→DataCopy→EnQue→DeQue→用→FreeTensor`）或 `SetFlag/WaitFlag<HardEvent::MTE2_V>`。裸 `PipeBarrier<PIPE_V>` 只排 V 序、不排 MTE2→V → Mul 抢跑 → 小 M 形状 NaN（大 M 因 Cast 掩盖延迟侥幸过，故此 bug 极隐蔽）。
 
-## 7. Cube Kernel compiled with Debug
-`set(CMAKE_BUILD_TYPE Debug ... FORCE)`. Ascendc cube kernel meets under Release `-O2` (device.o merge; the official mlex example is also mandatory for Debug.
+## 7. Cube kernel 用 Debug 编译
+`set(CMAKE_BUILD_TYPE Debug ... FORCE)`。ascendc cube kernel 在 Release `-O2`（device.o merge）下会 fault；官方 mmex 例子也强制 Debug。
 
-## 8. Torch_npu series of traps
-`x[bi]` (several slices of tensor) is still accompanied by `storage_offset`, while `ConvertType`/`storage().data()`**ignores that offset**→ has been read in each batch to catch 0. Use `.clone()` (compulsory copy of fset=0) when pulling up in separate batch, not with `.contiguous()` (repeated as it is).
+## 8. torch_npu 分批陷阱
+`x[bi]`（连续张量的切片）仍带 `storage_offset`，而 `ConvertType`/`storage().data()` **忽略 offset** → 每批都读到 batch 0。分批分别拉起时用 `.clone()`（强制 offset=0 拷贝），不要用 `.contiguous()`（已连续则原样返回）。
 
-## Kernel Bones (the example of leakyrelu that can be copied)
-`Matmul<A,B,C[,Bias]>` +Handwritten cycle:`SetTensorA/B; if bias SetBias; while(mm.Iterate<true>()){ GetTensorC<true>(local,false,true); /*vectorReprocessing*/ CopyOut; } mm.End();`;entry`REGIST_MATMUL_OBJ(&pipe, GetSysWorkSpacePtr(), mm, &tiling)`. Example:CANNIn the bag.`matmul_leakyrelu_custom`(fp16).int8Quantification:`Matmul<int8,int8,int32,int32-bias>` cubeOutint32Again.vectorInverse Quantificationcast→scale→pertoken→clamp→cast half).int8WeightsBReferences`CubeFormat::NZ`,but NDOr (internal)nd2nz).
+## kernel 骨架（照抄可跑的 leakyrelu 例子）
+`Matmul<A,B,C[,Bias]>` + 手写循环：`SetTensorA/B; if bias SetBias; while(mm.Iterate<true>()){ GetTensorC<true>(local,false,true); /*向量后处理*/ CopyOut; } mm.End();`；入口 `REGIST_MATMUL_OBJ(&pipe, GetSysWorkSpacePtr(), mm, &tiling)`。参考例子：CANN 包内 `matmul_leakyrelu_custom`（fp16）。int8 量化：`Matmul<int8,int8,int32,int32-bias>` cube 出 int32，再向量反量化（cast→scale→pertoken→clamp→cast half）。int8 权重 B 参考用 `CubeFormat::NZ`，但 ND 亦可（内部 nd2nz）。
 
-Relevant: [[ascendc-hardware-tilling] [[ascendc-ub-budget] [[ascendc-crash-debug]](deadlock/total 0/NAN positioning)].
+相关：[[ascendc-hardware-tiling]] [[ascendc-ub-budget]] [[ascendc-crash-debug]]（死锁/全0/NaN 定位）。

@@ -1,15 +1,12 @@
-# Op AutoResearch agent guide
+# Op AutoResearch
 
-This repository is a standalone operator-kernel optimization workspace. An
-agent improves a measurable objective through a controlled
-plan-edit-evaluate-keep/discard loop. The state machine, hooks, commands,
-verifier, workers, and skill library are all contained here.
+本仓库是独立的算子内核自动优化工作区。Agent 通过 plan → edit → eval → keep/discard 循环优化可度量指标；状态机、hooks、slash command、verifier、worker 和技能库均在本仓库内。
 
-## Quick start
+## 快速开始
 
 ```bash
 python -m pip install -e .
-# HTTP worker support: python -m pip install -e ".[worker]"
+# HTTP worker 需要：python -m pip install -e ".[worker]"
 ```
 
 ```text
@@ -18,60 +15,41 @@ python -m pip install -e .
 /autoresearch --resume
 ```
 
-For the complete operator workflow, read
-`.claude/commands/autoresearch.md` and `AUTORESEARCH.md`.
+完整操作说明见 `.claude/commands/autoresearch.md` 与 `AUTORESEARCH.md`。
 
-## Skill library
+## 技能库
 
-The skill root is `skills/`, organized by DSL. `.claude/settings.json` exposes
-it through `OP_AUTORESEARCH_AR_SKILLS_ROOT=skills`. During PLAN, read the one
-to three most relevant `SKILL.md` files and cite their paths in the plan
-rationale.
+技能根目录为 `skills/`，按 DSL 分区。`.claude/settings.json` 通过 `OP_AUTORESEARCH_AR_SKILLS_ROOT=skills` 指向它。PLAN 阶段应读取 1–3 个最相关的 `SKILL.md`，并在计划理由中注明文件名。
 
-## Operational invariants
+## 不变量
 
-1. `.ar_state/plan.md` is the sole source of truth for the plan. Only the
-   settlement transactions in `create_plan.py` and `pipeline.py` may write it.
-2. Plan IDs increase globally as `p1`, `p2`, and so on. Never reuse or skip an
-   ID.
-3. Settle every plan item as KEEP, DISCARD, or FAIL. An item may be abandoned
-   only at a REPLAN or DIAGNOSE boundary, and the counter must still advance.
-4. Baseline creation, plan submission, and round settlement are eventful
-   transactions. Each transaction atomically records results, target cases,
-   replay commands, and the new state in `state.json`. Hooks observe committed
-   state and emit guidance; they do not own state transitions.
-5. Edit only files listed in `task.yaml.editable_files`.
-6. After interruption, use `/autoresearch --resume`; do not edit state files by
-   hand.
-7. If `create_plan.py` rejects a plan, revise it according to stderr. Do not
-   resubmit an unchanged plan.
-8. When guidance returns a Plan Mirror Payload, reproduce it exactly instead
-   of composing a new plan manually.
-9. Run workspace scripts as direct, foreground, top-level commands. Do not
-   hide them behind shell wrappers, background jobs, or command chains.
-10. DIAGNOSE should first use `ar-diagnosis` to produce a diagnostic artifact
-    containing `Root cause`, `Fix direction`, and `What to avoid`, mark it
-    complete, and generate the next plan. Manual fallback is allowed only
-    after five consecutive failures.
-11. Stop only in FINISH. Exhausted budget or repeated failure transitions to
-    DIAGNOSE rather than ending the workflow early.
+1. `.ar_state/plan.md` 是计划的唯一事实来源，只能由 `create_plan.py` 和 `pipeline.py` 的结算事务写入。
+2. plan ID 全局单调递增：`p1, p2, ...`，不可复用或跳号。
+3. 每个 plan item 必须结算为 KEEP / DISCARD / FAIL，或在 REPLAN/DIAGNOSE 边界静默丢弃；计数器仍需前进。
+4. baseline、plan commit 和 round settlement 各自拥有事件事务，在一次原子 `state.json` 保存中写入结果、目标 phase 和 replay sentinel。hooks 只观察提交后的状态并输出 guidance。
+5. 可编辑文件严格由 `task.yaml.editable_files` 限定。
+6. 会话中断后使用 `/autoresearch --resume`，不要直接修补状态文件。
+7. `create_plan.py` 拒绝计划时应按 stderr 修改，不得原样重试。
+8. hook 返回 plan mirror payload 时，下一轮应逐字镜像，不得手工编造。
+9. 工作区脚本必须作为直接、前台、顶层命令运行；不要用 shell wrapper、后台运行或命令链包裹。
+10. DIAGNOSE 优先调用 `ar-diagnosis` 生成包含 `Root cause`、`Fix directions`、`What to avoid` 和完成标记的诊断文件，再生成新计划；连续 5 次失败后才允许手工兜底。
+11. 只有 FINISH phase 允许停止。预算耗尽或连续失败应进入 DIAGNOSE，不得提前退出。
 
-## Component boundaries
+## 组件边界
 
-- `scripts/`: workspace state machine, batch tools, and evaluation entry points.
-- `src/op_autoresearch/op/verifier/`: `KernelVerifier`, profiling, and backend,
-  DSL, and framework adapters.
-- `src/op_autoresearch/core/worker/`: local and remote workers plus the manager.
-- `src/op_autoresearch/worker/server.py`: HTTP worker service.
-- `src/op_autoresearch/core/async_pool/`: device lease pool.
-- `src/op_autoresearch/op/utils/code_checker/`: static checks and runtime guards.
-- `skills/`: the skill documentation source of truth.
+- `scripts/`：工作区状态机、批处理与同步评测入口。
+- `src/op_autoresearch/op/verifier/`：KernelVerifier、profiling 与 backend/DSL/framework 适配器。
+- `src/op_autoresearch/core/worker/`：本地/远端 worker 与管理器。
+- `src/op_autoresearch/worker/server.py`：HTTP worker 服务。
+- `src/op_autoresearch/core/async_pool/`：设备租约池。
+- `src/op_autoresearch/op/utils/code_checker/`：静态检查和运行时保护。
+- `skills/`：技能文档库，唯一数据源。
 
-## Dependencies
+## 依赖
 
-- Python 3.10 or newer.
-- Base dependencies from `pyproject.toml`.
-- Optional HTTP worker dependencies from `.[worker]`.
-- Backend-specific frameworks, device extensions, DSL compilers, and hardware
-  SDKs.
-- Claude Code or OpenCode.
+- Python >= 3.10
+- 基础依赖由 `pyproject.toml` 安装。
+- HTTP worker 使用 `.[worker]` 可选依赖。
+- PyTorch、设备扩展、DSL 编译器与硬件 SDK 根据目标后端安装。
+- Claude Code 或 OpenCode CLI。
+

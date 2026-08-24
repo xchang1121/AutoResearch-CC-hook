@@ -85,58 +85,58 @@ Re-run with DumpTensor to confirm fix works.
 
 ---
 
-## Use trap ⭐ ⭐ ⭐
+## 使用陷阱 ⭐⭐⭐
 
-DumpTensor itself is bound by the AscendC pipeline rules and misreads the diagnosis by misreading the wrong data.
+DumpTensor 本身也受 AscendC 流水线规则约束，用错会读到错的数据从而误导诊断。
 
-### 1. Must be after DeQue Dump, not after AllocTensor
+### 1. 必须在 DeQue 之后 Dump，不要在 AllocTensor 之后
 
 ```cpp
-// ❌ error: Dump before removal, read last residual / uninitialized
+// ❌ 错误：搬运未完成就 Dump，读到的是上次残留 / 未初始化值
 LocalTensor<T> x = inQueue.AllocTensor<T>();
 DataCopy(x, gm, size);
-DumpTensor(x, 100, 32);   // It's not what you read. gm Value
+DumpTensor(x, 100, 32);   // 读到的不是 gm 的值
 inQueue.EnQue(x);
 
-// ✅ Correct: DeQue until removal is completed
+// ✅ 正确：DeQue 等搬运完成后再 Dump
 LocalTensor<T> x = inQueue.AllocTensor<T>();
 DataCopy(x, gm, size);
 inQueue.EnQue(x);
 LocalTensor<T> xIn = inQueue.DeQue<T>();
-DumpTensor(xIn, 100, 32);  // The data is ready by now.
+DumpTensor(xIn, 100, 32);  // 此时数据已就绪
 ```
 
-If it is not convenient to add EnQue/DeQue (e.g. temporary plugs), use `PipeBarrier<PIPE_ALL>()` as a back-up - to determine whether or not to supplement the sync after confirming the correct results.
+如果不方便加 EnQue/DeQue（例如临时插桩），用 `PipeBarrier<PIPE_ALL>()` 兜底——确认结果正确后再决定是补同步还是确实没问题。
 
-### 2. Multinuclear scenes must include blockIdx in desc
+### 2. 多核场景必须把 blockIdx 编进 desc
 
-All cored dumps will be written to the same log at the time of multi-checking, and no blockIdx number will result in a completely indistinguishable result.
+多核并发时所有核的 dump 都会写到同一份日志，无 blockIdx 编号会导致结果完全无法区分。
 
 ```cpp
-// ❌ error: read only desc cannot tell which core
+// ❌ 错误：只看 desc 无法分辨是哪个核
 DumpTensor(inputLocal, 100, 32);
 
-// ✅ Correct: add blockIdx to desc
+// ✅ 正确：把 blockIdx 编入 desc
 uint32_t desc = 100 + GetBlockIdx() * 1000;   // core 0: 100, core 1: 1100, ...
 DumpTensor(inputLocal, desc, 32);
 ```
 
-When debugging a single nuclear issue, use `if (GetBlockIdx() == 0)` to limit dump to nuclei 0 and avoid log explosions.
+调试单核问题时，用 `if (GetBlockIdx() == 0)` 把 dump 限制到 0 号核，避免日志爆炸。
 
-### 3. dumpSize Control
+### 3. dumpSize 控制
 
-- Default 32 Element is sufficient for diagnostic mode (NAN/ All / Offset can be judged by the first few values)
-- Big tensor complete dump fills the log buffer in an instant and affects Kernel time series, covering up the original bug
-- `dumpSize` Do not exceed the actual length of tensor or cross the border
+- 默认 32 元素够诊断模式（看头几个值就能判断 NaN / 全零 / 偏移）
+- 大 tensor 完整 dump 会瞬间填满日志缓冲区，并且影响 kernel 时序，掩盖原本的 bug
+- `dumpSize` 不要超过 tensor 实际长度，否则越界
 
 ```cpp
 uint32_t dumpSize = std::min(tileLength, 32u);
 DumpTensor(outputLocal, 300, dumpSize);
 ```
 
-### 4. Debug complete must be removed
+### 4. 调试完成必须移除
 
-DumpTensor introduces significant time-sequencing costs that may change the behaviour of pipeline, which must be removed or macro-switched after positioning:
+DumpTensor 引入显著时序开销，可能改变流水线行为，定位完后必须删除或宏开关包起来：
 
 ```cpp
 #ifdef DEBUG_DUMP
@@ -146,60 +146,60 @@ DumpTensor(outputLocal, 300, 32);
 
 ---
 
-## Output Reader
+## 输出读法
 
-Output form is the following (the actual format is based on CANN version):
+输出形如（实际格式以 CANN 版本为准）：
 ```
 [DumpTensor] block_idx=0 desc=100 size=32 dtype=float32
   0.123, 0.456, -0.789, ...
 ```
 
-Operational process:
+实战流程：
 ```bash
-# Run the example.
+# 跑用例
 ./run_op > dump.log 2>&1
 
-# Press desc to extract a phase
-grep "desc=100" dump.log    # Input
-grep "desc=200" dump.log    # Centre
-grep "desc=300" dump.log    # Output
+# 按 desc 抽取某阶段
+grep "desc=100" dump.log    # 输入
+grep "desc=200" dump.log    # 中间
+grep "desc=300" dump.log    # 输出
 
-# Multinuclear scenario separated by nuclear.
+# 多核场景按核分离
 grep "block_idx=0" dump.log
 ```
 
-Align NPU output with CPU gold and desc number and compare it to the fast-positioned anomaly.
+把 NPU 输出与 CPU golden 同 desc 编号对齐输出，逐段比对快速定位异常段。
 
 ---
 
-## Debug Method Selection
+## 调试方法选择
 
-DumpTensor is not the only one.
+DumpTensor 不是唯一选择，根据场景挑：
 
-| Methodology           | scene                              | Strengths                  | Limits                    |
+| 方法           | 场景                              | 优点                  | 局限                    |
 |----------------|-----------------------------------|----------------------|-------------------------|
-| **DumpTensor** | NPU mode, read LocalTensor data     | Look directly at the UB real value     | Time series is expensive and requires pipeline synchronization |
-| `PRINTF`       | NPU mode, watch scalar/ control stream      | Light                 | Can not get folder: %s: %s |
-| `printf`       | CPU Simulation Mode                      | Consistent with normal C++ debugging   | Can not verify NPU actual behaviour    |
-| Debug 2       | We know there's a bug, but it's not working.         | I'm sure it'll hold back.           | Slow, many times compiled and run       |
+| **DumpTensor** | NPU 模式，看 LocalTensor 数据     | 直接看 UB 实际值     | 时序开销大，需流水线同步 |
+| `PRINTF`       | NPU 模式，看 scalar / 控制流      | 轻量                 | 不能直接 dump 整段 tensor |
+| `printf`       | CPU 仿真模式                      | 与普通 C++ 调试一致   | 不能验证 NPU 实际行为    |
+| 二分调试       | 已知有 bug 但插桩定位失败         | 必然能收敛           | 慢、需多次编译运行       |
 
-The "debug strategy level" that connects the father skill:
-- Start with the DumpTensor 7-step method (≤7 tried) and debug it immediately if position fails
-- DumpTensor, after seeing the data anomaly, drugged him with the skill "Symptomology-Probative Spacing" test.
-- Remember `build/` and `$HOME/atc_data/kernel_cache/` after changing the code, otherwise the dump will be wrongly assumed not to work.
+衔接父 skill 的「调试策略层级」：
+- 先用 DumpTensor 7步法（≤7 次尝试），定位失败立刻切二分调试
+- DumpTensor 看到数据异常后，配合父 skill「症状-原因速查表」对症下药
+- 改完代码记得清 `build/` 和 `$HOME/atc_data/kernel_cache/`，否则 dump 会和上次一致让人误以为没生效
 
 ---
 
-## Checklist
+## 检查清单
 
-Before the plug:
-- [ ] Plugged after DeQue, not after AllocTensor
-- [ ] Multi-nuclear scenario added blockIdx to desc
-- [ ] dumpSize ≤ 32 (unless it is confirmed that more is required)
-- [ ] CPU golden has been output with the same desc
-- [ ] Compile cache cleared
+插桩前：
+- [ ] 已在 DeQue 后插桩，没有在 AllocTensor 后直接 dump
+- [ ] 多核场景已把 blockIdx 编进 desc
+- [ ] dumpSize ≤ 32（除非确认需要更多）
+- [ ] CPU golden 已用相同 desc 输出
+- [ ] 编译缓存已清
 
-After positioning:
-- [ ] The earliest stage in which an anomaly has been identified (CopyIn / Compute / Copyout)
-- [ ] Matched with [error-patterns.md] (ascendc-dumptensor-refs/error-patterns.md)
-- [ ] Post-recovered dump validation passed, removed/maxis off DumpTensor
+定位后：
+- [ ] 已识别异常出现的最早阶段（CopyIn / Compute / CopyOut）
+- [ ] 已对照 [error-patterns.md](ascendc-dumptensor-refs/error-patterns.md) 匹配根因
+- [ ] 修复后 dump 验证通过，已移除/宏关闭 DumpTensor

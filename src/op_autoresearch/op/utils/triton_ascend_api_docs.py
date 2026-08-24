@@ -1,3 +1,17 @@
+# Copyright 2026 Huawei Technologies Co., Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Triton Ascend API docs aggregation helpers."""
 
 from __future__ import annotations
@@ -92,36 +106,36 @@ def _aggregate(api_dir: Path, manifest_name: str) -> str:
     if missing_entries:
         if parts and not parts[-1].endswith("\n"):
             parts.append("\n")
-        parts.append("\n## Current version does not exist API \n \n")
+        parts.append("\n## 当前版本不存在的 API\n\n")
         for entry in missing_entries:
             parts.append(f"### {entry['title']}\n")
-            parts.append("This api does not exist in the current version. \n \n.")
+            parts.append("这个api 在当前版本不存在.\n\n")
 
     return "".join(parts)
 
 
 @lru_cache(maxsize=1)
 def get_aggregated_triton_ascend_api_docs() -> str:
-    """Fetches a filtered Triton Ascend API document in the current SDK environment."""
+    """获取当前 SDK 环境下过滤后的 Triton Ascend API 文档。"""
     return _aggregate(_default_api_dir(), MANIFEST_FILENAME)
 
 
 @lru_cache(maxsize=1)
 def get_offline_triton_ascend_api_docs() -> str:
-    """Read the solid Triton Ascend API offline snapshot in the warehouse."""
+    """读取仓库中固化的 Triton Ascend API 离线快照。"""
     return _default_offline_api_path().read_text(encoding="utf-8")
 
 
 def load_triton_ascend_api_docs() -> str:
-    """Best effort to load Triton Ascend API documents.
+    """最佳努力加载 Triton Ascend API 文档。
 
-    Priority:
-    1. Direct attempt to obtain a true aggregate result of the current environment
-    2. If no Triton Ascend API is available in the current environment, back to offline `api/api.md`
+    优先级：
+    1. 直接尝试获取当前环境的真实聚合结果
+    2. 若当前环境拿不到任何 Triton Ascend API，则回退到离线 `api/api.md`
 
-    Note:
-    - Offline `api.md` is considered to be a snapshot from a real SDK environment.
-    - runtime will not re-engineer the offline content on the basis of climate.
+    注意：
+    - 离线 `api.md` 被视为一次真实 SDK 环境下跑出的快照产物
+    - 运行时不会再根据 manifest 重新推导离线内容
     """
     try:
         return get_aggregated_triton_ascend_api_docs()
@@ -136,7 +150,7 @@ async def resolve_triton_ascend_api_docs(
     arch: str = "",
     worker_manager: Any = None,
 ) -> str:
-    """Harmonizes the local->remote-> offline loading of Triton Ascend API documents."""
+    """统一执行 Triton Ascend API 文档的 local -> remote -> offline 加载。"""
     try:
         return get_aggregated_triton_ascend_api_docs()
     except Exception as e:
@@ -177,7 +191,7 @@ async def resolve_triton_ascend_api_docs(
 
 
 def update_offline_triton_ascend_api_docs(output_path: Path | None = None) -> Path:
-    """Use the offline API snapshot embedded in the current SDK Environment Renewal Repository."""
+    """使用当前 SDK 环境更新仓库内置的离线 API 快照。"""
     target_path = output_path or _default_offline_api_path()
     target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_text(get_aggregated_triton_ascend_api_docs(), encoding="utf-8")

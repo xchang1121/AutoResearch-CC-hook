@@ -1,6 +1,6 @@
 ---
 name: triton-ascend-case-vector-mask-i32
-description: "More than the two sides themselves.`tl.int32`(offset / attn_argI'm sorry, I'm sorry.`arith.cmpi`The output is:`i1`; more than half of the results are in**`i1` tensorDo it.`&`/`|`** when, loweringIt'll be inserted near every logic.**`extui`/`trunci`** and `select`Alignment;**As soon as each section compares.`.to(tl.int32)`**Let the whole thing go.mask in **`i32` 0/1Let's go.`&`/`|`**,backendIt's easier to handle on a continuous basis.**`vand.i32`/`vor.i32`**."
+description: "比较两侧本身多为 `tl.int32`（offset / attn_arg 等），`arith.cmpi` 产出的是 `i1`；多段结果在 **`i1` 张量上做 `&`/`|`** 时， lowering 会在每条逻辑附近插入 **`extui`/`trunci`** 与 `select` 对齐；**每段比较后立刻 `.to(tl.int32)`**，让整条 mask 在 **`i32` 0/1 上 `&`/`|`**，后端更易连续处理 **`vand.i32`/`vor.i32`**。"
 category: improvement
 version: "1.0.0"
 metadata:
@@ -10,14 +10,14 @@ metadata:
   hardware: "Atlas A5"
 ---
 
-## Task characteristics
-- Multiple paragraphs**`tl.int32` participation**(e.g. `q_off`/`k_off`, `q_attn_arg`/`k_attn_arg`), received**bool and spelled with `&` / `|` as mask**and finally handed over to `tl.where`.
+## 任务特征
+- 多段 **`tl.int32` 参与比较**（如 `q_off`/`k_off`、`q_attn_arg`/`k_attn_arg`），得到的 **bool 再用 `&` / `|` 拼成 mask**，最后交给 `tl.where`。
 
-## Reason
+## 原因
 
-Jean.arith.cmpi of `i1`And the result is...`tensor<…xi1>`Up and over.`andi`/`ori`,Ascend backendIt'll be in every logic and last.`arith.select`Additional insert between`arith.extui` / `arith.trunci`Wait, wait, wait.vectorThe width to be used before and after alignment`tl.int32`Showdown.`.to(tl.int32)`In the middle, no more.`i1`Top alignment width,vectorMaking commands easier to use`vand.i32` / `vor.i32`.
+让 arith.cmpi 的 `i1` 结果在`tensor<…xi1>` 上反复 `andi`/`ori`，Ascend 后端会在每条逻辑与最后的 `arith.select` 之间额外插入`arith.extui` / `arith.trunci`等，把向量的宽度对齐前后使用的`tl.int32`，显式 `.to(tl.int32)`中间 不再在 `i1` 上对齐宽度，vector 上更易使用指令`vand.i32` / `vor.i32`。
 
-## References
+## 参考写法
 
 ```python
 @triton.jit
@@ -29,5 +29,5 @@ def mask(...):
         | (q_off[:, None] == k_off[None, :]).to(tl.int32))
 ```
 
-## Attention.
-- The mask syntax is only**0/1**, data type of `tl.int32` is derived from data type on both sides of the comparative operator.
+## 注意
+- mask 语义只需 **0/1**，`tl.int32` 的数据类型来源于比较操作符两边的数据类型。

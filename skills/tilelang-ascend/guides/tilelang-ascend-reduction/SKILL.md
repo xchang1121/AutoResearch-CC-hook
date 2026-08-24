@@ -1,6 +1,6 @@
 ---
 name: tilelang-ascend-reduction
-description: "TileLang Ascend is a contract-class operator code guide, which is consulted when generating operator, the equivalent of which contains the dimension of attribution."
+description: "TileLang Ascend 归约类算子编码指南，当生成等含归约维度的算子时参考此指南。"
 category: guide
 version: "1.0.0"
 metadata:
@@ -10,18 +10,18 @@ metadata:
   operator_type: "reduction"
 ---
 
-# TileLang Ascend Conscript operator Encoding Guide
+# TileLang Ascend 归约类算子编码指南
 
 ---
 
-## Decision tree: Consumes operator path
+## 决策树：归约算子路径
 
-**Important**: `T.reduce_sum/max/min` and `T.tile.*` can be used in both Devloper and Express modes**. Model selection depends on whether manual memory levels and synchronisation are required, rather than which API is used.
+**重要**：`T.reduce_sum/max/min` 和 `T.tile.*` 在 Developer 和 Expert 模式下**都可使用**。模式选择取决于是否需要手动控制内存层级和同步，而非使用了哪个 API。
 
 ```
-Inclusion in the Convention (incl.reduce_sum / reduce_max / reduce_min)
-    The dimensions of restitution must be correctly determined: the first axis of the contract (recession); the last axis of the contract (recession); all axes of the contract; and the jumper's return
-    Select the right API: T.reduce_sum / T.reduce_max / T.reduce_min / T.atomic_add
-    Memory: T.alloc_shared → UB
+含归约（reduce_sum / reduce_max / reduce_min）
+    必须正确判断归约维度：归约第一根轴（列归约）；归约最后一根轴（行归约）；归约所有轴；跳轴归约
+    选择合适的 API: T.reduce_sum / T.reduce_max / T.reduce_min / T.atomic_add
+    内存: T.alloc_shared → UB
 ```
 

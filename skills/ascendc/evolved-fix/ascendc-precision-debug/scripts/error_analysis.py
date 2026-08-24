@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: UTF-8 -*-
+# ----------------------------------------------------------------------------
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+# CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+# ----------------------------------------------------------------------------
 """
-accuracy debug - error Analysis Tool
+精度调试 - 误差分析工具
 
-Analyse the error between the operator output and the desired value and provide a detailed statistical report on error.
+分析算子输出与期望值之间的误差，提供详细的误差统计报告。
 """
 
 import numpy as np
@@ -12,115 +21,115 @@ import sys
 
 def analyze_error(pred_file, truth_file, rtol=1e-5, atol=1e-6):
     """
-    Analyse error between predicted and real values
+    分析预测值与真值之间的误差
 
     Args:
-        Pred_file: Forecasting outcome document path (.npy)
-        Truth_file: Real value file path (.npy)
-        rtol: relative error tolerance difference
-        Atol: Absolute error tolerance difference
+        pred_file: 预测结果文件路径 (.npy)
+        truth_file: 真值文件路径 (.npy)
+        rtol: 相对误差容差
+        atol: 绝对误差容差
 
     Returns:
-        Bool: Validation (pass rate > = 99%)
+        bool: 是否通过验证 (通过率 >= 99%)
     """
     try:
         pred = np.load(pred_file)
         truth = np.load(truth_file)
     except Exception as e:
-        print(f"Error: Could not load file - {e}")
+        print(f"错误: 无法加载文件 - {e}")
         return False
 
-    # Check shape
+    # 检查形状
     if pred.shape != truth.shape:
-        print(f"Error: shapeDo not match - pred={pred.shape}, truth={truth.shape}")
+        print(f"错误: 形状不匹配 - pred={pred.shape}, truth={truth.shape}")
         return False
 
-    # Calculate error
+    # 计算误差
     abs_error = np.abs(pred - truth)
     rel_error = abs_error / (np.abs(truth) + atol)
 
     print("=" * 60)
-    print("error analysis report")
+    print("误差分析报告")
     print("=" * 60)
-    print(f"Projection documents: {pred_file}")
-    print(f"Real value files: {truth_file}")
-    print(f"Datashape: {pred.shape}")
+    print(f"预测文件: {pred_file}")
+    print(f"真值文件: {truth_file}")
+    print(f"数据形状: {pred.shape}")
     print()
 
-    # Absolute error statistics
-    print("\"Absolutely error Statistics\"")
-    print(f"  Maximum value: {abs_error.max():.6e}")
-    print(f"  Average: {abs_error.mean():.6e}")
-    print(f"  Medium: {np.median(abs_error):.6e}")
-    print(f"  Standard deviation: {abs_error.std():.6e}")
+    # 绝对误差统计
+    print("【绝对误差统计】")
+    print(f"  最大值: {abs_error.max():.6e}")
+    print(f"  平均值: {abs_error.mean():.6e}")
+    print(f"  中位数: {np.median(abs_error):.6e}")
+    print(f"  标准差: {abs_error.std():.6e}")
     print()
 
-    # error Statistics
-    print("\"error Statistics\"")
-    print(f"  Maximum value: {rel_error.max():.6e}")
-    print(f"  Average: {rel_error.mean():.6e}")
-    print(f"  Medium: {np.median(rel_error):.6e}")
-    print(f"  95Division: {np.percentile(rel_error, 95):.6e}")
-    print(f"  99Division: {np.percentile(rel_error, 99):.6e}")
+    # 相对误差统计
+    print("【相对误差统计】")
+    print(f"  最大值: {rel_error.max():.6e}")
+    print(f"  平均值: {rel_error.mean():.6e}")
+    print(f"  中位数: {np.median(rel_error):.6e}")
+    print(f"  95分位: {np.percentile(rel_error, 95):.6e}")
+    print(f"  99分位: {np.percentile(rel_error, 99):.6e}")
     print()
 
-    # Pass rate
+    # 通过率
     pass_mask = np.logical_or(abs_error < atol, rel_error < rtol)
     pass_count = pass_mask.sum()
     total_count = pass_mask.size
     pass_rate = pass_count / total_count * 100
 
-    print(f"Passage")
-    print(f"  Pass.: {pass_count}/{total_count}")
-    print(f"  Pass rate: {pass_rate:.2f}%")
-    print(f"  Portability: rtol={rtol:.0e}, atol={atol:.0e}")
+    print(f"【通过率】")
+    print(f"  通过: {pass_count}/{total_count}")
+    print(f"  通过率: {pass_rate:.2f}%")
+    print(f"  容差: rtol={rtol:.0e}, atol={atol:.0e}")
     print()
 
-    # error distribution
-    print("[error Distribution]")
+    # 误差分布
+    print("【误差分布】")
     for threshold in [1e-3, 1e-4, 1e-5, 1e-6]:
         count = (abs_error > threshold).sum()
         rate = count / abs_error.size * 100
-        print(f"  error > {threshold:.0e}: {count:6d} ({rate:5.2f}%)")
+        print(f"  误差 > {threshold:.0e}: {count:6d} ({rate:5.2f}%)")
     print()
 
-    # The worst sample.
+    # 最差样本
     worst_idx = abs_error.argmax()
     worst_pos = np.unravel_index(worst_idx, pred.shape)
-    print(f"The worst sample ever.")
-    print(f"  Location: {worst_pos}")
-    print(f"  Projected: {pred[worst_pos]:.6f}")
-    print(f"  True value: {truth[worst_pos]:.6f}")
-    print(f"  Absolutely.error: {abs_error[worst_pos]:.6e}")
-    print(f"  Relativeerror: {rel_error[worst_pos]:.6e}")
+    print(f"【最差样本】")
+    print(f"  位置: {worst_pos}")
+    print(f"  预测值: {pred[worst_pos]:.6f}")
+    print(f"  真值: {truth[worst_pos]:.6f}")
+    print(f"  绝对误差: {abs_error[worst_pos]:.6e}")
+    print(f"  相对误差: {rel_error[worst_pos]:.6e}")
     print()
 
-    # Findings
+    # 判断结果
     if pass_rate >= 99.0:
-        print("✓ Authentication: PASS")
+        print("✓ 验证: PASS")
         return True
     else:
-        print("✗ Authentication: FAIL")
+        print("✗ 验证: FAIL")
 
-        # Print failed samples (first 10)
+        # 打印失败样本（前10个）
         fail_indices = np.where(~pass_mask)
         fail_count = min(10, len(fail_indices[0]))
         if fail_count > 0:
             print()
-            print("[failed sample (first 10)]")
+            print("【失败样本（前10个）】")
             for i in range(fail_count):
                 idx = tuple(dim[i] for dim in fail_indices)
                 print(f"  @{idx}:")
-                print(f"    Projections={pred[idx]:.6f}, Expectations={truth[idx]:.6f}, "
+                print(f"    预测={pred[idx]:.6f}, 期望={truth[idx]:.6f}, "
                       f"abs_err={abs_error[idx]:.2e}, rel_err={rel_error[idx]:.2e}")
         return False
 
 
 def main():
     if len(sys.argv) < 3:
-        print("Usage: python3 error_analysis.py <output.npy> <expected.npy> [rtol] [atol]")
+        print("用法: python3 error_analysis.py <output.npy> <expected.npy> [rtol] [atol]")
         print()
-        print("Example:")
+        print("示例:")
         print("  python3 error_analysis.py output.npy expected.npy")
         print("  python3 error_analysis.py output.npy expected.npy 1e-3 1e-4  # FP16")
         print("  python3 error_analysis.py output.npy expected.npy 1e-5 1e-6  # FP32")

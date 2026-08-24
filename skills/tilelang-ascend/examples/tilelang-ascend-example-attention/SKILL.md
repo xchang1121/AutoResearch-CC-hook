@@ -1,6 +1,6 @@
 ---
 name: tilelang-ascend-example-attention
-description: "Sparse Flash Attention of TileLang Ascendachieves the example.Cube+VectorCombining the complete programmingattentionMode:CubeNuclearQ·K^T and P·VTwo paragraphs.GEMM + workspaceCross-nuclear communications+ VectorNuclearonline softmaxGradient+ T.ParallelElement-by-Element calculation. When generatedattentionCategoryoperatoryou can refer to the code structure of this example."
+description: "Sparse Flash Attention 的 TileLang Ascend 实现示例。展示 Cube+Vector 融合编程的完整 attention 模式：Cube 核 Q·K^T 和 P·V 两段 GEMM + workspace 跨核通信 + Vector 核 online softmax 累加 + T.Parallel 逐元素计算。当生成 attention 类算子时可参考此示例的代码结构。"
 category: example
 version: "1.0.0"
 metadata:
@@ -10,17 +10,17 @@ metadata:
   operator_type: "attention"
 ---
 
-# Sparse Flash Attention - TileLang Ascend
+# Sparse Flash Attention — TileLang Ascend 实现示例
 
-**Programming mode**: Developer (Cube+Vector Automatic Integration + workspace cross-nuclear communication)
+**编程模式**：Developer（Cube+Vector 自动融合 + workspace 跨核通信）
 
-**Key technical points**:
-- `workspace_idx=[4, 5, 6, 7, 8]` Statement 5 Workspace for Cube → Victor Cross Nuclear Communication
-- CubeNuclear:`T.gemm_v0`Two-part matrix timesQ·K^T and P·V), the result is writtenworkspace
-- VectorNuclear:online softmaxPlus (%1)`T.reduce_max` → `T.exp` → `T.reduce_sum` → rescale)
-- `T.Parallel` Element-by-Element (softmax maximal, index, scaling)
-- `AUTO_CV_COMBINE: True + AUTO_CV_SYNC: True` AutoCube+Vector Integration & Sync
-- `T.alloc_L1` / `T.alloc_L0C` / `T.alloc_ub` three-tier memory allocation
+**关键技术点**：
+- `workspace_idx=[4, 5, 6, 7, 8]` 声明 5 个 workspace 用于 Cube→Vector 跨核通信
+- Cube 核：`T.gemm_v0` 两段矩阵乘（Q·K^T 和 P·V），结果写入 workspace
+- Vector 核：online softmax 累加（`T.reduce_max` → `T.exp` → `T.reduce_sum` → rescale）
+- `T.Parallel` 逐元素计算（softmax 减最大值、指数、缩放）
+- `AUTO_CV_COMBINE: True + AUTO_CV_SYNC: True` 自动 Cube+Vector 融合与同步
+- `T.alloc_L1` / `T.alloc_L0C` / `T.alloc_ub` 三级内存分配
 
 ```python
 import tilelang
@@ -208,8 +208,8 @@ def sparse_attention_fwd(
     return main
 ```
 
-**attention class operator generic mode**:
-1. **CubePhase**:Q·K^TCalculating Attention Scores+ P·VCalculates the weighted value, the result is passedworkspacePassed toVector
-2. **Vector phase**:online softmax cumulative (maintenance row_max / row_denom / out_ac running state)
-3. **workspace communication**: Cube writes workspace → Victor reads workspace and achieves cross-nuclear data transfer
-4. **online softmax**: updates per step `m_i = max(m_i_prev, m_i_new)`, `sumexp = sumexp * exp(m_i_prev - m_i) + sumexp_new`, `out = out * exp(m_i_prev - m_i) + o_partial`
+**attention 类算子通用模式**：
+1. **Cube 阶段**：Q·K^T 计算注意力分数 + P·V 计算加权值，结果通过 workspace 传递给 Vector
+2. **Vector 阶段**：online softmax 累加（维护 row_max / row_denom / out_acc 三个 running state）
+3. **workspace 通信**：Cube 写 workspace → Vector 读 workspace，实现跨核数据传递
+4. **online softmax**：每步更新 `m_i = max(m_i_prev, m_i_new)`，`sumexp = sumexp * exp(m_i_prev - m_i) + sumexp_new`，`out = out * exp(m_i_prev - m_i) + o_partial`

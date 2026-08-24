@@ -44,49 +44,49 @@ DumpTensor(outputLocal, 300, 32);    // ✅ Better
 
 ---
 
-## Call constraints
+## 调用约束
 
-| Constraints             | Annotations                                                                       |
+| 约束             | 说明                                                                       |
 |------------------|----------------------------------------------------------------------------|
-| Call Context       | Call to `LocalTensor` only in the Kernel function; `GlobalTensor` cannot be directly dump      |
-| Synchronization request         | Data depends on handling/calculation to be completed. Dump, as detailed in parent document "Use trap §1 "                |
-| dumpSize ceiling    | Can't exceed the actual number of elements of a tensor.                                     |
-| dtype support       | Common `half / float / int32_t / bfloat16_t` supported, special dtype based on CANN version |
-| Performance Impact         | Significant time-sequencing costs, possibly changing pipeline behaviour, must be removed when positioning is complete                         |
+| 调用上下文       | 仅在 kernel 函数内对 `LocalTensor` 调用；`GlobalTensor` 不能直接 dump      |
+| 同步要求         | 数据依赖搬运/计算完成后才能 dump，详见父文档「使用陷阱 §1」                |
+| dumpSize 上限    | 不能超过 tensor 实际元素数，超出会越界                                     |
+| dtype 支持       | 常用 `half / float / int32_t / bfloat16_t` 均支持，特殊 dtype 以 CANN 版本为准 |
+| 性能影响         | 显著时序开销，可能改变流水线行为，定位完成必须移除                         |
 
-## dsc Number Extension
+## desc 编号扩展约定
 
-The base three-part formula (100/200/300) is enough to cover a single nucleotide operator. Complex operator suggests extension:
+基础三段式（100/200/300）够覆盖单核简单算子。复杂算子建议扩展：
 
 ```
 desc = base + blockOffset + stageOffset + iterOffset
 
-base       : 100=Input, 200=Centre, 300=Output
-blockOffset: GetBlockIdx() * 1000     // Multinuclear separation
-stageOffset: 0/10/20...               // Multiple postpoints in the same paragraph
-iterOffset : tileIdx                   // The same. tile Multiple inverted distinctions
+base       : 100=输入, 200=中间, 300=输出
+blockOffset: GetBlockIdx() * 1000     // 多核分离
+stageOffset: 0/10/20...               // 同段内多个插桩点
+iterOffset : tileIdx                   // 同一 tile 多次迭代区分
 ```
 
-Example: core 1, 2nd tile, 2nd Plugin Point in Compute:
+示例：core 1 上、第 2 个 tile、Compute 内第 2 个插桩点：
 ```cpp
 uint32_t desc = 200 + GetBlockIdx() * 1000 + 20 + tileIdx;
 DumpTensor(midLocal, desc, 32);
 ```
 
-## Relationship to PRINTF / printf
+## 与 PRINTF / printf 的关系
 
-| API           | Call Location          | Purpose                                    |
+| API           | 调用位置          | 用途                                    |
 |---------------|-------------------|----------------------------------------|
-| `DumpTensor`  | Inner NPU Kernel     | Batch the LocalTensor element value              |
-| `PRINTF`      | Inner NPU Kernel     | Look at scalar, control stream, tile.           |
-| `printf`      | Host / CPU simulation   | Look at the host side buffer, CPU golden output     |
-| `AscendC::Simt::printf` | SIMT VF inside | SIMT operator kernel printing (see SKILL SIMT section of father)|
+| `DumpTensor`  | NPU kernel 内     | 批量看 LocalTensor 元素值              |
+| `PRINTF`      | NPU kernel 内     | 看 scalar、控制流、tile 形参           |
+| `printf`      | Host / CPU 仿真   | 看 host 侧 buffer、CPU golden 输出     |
+| `AscendC::Simt::printf` | SIMT VF 内 | SIMT 算子内单核打印（见父 SKILL SIMT 节）|
 
-Debug tensor data with DumpTensor, debug control streams (tileNum, blockIdx, loop count) to PRINTF.
+调试 tensor 数据用 DumpTensor，调试控制流（tileNum、blockIdx、循环计数）配合 PRINTF。
 
-## Common pedals.
+## 常见踩坑
 
-- **dumpSize is too dead**: logs are flooded and dump itself is time-consuming to shield bug → default 32, position shrink and add
-- **Multiple tile loop only last**: each tile is numbered separately, otherwise the back dump overwrites the front view
-- **Modified Dump fully agreed**: doubt kernel cache, `rm -rf build/ $HOME/atc_data/kernel_cache/`
-- **NAN appears in an uncertain position**: add paragraph by paragraph from input and find the first appearance of NAN
+- **dumpSize 写死太大**：日志被淹没且 dump 自身耗时遮蔽 bug → 默认 32，定位收敛后再加
+- **多 tile 循环只看到最后一次**：每个 tile 单独编号，否则后面的 dump 覆盖前面观察
+- **修改后 dump 完全一致**：先怀疑 kernel cache，`rm -rf build/ $HOME/atc_data/kernel_cache/`
+- **NaN 出现位置不确定**：从输入往后逐段加 dump，找出 NaN 第一次出现的 desc

@@ -1,6 +1,6 @@
 ---
 name: cpu-optimization-arm
-description: "ARM CPU Architecture Performance Optimization Techniques, NEON SIMD vectorization, Numerical Stability and Debugging Strategies"
+description: "ARM CPU 架构性能优化技巧、NEON SIMD 向量化、数值稳定性和调试策略"
 category: method
 version: "1.0.0"
 metadata:
@@ -10,94 +10,94 @@ metadata:
   optimization_techniques: "NEON, SIMD, cache optimization, loop unrolling, ARM-specific"
 ---
 
-# ARM CPU Performance Optimization Guidelines
+# ARM CPU 性能优化指南
 
-## 1. ARM Architecture Characteristics and Optimization Policy
+## 1. ARM 架构特性与优化策略
 
-### 1.1 Architectural logo
+### 1.1 架构标识
 
-- **Structure**: aarch64 (ARM 64-bit, ARMv8-A)
-- **Main manufacturer**: ARM, Apple Silicon (M1/M2/M3), AWS Graviton, Hua
-- **SIMD Extension**: NEON (Advanced SIMD)
+- **架构**: aarch64 (ARM 64-bit, ARMv8-A)
+- **主要厂商**: ARM, Apple Silicon (M1/M2/M3), AWS Graviton, 华为鲲鹏
+- **SIMD 扩展**: NEON (Advanced SIMD)
 
-### 1.2 Core optimization principles
+### 1.2 核心优化原则
 
-1. **Multiple data processing using NEON parallelity**: using NEON commands
-2. **Eliminate data dependence**: Avoiding register dependence between successive commands
-3. **Optimized Cache Use**: Access by line priority to increase Cache Rate
-4. **Reduced branch prediction failure**: cycle roll-out, reduced condition judgement
+1. **利用 NEON 并行性**: 使用 NEON 指令同时处理多个数据
+2. **消除数据依赖**: 避免连续指令间的寄存器依赖
+3. **优化缓存使用**: 按行优先访问，提高缓存命中率
+4. **减少分支预测失败**: 循环展开，减少条件判断
 
-## 2. NEON SIMD vector Optimization
+## 2. NEON SIMD 向量化优化
 
-### 2.1 Basic concepts
+### 2.1 基本概念
 
-**NEON (Advanced SIMD)**is an ARM SIMD command collection:
+**NEON (Advanced SIMD)** 是 ARM 的 SIMD 指令集：
 
-- **Reposer width**: 128 bits
-- **Parallel processing capacity**:
-  - 4 float32 (one accuracy float)
-  - 2 float64 (two accuracy floats)
-  - 16 int8, 8 int16, 4 int32, 2 int64
+- **寄存器宽度**: 128 位
+- **并行处理能力**:
+  - 4 个 float32（单精度浮点）
+  - 2 个 float64（双精度浮点）
+  - 16 个 int8, 8 个 int16, 4 个int32, 2 个 int64
 
-### 2.2 compiler Autovector
+### 2.2 编译器自动向量化
 
-**Recommended Method**:Jean.compilerAutovector, enabled by the compilation option:
+**推荐方式**: 让编译器自动向量化，通过编译选项启用：
 
 ```python
-# Add ARM vector option to load_inline
+# 在 load_inline 中添加 ARM 向量化选项
 op_module = load_inline(
     name="custom_op",
     cpp_sources=cpp_source,
     extra_cflags=[
-        "-O3",                  # Maximum Optimization Level
-        "-mcpu=native",         # For the current ARM CPU Optimization
-        "-ftree-vectorize",     # Enable AutovectorDilution
-        "-ffast-math",          # Rapid Math Optimization (optional)
+        "-O3",                  # 最高优化级别
+        "-mcpu=native",         # 针对当前 ARM CPU 优化
+        "-ftree-vectorize",     # 启用自动向量化
+        "-ffast-math",          # 快速数学优化（可选）
     ],
     verbose=True
 )
 ```
 
-**Note: ARM uses `-mcpu=native` instead of `-march=native`.
+**注意**: ARM 使用 `-mcpu=native` 而不是 `-march=native`。
 
-### 2.3 Example of circular optimization
+### 2.3 循环优化示例
 
-**Simple approach**(not optimized):
+**简单方式**（未优化）:
 
 ```cpp
 torch::Tensor elementwise_add(torch::Tensor a, torch::Tensor b) {
     if (!a.is_contiguous()) a = a.contiguous();
     if (!b.is_contiguous()) b = b.contiguous();
-
+    
     torch::Tensor output = torch::zeros_like(a);
     auto a_ptr = a.data_ptr<float>();
     auto b_ptr = b.data_ptr<float>();
     auto out_ptr = output.data_ptr<float>();
     int64_t numel = a.numel();
-
-    // Simple Loop
+    
+    // 简单循环
     for (int64_t i = 0; i < numel; ++i) {
         out_ptr[i] = a_ptr[i] + b_ptr[i];
     }
-
+    
     return output;
 }
 ```
 
-**Optimization method**(recycling, facilitating NEON vectorization):
+**优化方式**（循环展开，便于 NEON 向量化）:
 
 ```cpp
 torch::Tensor elementwise_add_optimized(torch::Tensor a, torch::Tensor b) {
     if (!a.is_contiguous()) a = a.contiguous();
     if (!b.is_contiguous()) b = b.contiguous();
-
+    
     torch::Tensor output = torch::zeros_like(a);
     auto a_ptr = a.data_ptr<float>();
     auto b_ptr = b.data_ptr<float>();
     auto out_ptr = output.data_ptr<float>();
     int64_t numel = a.numel();
-
-    // Looping 4 times (compatible NEON processing capacity for float32)
+    
+    // 循环展开 4 倍（匹配 NEON 对 float32 的处理能力）
     int64_t i = 0;
     int64_t step = 4;
     for (; i + step <= numel; i += step) {
@@ -106,86 +106,86 @@ torch::Tensor elementwise_add_optimized(torch::Tensor a, torch::Tensor b) {
         out_ptr[i + 2] = a_ptr[i + 2] + b_ptr[i + 2];
         out_ptr[i + 3] = a_ptr[i + 3] + b_ptr[i + 3];
     }
-
-    // Handle the remaining elements
+    
+    // 处理剩余元素
     for (; i < numel; ++i) {
         out_ptr[i] = a_ptr[i] + b_ptr[i];
     }
-
+    
     return output;
 }
 ```
 
-**Optimized effect**: compiler is easier to identify and generate NEON vector commands, increasing performance 2-4 times.
+**优化效果**: 循环展开后，编译器更容易识别并生成 NEON 向量化指令，性能提升 2-4 倍。
 
-**Key Difference**: ARM NEON for float32 is 4 in parallel, while x64 AVX is 8.
+**关键差异**: ARM NEON 对 float32 的并行度是 4，而 x64 AVX 是 8。
 
-### 2.4 Elimination of data dependence (ARM-specific optimization)
+### 2.4 消除数据依赖（ARM 特有优化）
 
-**ARM feature**: The NEON directive usually requires multiple cycles, and if the next instruction uses the previous article ' s outcome repository, it will create a standstill.
+**ARM 特性**: NEON 指令通常需要多个周期，如果下一条指令使用上一条的结果寄存器，会产生停顿。
 
-**Simple approach**(data dependent):
+**简单方式**（有数据依赖）:
 
 ```cpp
 float sum_with_dependency(const float* data, int64_t size) {
     float sum = 0.0f;
     for (int64_t i = 0; i < size; ++i) {
-        sum += data[i];  // Every time you depend on the previous one. sum
+        sum += data[i];  // 每次依赖前一次的 sum
     }
     return sum;
 }
 ```
 
-**Optimization**(elimination of dependency):
+**优化方式**（消除依赖）:
 
 ```cpp
 float sum_no_dependency(const float* data, int64_t size) {
-    // Use 4 independent loaders to eliminate data dependency
+    // 使用 4 个独立累加器，消除数据依赖
     float sum0 = 0.0f, sum1 = 0.0f, sum2 = 0.0f, sum3 = 0.0f;
-
+    
     int64_t i = 0;
     for (; i + 4 <= size; i += 4) {
-        sum0 += data[i];        // Independent Thrust
-        sum1 += data[i + 1];    // No dependency
-        sum2 += data[i + 2];    // Complementary implementation
+        sum0 += data[i];        // 独立累加器
+        sum1 += data[i + 1];    // 无依赖
+        sum2 += data[i + 2];    // 可并行执行
         sum3 += data[i + 3];
     }
-
-    // Merge Results
+    
+    // 合并结果
     float sum = sum0 + sum1 + sum2 + sum3;
-
-    // Handle the remaining elements
+    
+    // 处理剩余元素
     for (; i < size; ++i) {
         sum += data[i];
     }
-
+    
     return sum;
 }
 ```
 
-**Key Optimization**: Cyclops are used to avoid recycle-carrying dependency, allowing NEON pipeline to be executed in parallel.
+**关键优化**: 使用多个累加器避免循环携带依赖，允许 NEON 流水线并行执行。
 
-### 2.5 Reduction Optimization
+### 2.5 Reduction 操作优化
 
-**Standard model**(adaptation NEON):
+**标准模式**（适配 NEON）:
 
 ```cpp
 torch::Tensor sum_reduction_optimized(torch::Tensor x) {
     if (!x.is_contiguous()) x = x.contiguous();
-
+    
     torch::ScalarType dtype = x.scalar_type();
     bool need_convert = (dtype != torch::kFloat32 && dtype != torch::kFloat64);
     torch::Tensor input = need_convert ? x.to(torch::kFloat32) : x;
-
+    
     torch::Tensor output;
-
+    
     if (input.scalar_type() == torch::kFloat32) {
         auto x_ptr = input.data_ptr<float>();
         int64_t numel = input.numel();
-
-        // 4 Thrusts (compatible NEON width)
+        
+        // 4 个累加器（匹配 NEON 宽度）
         float sum0 = 0.0f, sum1 = 0.0f, sum2 = 0.0f, sum3 = 0.0f;
-
+        
         int64_t i = 0;
         for (; i + 4 <= numel; i += 4) {
             sum0 += x_ptr[i];
@@ -193,82 +193,82 @@ torch::Tensor sum_reduction_optimized(torch::Tensor x) {
             sum2 += x_ptr[i + 2];
             sum3 += x_ptr[i + 3];
         }
-
+        
         float result = sum0 + sum1 + sum2 + sum3;
-
-        // Disposal of surplus
+        
+        // 处理剩余
         for (; i < numel; ++i) {
             result += x_ptr[i];
         }
-
+        
         output = torch::tensor({result}, torch::kFloat32);
     } else if (input.scalar_type() == torch::kFloat64) {
         auto x_ptr = input.data_ptr<double>();
         int64_t numel = input.numel();
-
-        // 2 loaders (doule width in NEON 2)
+        
+        // 2 个累加器（double 在 NEON 中宽度为 2）
         double sum0 = 0.0, sum1 = 0.0;
-
+        
         int64_t i = 0;
         for (; i + 2 <= numel; i += 2) {
             sum0 += x_ptr[i];
             sum1 += x_ptr[i + 1];
         }
-
+        
         double result = sum0 + sum1;
-
+        
         for (; i < numel; ++i) {
             result += x_ptr[i];
         }
-
+        
         output = torch::tensor({result}, torch::kFloat64);
     }
-
+    
     if (need_convert) output = output.to(dtype);
     return output;
 }
 ```
 
-## 3. Cache Optimization
+## 3. 缓存优化
 
-### 3.1 ARM Cache feature
+### 3.1 ARM 缓存特性
 
-Typical ARM structure (e.g. Apple M1):
+典型 ARM 架构（如 Apple M1）:
 
-- **L1 Cache**: 128-192 KB (data)+128-192 KB (directive)
-- **L2 Cache**: 12-24 MB (shared)
-- **Harmonized Memory Structure**: Apple Silicon uses Unified Memory, CPU and GPU sharing
+- **L1 Cache**: 128-192 KB (数据) + 128-192 KB (指令)
+- **L2 Cache**: 12-24 MB（共享）
+- **统一内存架构**: Apple Silicon 使用统一内存，CPU 和 GPU 共享
 
-### 3.2 Optimizing strategies
+### 3.2 优化策略
 
-**PRINCIPLE**: Blank processing of big data to enhance cache reuse
+**原则**: 分块处理大数据，提高缓存复用
 
 ```cpp
-// matrix multiplication segment optimization (adaptation ARM cache)
+// 矩阵乘法分块优化（适配 ARM 缓存）
 torch::Tensor matmul_blocked(torch::Tensor A, torch::Tensor B) {
     if (!A.is_contiguous()) A = A.contiguous();
     if (!B.is_contiguous()) B = B.contiguous();
-
+    
     int64_t M = A.size(0);
     int64_t K = A.size(1);
     int64_t N = B.size(1);
-
+    
     torch::Tensor C = torch::zeros({M, N}, A.options());
     auto a_ptr = A.data_ptr<float>();
     auto b_ptr = B.data_ptr<float>();
     auto c_ptr = C.data_ptr<float>();
-
-    // Division size: Fit L1 Cache (usually 32-64)
+    
+    // 分块大小：适配 L1 Cache（通常 32-64）
     const int64_t BLOCK_SIZE = 32;
-
+    
     for (int64_t i = 0; i < M; i += BLOCK_SIZE) {
         for (int64_t j = 0; j < N; j += BLOCK_SIZE) {
             for (int64_t k = 0; k < K; k += BLOCK_SIZE) {
                 int64_t i_max = std::min(i + BLOCK_SIZE, M);
                 int64_t j_max = std::min(j + BLOCK_SIZE, N);
                 int64_t k_max = std::min(k + BLOCK_SIZE, K);
-
-                // Block Count
+                
+                // 块内计算
                 for (int64_t ii = i; ii < i_max; ++ii) {
                     for (int64_t jj = j; jj < j_max; ++jj) {
                         float sum = 0.0f;
@@ -281,31 +281,31 @@ torch::Tensor matmul_blocked(torch::Tensor A, torch::Tensor B) {
             }
         }
     }
-
+    
     return C;
 }
 ```
 
-## 4. Numerical stability optimization
+## 4. 数值稳定性优化
 
-### 4.1 Prevention of Softmax Spill
+### 4.1 防止 Softmax 溢出
 
 ```cpp
 torch::Tensor softmax_stable(torch::Tensor x) {
     if (!x.is_contiguous()) x = x.contiguous();
-
+    
     torch::Tensor output = torch::zeros_like(x);
     auto x_ptr = x.data_ptr<float>();
     auto out_ptr = output.data_ptr<float>();
     int64_t numel = x.numel();
-
-    // Maximum value found (prevent spill)
+    
+    // 找到最大值（防止 exp 溢出）
     float max_val = x_ptr[0];
     for (int64_t i = 1; i < numel; ++i) {
         max_val = std::max(max_val, x_ptr[i]);
     }
-
-    // Calculate exp after the maximum value (using 4 loaders)
+    
+    // 减去最大值后计算 exp（使用 4 个累加器）
     float sum0 = 0.0f, sum1 = 0.0f, sum2 = 0.0f, sum3 = 0.0f;
     int64_t i = 0;
     for (; i + 4 <= numel; i += 4) {
@@ -313,76 +313,76 @@ torch::Tensor softmax_stable(torch::Tensor x) {
         float exp1 = std::exp(x_ptr[i + 1] - max_val);
         float exp2 = std::exp(x_ptr[i + 2] - max_val);
         float exp3 = std::exp(x_ptr[i + 3] - max_val);
-
+        
         out_ptr[i] = exp0;
         out_ptr[i + 1] = exp1;
         out_ptr[i + 2] = exp2;
         out_ptr[i + 3] = exp3;
-
+        
         sum0 += exp0;
         sum1 += exp1;
         sum2 += exp2;
         sum3 += exp3;
     }
-
+    
     float sum = sum0 + sum1 + sum2 + sum3;
-
-    // Disposal of surplus
+    
+    // 处理剩余
     for (; i < numel; ++i) {
         float exp_val = std::exp(x_ptr[i] - max_val);
         out_ptr[i] = exp_val;
         sum += exp_val;
     }
-
-    // Normalization
+    
+    // 归一化
     for (int64_t i = 0; i < numel; ++i) {
         out_ptr[i] /= sum;
     }
-
+    
     return output;
 }
 ```
 
-### 4.2 Kahan Sumition
+### 4.2 Kahan 求和算法
 
 ```cpp
 float kahan_sum(const float* data, int64_t size) {
     float sum = 0.0f;
-    float c = 0.0f;  // Compensatory variable
-
+    float c = 0.0f;  // 补偿变量
+    
     for (int64_t i = 0; i < size; ++i) {
         float y = data[i] - c;
         float t = sum + y;
         c = (t - sum) - y;
         sum = t;
     }
-
+    
     return sum;
 }
 ```
 
-## 5. Full Optimization Example: ReLU
+## 5. 完整优化示例：ReLU
 
 ```cpp
 torch::Tensor relu_optimized_arm(torch::Tensor x) {
-    // 1. Ensuring continuity
+    // 1. 确保连续性
     if (!x.is_contiguous()) x = x.contiguous();
-
-    // 2. Type check and conversion
+    
+    // 2. 类型检查与转换
     torch::ScalarType dtype = x.scalar_type();
     bool need_convert = (dtype != torch::kFloat32 && dtype != torch::kFloat64);
     torch::Tensor input = need_convert ? x.to(torch::kFloat32) : x;
-
-    // 3. Creation of output
+    
+    // 3. 创建输出
     torch::Tensor output = torch::zeros_like(input);
-
-    // Optimized calculation logic (adaptation of ARM NEON)
+    
+    // 4. 优化的计算逻辑（适配 ARM NEON）
     if (input.scalar_type() == torch::kFloat32) {
         auto x_ptr = input.data_ptr<float>();
         auto out_ptr = output.data_ptr<float>();
         int64_t numel = input.numel();
-
-        // Looping 4 times (matching NEON float32 width)
+        
+        // 循环展开 4 倍（匹配 NEON float32 宽度）
         int64_t i = 0;
         for (; i + 4 <= numel; i += 4) {
             out_ptr[i]     = std::max(0.0f, x_ptr[i]);
@@ -390,8 +390,8 @@ torch::Tensor relu_optimized_arm(torch::Tensor x) {
             out_ptr[i + 2] = std::max(0.0f, x_ptr[i + 2]);
             out_ptr[i + 3] = std::max(0.0f, x_ptr[i + 3]);
         }
-
-        // Handle the remaining elements
+        
+        // 处理剩余元素
         for (; i < numel; ++i) {
             out_ptr[i] = std::max(0.0f, x_ptr[i]);
         }
@@ -399,104 +399,104 @@ torch::Tensor relu_optimized_arm(torch::Tensor x) {
         auto x_ptr = input.data_ptr<double>();
         auto out_ptr = output.data_ptr<double>();
         int64_t numel = input.numel();
-
-        // Looping 2 times (double width 2 in NEON)
+        
+        // 循环展开 2 倍（double 在 NEON 中宽度为 2）
         int64_t i = 0;
         for (; i + 2 <= numel; i += 2) {
             out_ptr[i]     = std::max(0.0, x_ptr[i]);
             out_ptr[i + 1] = std::max(0.0, x_ptr[i + 1]);
         }
-
+        
         for (; i < numel; ++i) {
             out_ptr[i] = std::max(0.0, x_ptr[i]);
         }
     }
-
-    // 5. Type reduction
+    
+    // 5. 类型还原
     if (need_convert) output = output.to(dtype);
     return output;
 }
 ```
 
-## 6. Apple Silicon Specific Optimization
+## 6. Apple Silicon 特定优化
 
-### 6.1 Harmonized memory advantages
+### 6.1 统一内存优势
 
-Apple M series chips use a unified memory architecture, CPU and GPU shared memory:
+Apple M 系列芯片使用统一内存架构，CPU 和 GPU 共享内存：
 
-- **No copy of data required between CPU and GPU**
-- **Large bandwidth**: Memory bandwidth up to 400-800 GB/s (M2 Pro/Max)
+- **零拷贝**: CPU 和 GPU 间无需数据拷贝
+- **大带宽**: 内存带宽高达 400-800 GB/s（M2 Pro/Max）
 
-### 6.2 Core performance and efficiency
+### 6.2 性能核心与效率核心
 
-Apple Silicon has performance core (P-core) and efficiency core (E-core):
+Apple Silicon 有性能核心（P-core）和效率核心（E-core）：
 
-- **Optimization policy**: calculates the automated movement of intensive tasks to P-core
-- **Compiler Options**: Auto-optimize using `-mcpu=native`
+- **优化策略**: 计算密集任务自动调度到 P-core
+- **编译选项**: 使用 `-mcpu=native` 自动优化
 
-## 7. Performance debugging and analysis
+## 7. 性能调试与分析
 
-### 7.1 Performance Check List
+### 7.1 性能检查清单
 
-- [ ] Whether `-O3` optimization is enabled?
-- [ ] Add `-mcpu=native` (not `-march`)?
-- [ ] Is the cycle spread (4 times for float32, 2 times for float64)?
-- [ ] Reduction uses a multi-gatherer (elimination of data dependence)?
-- [ ] Access memory according to line priority?
+- [ ] 是否启用了 `-O3` 优化？
+- [ ] 是否添加了 `-mcpu=native`（不是 `-march`）？
+- [ ] 循环是否展开（4 倍 for float32, 2 倍 for float64）？
+- [ ] Reduction 是否使用了多累加器（消除数据依赖）？
+- [ ] 是否按行优先访问内存？
 
-### 7.2 Proposal for compilation options
+### 7.2 编译选项建议
 
 ```python
 extra_cflags = [
-    "-O3",                  # Maximum Optimization Level
-    "-mcpu=native",         # For the current ARM CPU(Note: yes.) mcpu No, it's not. march)
-    "-ftree-vectorize",     # AutovectorDilution
-    "-ffast-math",          # Rapid mathematics (optional, sacrifice part)accuracy)
+    "-O3",                  # 最高优化级别
+    "-mcpu=native",         # 针对当前 ARM CPU（注意是 mcpu 不是 march）
+    "-ftree-vectorize",     # 自动向量化
+    "-ffast-math",          # 快速数学（可选，牺牲部分精度）
 ]
 ```
 
-**Key differences**: ARM uses `-mcpu` instead of `-march`.
+**关键差异**: ARM 使用 `-mcpu` 而非 `-march`。
 
-## 8. ARM vs x64 Optimized comparison
+## 8. ARM vs x64 优化对比
 
-| Features | ARM (NEON) | x64 (AVX) |
+| 特性 | ARM (NEON) | x64 (AVX) |
 |------|------------|-----------|
-| SIMD width | 128 bits | 256 bits (AVX2), 512 bits (AVX-512) |
-| Float32 Parallel | 4 | 8 (AVX2), 16 (AVX-512) |
-| Float64 Parallel | 2 | 4 (AVX2), 8 (AVX-512) |
-| Looping Multiplication (float32) | **4 times** | **8 times** |
-| Looping Multiplication (float64) | **2 times** | **4 times** |
-| Number of loaders (recommended) | 4 | 8 |
-| Compile Options | `-mcpu=native` | `-march=native` |
-| Data dependence sensitivity | **High**(needs special attention) | Medium |
+| SIMD 宽度 | 128 位 | 256 位 (AVX2), 512 位 (AVX-512) |
+| Float32 并行度 | 4 | 8 (AVX2), 16 (AVX-512) |
+| Float64 并行度 | 2 | 4 (AVX2), 8 (AVX-512) |
+| 循环展开倍数 (float32) | **4 倍** | **8 倍** |
+| 循环展开倍数 (float64) | **2 倍** | **4 倍** |
+| 累加器数量 (推荐) | 4 个 | 8 个 |
+| 编译选项 | `-mcpu=native` | `-march=native` |
+| 数据依赖敏感度 | **高**（需特别注意） | 中 |
 
-## 9. Common optimization error zone
+## 9. 常见优化误区
 
-| Error | Annotations | Recommendations |
+| 误区 | 说明 | 建议 |
 |------|------|------|
-| Copy x64 Optimization | ARM and x64 have different parallels | Float32 Expand 4 times (not 8 times) |
-| Ignore Data Dependence | ARM NEON command latency high, high impact dependency | Use multi-cumulator to eliminate dependency |
-| Use `-march` | ARM should use `-mcpu` | Use `-mcpu=native` |
-| Overexploited | Expand beyond NEON width is not helpful | Float32 up to 4 times |
+| 照搬 x64 优化 | ARM 和 x64 有不同的并行度 | Float32 展开 4 倍（不是 8 倍） |
+| 忽略数据依赖 | ARM NEON 指令延迟高，依赖影响大 | 使用多累加器消除依赖 |
+| 使用 `-march` | ARM 应该用 `-mcpu` | 使用 `-mcpu=native` |
+| 过度展开 | 展开超过 NEON 宽度无益 | Float32 最多 4 倍 |
 
-## 10. Summary
+## 10. 总结
 
-### ARM Optimization of key principles
+### ARM 优化关键原则
 
-1. **compilerAutovectorDilution**:Use`-O3 -mcpu=native -ftree-vectorize`
-2. **Recycling expansion**: Float32 expansion**4 times**, Float64 expansion**2 times**(compatibility of NEON width)
-3. **Eliminate data dependency**: using**4 loaders**(Reduction operation)
-4. **Cache friendly**: access by line priority, large matrix segment processing (block size 32-64)
-5. **Stable value**: Softmax minus maximum value with significant cumulative use of Kahan algorithm
+1. **编译器自动向量化**: 使用 `-O3 -mcpu=native -ftree-vectorize`
+2. **循环展开**: Float32 展开 **4 倍**，Float64 展开 **2 倍**（匹配 NEON 宽度）
+3. **消除数据依赖**: 使用 **4 个累加器**（Reduction 操作）
+4. **缓存友好**: 按行优先访问，大矩阵分块处理（块大小 32-64）
+5. **数值稳定**: Softmax 减去最大值，大量累加使用 Kahan 算法
 
-### ARM-specific note
+### ARM 特有注意事项
 
-- **Compiler Options**: Using `-mcpu=native` instead of `-march=native`
-- **NEON width**: Float32 parallels 4 (not 8)
-- **Data dependence**: NEON command latency height to avoid continuous repository dependence
-- **Apple Silicon**: full utilization of unified memory and high bandwidth advantage
+- **编译选项**: 使用 `-mcpu=native` 而非 `-march=native`
+- **NEON 宽度**: Float32 并行度为 4（不是 8）
+- **数据依赖**: NEON 指令延迟高，避免连续寄存器依赖
+- **Apple Silicon**: 充分利用统一内存和高带宽优势
 
-### References
+### 参考资料
 
-- ARM NEON programming guide: https://developer.arm.com/documentation/den0018/latest/
-- ARM C/C++ compiler Optimization: https://developer.arm.com/documentation/101458/latest/Optimize/Optimizing-C-C---code-with-Arm-SIMD--Neon-
+- ARM NEON 编程指南: https://developer.arm.com/documentation/den0018/latest/
+- ARM C/C++ 编译器优化: https://developer.arm.com/documentation/101458/latest/Optimize/Optimizing-C-C---code-with-Arm-SIMD--Neon-

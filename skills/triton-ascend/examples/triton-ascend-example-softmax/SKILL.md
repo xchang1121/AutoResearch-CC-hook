@@ -1,6 +1,6 @@
 ---
 name: triton-ascend-example-softmax
-description: "Softmax complete Triton Ascend achieves the example of operator. Shows the three-stage contract mode (max → asks for sum(exp) → to be unified), semi-cumulations, and scalar-cumgger accuracy upgrades. You can refer to the code structure of this example when generating reduce-type operator."
+description: "Softmax 归约算子的完整 Triton Ascend 实现示例。展示三阶段归约模式（求 max → 求 sum(exp) → 归一化）、分块累加、标量累加器精度提升等技巧。当生成 reduce 类算子时可参考此示例的代码结构。"
 category: example
 version: "1.0.0"
 metadata:
@@ -11,7 +11,7 @@ metadata:
   framework: torch
 ---
 
-# Softmax - Triton Ascend
+# Softmax — Triton Ascend 实现示例
 
 ```python
 import torch

@@ -1,6 +1,6 @@
 ---
 name: triton-ascend-example-matmul
-description: "The full Triton Ascend example of standard matrix multiplication is achieved. The code structure of this example is referenced when generating the matmul class operator, showing key modes such as 2D segments (tiling), K-dimensional loops, 2D mask processing, and Cube Core usage."
+description: "标准矩阵乘法的完整 Triton Ascend 实现示例。展示 2D 分块(tiling)、K 维循环累加、2D mask 处理、Cube Core 利用等关键模式。当生成 matmul 类算子时可参考此示例的代码结构。"
 category: example
 version: "1.0.0"
 metadata:
@@ -11,7 +11,7 @@ metadata:
   framework: torch
 ---
 
-# matrix multiplication - Triton Ascend
+# 矩阵乘法 — Triton Ascend 实现示例
 
 ```python
 import torch

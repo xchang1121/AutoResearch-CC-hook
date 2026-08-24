@@ -9,21 +9,21 @@ from typing import Dict, Optional
 
 @dataclass(frozen=True)
 class EvalDefaults:
-    """The centralised default configuration for verify/profile/generate-reference."""
+    """verify/profile/generate-reference 的集中默认配置。"""
 
-    eval_timeout: int = 600              # single budget (sec)
-    reference_timeout: int = 120         # budget (s)
-    warmup_times: int = 5                # profile preheats
-    run_times: int = 50                  # Number of official measurements
+    eval_timeout: int = 600              # verify/profile 单次预算（秒）
+    reference_timeout: int = 120         # generate_reference 预算（秒）
+    warmup_times: int = 5                # profile 预热次数
+    run_times: int = 50                  # profile 正式测量次数
 
-    # Seconds to exit after SIGTERM; NPU > = 2s to PyTorch+CANN
-    # Atexit release ACL contact, otherwise SIGKILL leaves TS residual on device
-    # 6/17 device 5 wedge and path. Seconds of SIGKILL rear drain pipe.
+    # SIGTERM 后等 graceful 退出的秒数；NPU 上需要 >= 2s 给 PyTorch+CANN
+    # atexit 释放 ACL context，否则 SIGKILL 把 TS 残留状态留在 device 上
+    # （6/17 device 5 wedge 同 path）。SIGKILL 后排干管道的秒数。
     kill_grace_s: float = 5.0
     kill_drain_s: float = 2.0
 
     def as_env(self) -> Dict[str, str]:
-        """Converts to the environmental variable of detached / remote worker daemon consumption."""
+        """转成 detached / remote worker daemon 消费的环境变量。"""
         return {
             "OP_AUTORESEARCH_EVAL_TIMEOUT_S": str(self.eval_timeout),
             "OP_AUTORESEARCH_EVAL_REFERENCE_TIMEOUT_S": str(self.reference_timeout),
@@ -35,12 +35,12 @@ class EvalDefaults:
 
 
 def eval_defaults(config_path: Optional[str] = None) -> EvalDefaults:
-    """Parsing the eval/profile default that is finally valid.
+    """解析最终生效的 eval/profile 默认值。
 
-    Priority: OP_AUTORESEARCH_EVAL_* env > config.yaml > EvalDefaults datacas default.
-    config.yaml Read ``defaults.eval_timeout``,
-    ``defaults.reference_data_timeout``,``eval.warmup``,``eval.repeats``,
-    ``defaults.kill_grace_s``,``defaults.kill_drain_s``.
+    优先级：OP_AUTORESEARCH_EVAL_* env > config.yaml > EvalDefaults dataclass 默认值。
+    config.yaml 读取 ``defaults.eval_timeout``、
+    ``defaults.reference_data_timeout``、``eval.warmup``、``eval.repeats``、
+    ``defaults.kill_grace_s``、``defaults.kill_drain_s``。
     """
     base = _from_config(config_path)
     return EvalDefaults(
@@ -71,12 +71,12 @@ def resolve_run_times(value: Optional[int] = None) -> int:
 
 
 def resolve_kill_grace_s(value: Optional[float] = None) -> float:
-    """Sets the value of 0 at the direct SIGKILL (test)."""
+    """SIGTERM 后等 graceful 的秒数。设 0 等价于直接 SIGKILL（测试用）。"""
     return _positive_float(value, eval_defaults().kill_grace_s)
 
 
 def resolve_kill_drain_s(value: Optional[float] = None) -> float:
-    """The number of seconds to wait for the SIGKIL back-dry stdout/stderr pipe."""
+    """SIGKILL 后排干 stdout/stderr 管道的等待秒数。"""
     return _positive_float(value, eval_defaults().kill_drain_s)
 
 
@@ -108,9 +108,9 @@ def _from_config(config_path: Optional[str]) -> EvalDefaults:
     )
 
 
-# config.yaml parses + reads the only reality. worker_config.py returns these two helpers,
-# Each expresses the difference only by its parameters: eval side walk parents up to config.yaml, worker
-# Look at cwd (walk_parents=False); the failed stderr tag is also used separately.
+# config.yaml 解析 + 读取的唯一实现。worker_config.py 复用这两个 helper，
+# 各自只通过参数表达差异：eval 侧向上 walk parents 找 config.yaml，worker
+# 侧只看 cwd（walk_parents=False）；读失败的 stderr tag 也各用各的。
 def _resolve(config_path: Optional[str], *, walk_parents: bool = True) -> Optional[str]:
     if config_path is not None:
         p = Path(config_path)
@@ -151,7 +151,7 @@ def _positive_int(value, default: int) -> int:
 
 
 def _positive_float(value, default: float) -> float:
-    """Allows 0 (kill_grace_s=0 → skips Graceful), negative number and unresolved fallback."""
+    """允许 0（kill_grace_s=0 → 跳过 graceful），负数和不可解析 fallback。"""
     try:
         v = float(value)
         return v if v >= 0 else default

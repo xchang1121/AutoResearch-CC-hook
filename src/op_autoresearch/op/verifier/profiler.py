@@ -1,12 +1,26 @@
+# Copyright 2025 Huawei Technologies Co., Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
-NPU Profiller module.
+NPU Profiler 模块。
 
-Provide NPU profiling functionality to support:
-• Accurate Time Measurement of Implementation
+提供 NPU 性能分析功能，支持：
+• 精确的执行时间测量
 
-• L2 Cache Clear (optional)
+• L2 cache 清除（可选）
 
-• automatically filter unrelated warning output
+• 自动过滤无关的 warning 输出
 
 """
 
@@ -19,7 +33,7 @@ import time
 from typing import Callable, Tuple, Optional, Literal
 import pandas as pd
 
-# Import L2 Cache Clear Related Functions
+# 导入 L2 cache 清除相关功能
 from .l2_cache_clear import (
     DslType,
     L2_CACHE_CLEAR_KERNEL_NAME,
@@ -33,8 +47,8 @@ try:
 except ImportError:
     OP_AUTORESEARCH_RESTORE_COPY_KERNEL_NAME = "OP_AUTORESEARCH_restore_copy"
 
-# Pre-compile regular expressions to enhance performance
-# Filter profiller-related noise output
+# 预编译正则表达式，提高性能
+# 过滤 profiler 相关的噪声输出
 _FILTER_PATTERNS = re.compile(
     r'('
     r'Please DO NOT tune args|'
@@ -45,7 +59,7 @@ _FILTER_PATTERNS = re.compile(
     r'\[WARNING\]|'
     r'\[INFO\]|'
     r'profiler\.py:|'
-    # Filter triton compiled associated warning
+    # 过滤 triton 编译相关的 warning
     r'WARNING:\s*Grid.*physical limit|'
     r'WARNING:\s*Grid.*performance'
     r')'
@@ -57,10 +71,10 @@ _DECORATION_PATTERN = re.compile(r'[\\\|\-=/]{3,}')
 
 def suppress_output():
     """
-    Creates an output inhibitor context manager to filter specific WARNING/INFO outputs.
-
-    Note: This filter does not filter L2 Cache's warning messages.
-    These messages are collected through the l2_cache_clar module and output after the profiler.
+    创建输出抑制上下文管理器，过滤特定的 WARNING/INFO 输出。
+    
+    注意：此过滤器不会过滤 L2 cache 相关的警告消息，
+    这些消息通过 l2_cache_clear 模块收集并在 profiler 结束后输出。
     """
     class OutputFilter:
         def __init__(self, original_stream):
@@ -68,34 +82,34 @@ def suppress_output():
             self.suppress_next_lines = 0
 
         def write(self, text):
-            # If the follow-up line is being suppressed, reduce the counter
+            # 如果正在抑制后续行，减少计数器
             if self.suppress_next_lines > 0:
                 self.suppress_next_lines -= 1
                 if not text.strip():
                     return
 
-            # Quick Match with Precompiled Regular Expressions
+            # 使用预编译的正则表达式快速匹配
             if _FILTER_PATTERNS.search(text):
                 self.suppress_next_lines = 2
                 return
 
             stripped_text = text.strip()
 
-            # Total empty lines
+            # 完全空行
             if not stripped_text:
                 return
 
-            # Quick check symbol rows with regular expression
+            # 使用正则表达式快速检查符号行
             if len(stripped_text) <= 50 and _SYMBOL_PATTERN.match(stripped_text):
                 unique_chars = set(stripped_text.replace(' ', '').replace('\t', ''))
                 if len(unique_chars) <= 3:
                     return
 
-            # Check decoration lines using regular expression
+            # 使用正则表达式检查装饰线
             if _DECORATION_PATTERN.search(stripped_text):
                 return
 
-            # Other Content Normal Output
+            # 其他内容正常输出
             self.original_stream.write(text)
 
         def flush(self):
@@ -121,28 +135,28 @@ def suppress_output():
     return output_suppressor()
 
 
-def profiler_npu_core(fn: Callable, warmup: int = 25, active: int = 100,
+def profiler_npu_core(fn: Callable, warmup: int = 25, active: int = 100, 
                       prof_dir_name: Optional[str] = None,
                       clear_l2_cache_flag: bool = False,
                       dsl: DslType = "other",
                       filter_restore_copy: bool = False) -> Tuple[float, str]:
     """
-    NPU core function (PyTorch version).
-
+    NPU profiler 核心函数（PyTorch 版）。
+    
     Args:
-        {\\fn: function to profile
-        Warmup: warmup times
-        Activation: Number of effective measurements
-        prof_dir_name: result directory name
-        clear_l2_cache_flag: clear L2 size before each iterative
-        dsl: DSL type, determine L2 Cache clearance method
-             ▪ \"triton_ascend\": Use a special triton Kernel (recommended, accurately filtered)
+        fn: 要 profile 的函数
+        warmup: warmup 次数
+        active: 有效测量次数
+        prof_dir_name: profile 结果目录名
+        clear_l2_cache_flag: 是否在每次迭代前清除 L2 cache
+        dsl: DSL 类型，决定 L2 cache 清除方式
+             ▪ "triton_ascend": 使用专用 triton kernel（推荐，可精确过滤）
 
-             ▪ Other: Use tensor.zero_() (fallback, risk of error)
+             ▪ 其他: 使用 tensor.zero_()（fallback，有误判风险）
 
-
+    
     Returns:
-        Tuple [float, st]: (execution time (microseconds), profile result directory path)
+        Tuple[float, str]: (执行时间(微秒), profile结果目录路径)
     """
     import torch
     import torch_npu
@@ -204,26 +218,26 @@ def profiler_npu_mindspore_core(fn: Callable, warmup: int = 25, active: int = 10
                                 dsl: DslType = "other",
                                 filter_restore_copy: bool = False) -> Tuple[float, str]:
     """
-    NPU core function (MindSpore version).
+    NPU profiler 核心函数（MindSpore 版）。
 
-    A key difference with the PyTorch version:
-    1. AicoreMetrics (non-AiCMetrics)
-    Schedule parameters must use keyword references
-    3. Data_simplification default is True and needs to be visible as False
-    4. Profile() not supported with _flops / with _modules
-    5. Synchronization interface: ms.runtime.synchronize() (non-torch.npu.synchronize())
+    与 PyTorch 版的关键差异：
+    1. 枚举类名: AicoreMetrics (非 AiCMetrics)
+    2. schedule 参数必须使用关键字传参
+    3. data_simplification 默认值为 True，需显式设为 False
+    4. profile() 不支持 with_flops / with_modules 参数
+    5. 同步接口: ms.runtime.synchronize() (非 torch.npu.synchronize())
 
     Args:
-        {\\fn: function to profile
-        Warmup: warmup times
-        Activation: Number of effective measurements
-        prof_dir_name: result directory name
-        clear_l2_cache_flag: clear L2 size before each iterative
-        dsl: DSL type (MindSpore Edit Zero_() Clear L2 Cache)
-        Filter_restore_copy: filtering the condition_copy operation
+        fn: 要 profile 的函数
+        warmup: warmup 次数
+        active: 有效测量次数
+        prof_dir_name: profile 结果目录名
+        clear_l2_cache_flag: 是否在每次迭代前清除 L2 cache
+        dsl: DSL 类型（MindSpore 版统一使用 zero_() 清除 L2 cache）
+        filter_restore_copy: 是否过滤 restore_copy 操作
 
     Returns:
-        Tuple [float, st]: (execution time (microseconds), profile result directory path)
+        Tuple[float, str]: (执行时间(微秒), profile结果目录路径)
     """
     import mindspore as ms
     from mindspore.profiler import (ProfilerActivity, ProfilerLevel, AicoreMetrics,
@@ -283,37 +297,37 @@ def profiler_npu(fn: Callable, warmup: int = 25, active: int = 100, prof_dir_nam
                  filter_restore_copy: bool = False,
                  framework: str = "torch") -> float:
     """
-    NPU programr main function.
+    NPU profiler 主函数。
 
     Args:
-        {\\fn: function to profile
-        Warmup: warmup times
-        Activation: Number of effective measurements
-        prof_dir_name: result directory name
-        keep the outcome document or not
-        suppress_warnings: inhibit WARNING/INFO output
-        clear_l2_cache: Whether to clear L2 size before each iterative
-        dsl: DSL type, determine L2 Cache clearance method
-             ▪ \"triton_ascend\": Use a special triton Kernel (recommended, accurately filtered)
+        fn: 要 profile 的函数
+        warmup: warmup 次数
+        active: 有效测量次数
+        prof_dir_name: profile 结果目录名
+        keep_res: 是否保留结果文件
+        suppress_warnings: 是否抑制 WARNING/INFO 输出
+        clear_l2_cache: 是否在每次迭代前清除 L2 cache
+        dsl: DSL 类型，决定 L2 cache 清除方式
+             ▪ "triton_ascend": 使用专用 triton kernel（推荐，可精确过滤）
 
-             ▪ Other: Use tensor.zero_() (fallback, risk of error)
+             ▪ 其他: 使用 tensor.zero_()（fallback，有误判风险）
 
-        Filter_restore_copy: filtering the condition_copy operation
-        ramework: framework type (\"toch\" or \"mindspore\"), determine which interface to use
-
+        filter_restore_copy: 是否过滤 restore_copy 操作
+        framework: 框架类型 ("torch" 或 "mindspore")，决定使用哪套 profiler 接口
+    
     Returns:
-        float: Average execution time (microseconds)
+        float: 平均执行时间（微秒）
     """
     # --trace / OP_AUTORESEARCH_PROF_KEEP_RES: keep the msprof trace dir (timeline + CSVs).
     keep_res = keep_res or os.environ.get("OP_AUTORESEARCH_PROF_KEEP_RES") == "1"
     clear_l2_cache_warnings()
-
+    
     core_fn = profiler_npu_mindspore_core if framework == "mindspore" else profiler_npu_core
-
+    
     if suppress_warnings:
         with suppress_output():
             exec_time, profile_path = core_fn(
-                fn, warmup, active, prof_dir_name,
+                fn, warmup, active, prof_dir_name, 
                 clear_l2_cache_flag=clear_l2_cache, dsl=dsl,
                 filter_restore_copy=filter_restore_copy,
             )
@@ -323,7 +337,7 @@ def profiler_npu(fn: Callable, warmup: int = 25, active: int = 100, prof_dir_nam
             clear_l2_cache_flag=clear_l2_cache, dsl=dsl,
             filter_restore_copy=filter_restore_copy,
         )
-
+    
     warnings_list = get_l2_cache_warnings()
     if warnings_list:
         for warning_msg in warnings_list:
@@ -339,21 +353,21 @@ def collect_time(base_dir: str, active: int, clear_l2_cache_flag: bool = False,
                  dsl: DslType = "other", framework: str = "torch",
                  filter_restore_copy: bool = False) -> float:
     """
-    Collect time information from the results of profiling.
+    从 profiling 结果中收集时间信息。
 
-    -Torch: Read op_statistic.csv, press Count % action=0 filter, request Total Time(us)/ action
-    - Mindspore (Level0): Read kernel_details.csv, press Step ID to take an active step, ask for Duration(us)/ steps
+    - torch: 读 op_statistic.csv，按 Count % active == 0 过滤，求 Total Time(us) / active
+    - mindspore (Level0): 读 kernel_details.csv，按 Step ID 取后 active 步，求 Duration(us) / steps
 
     Args:
-        Base_dir: result directory
-        Activation: Number of effective measurements
-        clear_l2_cache_flag: L2 Cache clear is enabled
-        dsl: DSL type
-        ramework: framework type (\"toch\" or \"mindspore\")
-        Filter_restore_copy: filtering the condition_copy operation
+        base_dir: profiling 结果目录
+        active: 有效测量次数
+        clear_l2_cache_flag: 是否启用了 L2 cache 清除
+        dsl: DSL 类型
+        framework: 框架类型 ("torch" 或 "mindspore")
+        filter_restore_copy: 是否过滤 restore_copy 操作
 
     Returns:
-        float: average execution time (microseconds), returns float (`inf')
+        float: 平均执行时间(微秒)，失败时返回 float('inf')
     """
     if not os.path.exists(base_dir):
         print(f"Base directory not found: {base_dir}")
@@ -419,13 +433,13 @@ def _filter_l2_cache_clear_ops(df: pd.DataFrame, dsl: DslType,
                                 framework: str = "torch",
                                 filter_restore_copy: bool = False) -> pd.DataFrame:
     """
-    Filter the OP_AUTORESEARCH framework internal operation from the profiling result.
+    从 profiling 结果中过滤掉 OP_AUTORESEARCH 框架内部操作。
 
-    The listings of op_statistic.csv (torch) and kernel_details.csv (mindspore) are also supported.
+    同时支持 op_statistic.csv（torch）和 kernel_details.csv（mindspore）的列名。
 
-    Excluded operations:
-    - L2 Cache Clear Kernel (OP_AUTORESEARCH_122cache_clar / ZerosLike)
-    - Copy kernel used by restore_value
+    过滤内容：
+    - L2 cache 清除 kernel（OP_AUTORESEARCH_l2cache_clear / ZerosLike）
+    - restore_value 的 copy kernel（filter_restore_copy=True 时）
     """
     if dsl == "triton_ascend":
         col = None

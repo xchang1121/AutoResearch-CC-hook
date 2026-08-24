@@ -1,64 +1,64 @@
-# Task assembly policy
+# 任务装配策略
 
-## Reliance on tracking mechanisms
+## 依赖追踪机制
 
-The `trace_dependencies` tool analyzes all dependences on automatic detection functions through AST:
+`trace_dependencies` 工具通过 AST 分析自动检测函数的所有依赖：
 
-### 1. Import Unnamed
+### 1. Import 别名解析
 
-Build `{alias: source module}'map from the top `import` statement and top grant value of the file:
+从文件顶部的 `import` 语句和顶级赋值中构建 `{别名: 源模块}` 映射：
 
 ```python
 # import torch._prims_common as utils → {"utils": "torch._prims_common"}
 # from torch._decomp import register_decomposition → {"register_decomposition": "torch._decomp"}
 ```
 
-### 2. Reliance on classification
+### 2. 依赖分类
 
-- **Reliance with file**: function/class defined in the same document, direct extraction
-- **External call**: other module functions cited through Import alias
-  - Public API (e. g. `torch.tensor()`) → Reserve Report
-  - Internal API (with `_` prefix module) → needs inline
+- **同文件依赖**：在同一文件中定义的函数/类，直接提取
+- **外部调用**：通过 import 别名引用的其他模块函数
+  - 公共 API（如 `torch.tensor()`）→ 保留 import
+  - 内部 API（含 `_` 前缀模块）→ 需内联
 
-### 3. External Call Processing
+### 3. 外部调用处理
 
-For external calls requiring interconnectivity:
-1. Position the original file via the source module path
-2. Read complete with `read_function`
-3. Check for function signatures to ensure consistency of parameters
-4. Link function to output file
+对于需要内联的外部调用：
+1. 通过源模块路径定位原始文件
+2. 使用 `read_function` 读取完整实现
+3. 检查函数签名，确保参数一致
+4. 将函数体内联到输出文件
 
-## Combination Policy
+## 装配策略
 
-### Exclusion (large document)
-
-```
-General function of file - Unrequired Functions = Output
-```
-
-Applies to: When the target function relies on a large number of same-file functions
-
-### Selective (accurate extraction)
+### 排除式（大文件）
 
 ```
-Enter Functions + List of relying functions = Output
+文件总函数 - 不需要的函数 = 输出
 ```
 
-Applicable: when dependency relationships are clear and the number of functions is limited
+适用于：目标函数依赖大量同文件函数时
 
-### Full Dock (Small File)
-
-```
-Entire Document = Output
-```
-
-Applies to: small files, close inter-functional coupling
-
-## Validation process
+### 选择性（精确提取）
 
 ```
-1. Syntax: → AST Parsable
-2. Structure check → Model Category + get_inputs + get_init_inputs Existence
-3. runtimeInspection → Empirical → forward → None NaN/Inf
-4. References → Multigroup Input vs. Original Function Output
+入口函数 + 依赖函数列表 = 输出
+```
+
+适用于：依赖关系清晰、函数数量有限时
+
+### 完整嵌入（小文件）
+
+```
+整个文件内容 = 输出
+```
+
+适用于：文件较小、函数间紧密耦合时
+
+## 验证流程
+
+```
+1. 语法检查 → AST 可解析
+2. 结构检查 → Model 类 + get_inputs + get_init_inputs 存在
+3. 运行时检查 → 实例化 → forward → 无 NaN/Inf
+4. 参考对比 → 多组输入与原始函数输出比对
 ```

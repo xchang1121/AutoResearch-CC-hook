@@ -1,6 +1,6 @@
 ---
 name: triton-ascend-case-reduction-sum-fused
-description: "Reduction + Elementwise integration operator optimization: first on an element-by-element basis, second-step + calculation of reorganization, grid = 40 and best performance when SUB cut without tail (47.58us), integration optimization logic based on reduce, applicable to integration scenarios that require element-by-component calculation before reduce"
+description: "Reduction+Elementwise融合算子优化：先逐元素操作再归约，行二次切分+计算重组，grid=40且SUB切分不含尾块时性能最优（47.58us），融合优化逻辑以reduce为主，适用于需要先逐元素计算再reduce的融合场景"
 category: case
 version: "1.0.0"
 metadata:
@@ -9,13 +9,13 @@ metadata:
   hardware: "Atlas A2, Atlas A3"
 ---
 
-# Reduction + Elementwise Integration operator Optimization
+# Reduction + Elementwise 融合算子优化
 
-## Task characteristics
-- **Data size**: (1,000, 8192), (8192), integration of operator
-- **Characteristics**: vector element-by-element operation, followed by column orientation and return
+## 任务特征
+- **数据尺寸**：(1000, 8192), (8192,)，融合算子
+- **特点**：先进行向量化逐元素操作，再沿列方向求和归约
 
-## Optimizing 1: a two-dimensional split of lines
+## 优化 1：行二次切分
 
 ```python
 pid = tl.program_id(0)
@@ -23,37 +23,37 @@ for m_start in range(0, BLOCK_SIZE_M, SUB_BLOCK_SIZE_M):
     m_offsets = pid * BLOCK_SIZE_M + m_start + tl.arange(0, SUB_BLOCK_SIZE_M)
 ```
 
-## Optimization 2: Calculate reorganization
+## 优化 2：计算重组
 
 ```python
-# Error: Simple
+# 错误：简单
 total_sum = 0.0
 for n_offset in range(0, N, BLOCK_SIZE):
     total_sum += tl.sum(tl.where(mask, t3, 0.0))
 
-# Correct: Optimization
+# 正确：优化
 acc = tl.zeros([SUB_BLOCK_SIZE_M, BLOCK_SIZE_N], dtype=tl.float32)
 for n_start in range(0, N, BLOCK_SIZE_N):
     acc += tl.where(mask, t3, 0.0)
 total_sum = tl.sum(acc, axis=1)
 ```
 
-## Autotune Configuration
+## Autotune 配置
 
 ```python
-# (AI core=40)
+# （AI core=40）
 # 1. grid=20<40 -> 91.69 us
 triton.Config({'BLOCK_SIZE_M': 50, 'SUB_BLOCK_SIZE_M': 25, 'BLOCK_SIZE_N': 256})
 
-# grid = 40, SUB stegregated with tails - > 53.30 us
+# 2. grid=40，SUB切分含尾块 -> 53.30 us
 triton.Config({'BLOCK_SIZE_M': 25, 'SUB_BLOCK_SIZE_M': 4, 'BLOCK_SIZE_N': 2048})
 
-# 3. Grid = 40, SUB cut without tails - > 47.58 us best
+# 3. grid=40，SUB切分不含尾块 -> 47.58 us 最优
 triton.Config({'BLOCK_SIZE_M': 25, 'SUB_BLOCK_SIZE_M': 25, 'BLOCK_SIZE_N': 256})
 
-# 4. Grid>40, integer number - > 79.00 us
+# 4. grid>40，且非核数整数倍 -> 79.00 us
 triton.Config({'BLOCK_SIZE_M': 20, 'SUB_BLOCK_SIZE_M': 20, 'BLOCK_SIZE_N': 256})
 ```
 
-### Summary
-The logic of integration of operator optimization is dominated by reduce. Grid equals the number of nuclei, and SUB cut without tails is the best.
+### 总结
+融合算子优化逻辑以reduce为主。grid等于核数、SUB切分不含尾块时性能最优。

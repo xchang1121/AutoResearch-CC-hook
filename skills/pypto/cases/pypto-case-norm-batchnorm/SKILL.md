@@ -1,6 +1,6 @@
 ---
 name: pypto-case-norm-batchnorm
-description: "Example C: 3D Norm — BatchNorm, displaying 3D down, single-axis sum multi-dimensional returns, expand_crone broadcast"
+description: "模式 C 示例：3D Norm — BatchNorm，展示 3D 降维、连续单轴 sum 多维归约、expand_clone 广播"
 category: example
 version: "1.0.0"
 metadata:
@@ -9,9 +9,9 @@ metadata:
   operator_patterns: "norm,reduction,loop,expand_clone"
 ---
 
-# Mode C-2: 3D Norm — BatchNom
+# 模式 C-2：3D Norm — BatchNorm
 
-Forward `reshape(B, C, -1)` down to 3D, kernel along Channel V loop.
+forward 中 `reshape(B, C, -1)` 降为 3D，kernel 沿 channel 维 loop。
 
 ```python
 BASIC_CHANNEL = 8
@@ -29,7 +29,7 @@ def create_batchnorm_kernel(batch, channels, spatial, eps):
         for ci in pypto.loop(0, MAIN_CHANNEL_LOOP, 1, name="LOOP_CH", idx_name="ci"):
             ch_off = ci * BASIC_CHANNEL
             x_chunk = pypto.view(x, [batch, BASIC_CHANNEL, spatial], [0, ch_off, 0])
-            # Multi-axis contract: two consecutive single-axis sum
+            # 多轴归约：连续两次单轴 sum
             s = pypto.sum(x_chunk, dim=2, keepdim=True)
             s = pypto.sum(s, dim=0, keepdim=True)      # (1, C, 1)
             sq = pypto.sum(x_chunk * x_chunk, dim=2, keepdim=True)
@@ -37,7 +37,7 @@ def create_batchnorm_kernel(batch, channels, spatial, eps):
             mean = s * inv_total
             var = sq * inv_total - mean * mean
             denom = pypto.sqrt(var + eps)
-            # expand_cline broadcastback batt-dimensional
+            # expand_clone 广播回 batch 维
             mean_b = pypto.expand_clone(mean, [batch, BASIC_CHANNEL, 1])
             denom_b = pypto.expand_clone(denom, [batch, BASIC_CHANNEL, 1])
             normed = (x_chunk - mean_b) / denom_b
@@ -46,10 +46,10 @@ def create_batchnorm_kernel(batch, channels, spatial, eps):
     return kernel
 ```
 
-forward:`reshape(B, C, -1)` → kernel → `reshape(x.shape)`
-RMSNornm Same Mode: 3D `(B, features, spatial)` for `sqrt(mean(x²) + eps)` only.
+forward：`reshape(B, C, -1)` → kernel → `reshape(x.shape)`
+RMSNorm 同模式：3D `(B, features, spatial)`，只求 `sqrt(mean(x²) + eps)` 无需减均值。
 
-## Elements of a model
-- `pypto.sum(dim=2)`, and `pypto.sum(dim=0)` -- multiaxis will have to be phased.
-- `pypto.expand_clone(mean, [B, C, 1])` — Single-axis broadcast, restore dimensions after contract for operation
-- `set_vec_tile_shapes(1, 1, 16384)` — 3D, first two dimensions small, last dimension file
+## 模式要点
+- `pypto.sum(dim=2)` 再 `pypto.sum(dim=0)` — 多轴归约必须分步
+- `pypto.expand_clone(mean, [B, C, 1])` — 单轴广播，归约后恢复维度用于运算
+- `set_vec_tile_shapes(1, 1, 16384)` — 3D，前两维小，最后维大 tile

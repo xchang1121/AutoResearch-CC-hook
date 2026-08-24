@@ -1,3 +1,17 @@
+# Copyright 2025 Huawei Technologies Co., Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """CUDA C DSL adapter."""
 
 from typing import Any, Optional
@@ -18,12 +32,12 @@ class DSLAdapterCudaC(DSLAdapter):
             "import torch.nn.functional as F\n"
             "from torch.utils.cpp_extension import load_inline\n"
         )
-
+    
     def get_impl_import(self, op_name: str, impl_func_name: str) -> str:
         """Return implementation ModelNew import."""
-        # CUDA C generation code has been harmonized to ModelNew type format
+        # CUDA C 生成代码已经统一为 ModelNew 类格式
         return f"from {op_name}_cuda_c_impl import ModelNew\n"
-
+    
     def create_impl_module(
         self,
         framework: str,
@@ -36,7 +50,7 @@ class DSLAdapterCudaC(DSLAdapter):
         if framework == "torch":
             code += f"impl_model = impl_model.to({device_var})\n"
         return code
-
+    
     def call_impl(
         self,
         impl_func_name: str,
@@ -44,12 +58,12 @@ class DSLAdapterCudaC(DSLAdapter):
         device_id: int,
         framework_adapter: Any,
         op_name: str,
-                  data_dir: Optional[str] = None,
+                  data_dir: Optional[str] = None, 
         framework_output: Optional[str] = None,
     ) -> str:
         """Invoke the instantiated CUDA C ModelNew."""
         return f"impl_output = impl_model(*{inputs})\n"
-
+    
     def benchmark_impl(
         self,
         impl_func_name: str,
@@ -66,7 +80,7 @@ class DSLAdapterCudaC(DSLAdapter):
     ) -> str:
         """Return code string to benchmark CUDA C implementation."""
         sync_code = "torch.cuda.synchronize()" if backend == "cuda" else ""
-        code = f"""        # dsl:cuda_c
+        code = f"""        # dsl：cuda_c
         import time
         def cuda_c_benchmark_fn():
             return impl_model(*{inputs})

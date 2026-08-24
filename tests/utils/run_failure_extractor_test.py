@@ -1,3 +1,17 @@
+# Copyright 2026 Huawei Technologies Co., Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Lightweight regression tests for utils.failure_extractor.
 
 Run from repo root:
@@ -75,10 +89,10 @@ def test_ascendc_compile_error_uses_last_error_line() -> None:
     assert "stale earlier" not in sig["excerpt"]
 
 
-def test_precision_location_accepts_grouped_decimal() -> None:
+def test_precision_location_accepts_utf8_chinese() -> None:
     log = (
         "AssertionError: output mismatch\n"
-        "Location [3]: ref=1.0 impl=1.2 abs_diff=2.000000e-01 "
+        "位置[3]: ref=1.0 impl=1.2 abs_diff=2.000000e-01 "
         "strict_tol=1.000000e-03\n"
     )
 
@@ -91,7 +105,7 @@ def test_precision_location_accepts_grouped_decimal() -> None:
 
 def test_precision_location_accepts_relaxed_tol() -> None:
     log = (
-        "Location [630, 0]: ref=3.283232e+00 impl=9.884769e+00 "
+        "位置[630, 0]: ref=3.283232e+00 impl=9.884769e+00 "
         "abs_diff=6.601537e+00 relaxed_tol=4.105543e-03\n"
     )
 
@@ -110,8 +124,9 @@ def test_precision_assertion_beats_wrapper_error_code() -> None:
             "Traceback (most recent call last):",
             "  raise AssertionError(",
             (
-                "AssertionError: [case 1] compare: validation failed, "
-                "18388 elements exceed the relaxed threshold (hard_fail)"
+                "AssertionError: [case 1] compare: \u9a8c\u8bc1\u5931\u8d25\uff0c"
+                "\u5b58\u5728 18388 \u4e2a\u5143\u7d20\u8d85\u8fc7"
+                "\u653e\u5bbd\u9608\u503c(hard_fail)"
             ),
             "rtol=1.220000e-04 atol=1.000000e-05",
             "mere=4.703989e-02 mare=3.735385e+02",
@@ -133,8 +148,9 @@ def test_vector_timeout_beats_precision_assertion() -> None:
     log = "\n".join(
         [
             (
-                "AssertionError: [case 0] compare: validation failed, "
-                "144265 elements exceed the relaxed threshold (hard_fail)"
+                "AssertionError: [case 0] compare: \u9a8c\u8bc1\u5931\u8d25\uff0c"
+                "\u5b58\u5728 144265 \u4e2a\u5143\u7d20\u8d85\u8fc7"
+                "\u653e\u5bbd\u9608\u503c(hard_fail)"
             ),
             "rtol=9.770000e-04 atol=1.000000e-03",
             "mere=1.141542e-01 mare=6.303151e+00",
@@ -193,7 +209,7 @@ def main() -> None:
     test_runtime_tail_match_wins()
     test_acl_stream_sync_uses_specific_signal()
     test_ascendc_compile_error_uses_last_error_line()
-    test_precision_location_accepts_grouped_decimal()
+    test_precision_location_accepts_utf8_chinese()
     test_precision_location_accepts_relaxed_tol()
     test_precision_assertion_beats_wrapper_error_code()
     test_vector_timeout_beats_precision_assertion()

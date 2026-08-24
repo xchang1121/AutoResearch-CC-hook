@@ -1,6 +1,6 @@
 ---
 name: ascendc-op-patterns
-description: "AscendC's common operator family implementation template: elementwise, Broadcast, reduction, softmax-like, index/gather, and matmul emilogue. Use to quickly select the initial Kernel structure while running."
+description: "AscendC 常见算子家族实现模板：elementwise、broadcast、reduction、softmax-like、index/gather 和 matmul epilogue。用于批跑时快速选择初始 kernel 结构。"
 category: guide
 version: "1.0.0"
 metadata:
@@ -10,25 +10,25 @@ metadata:
   operator_patterns: "elementwise,broadcast,reduction,indexed,matmul-like,fused"
 ---
 
-# AscendC Common operator Template
+# AscendC 常见算子模板
 
-Use this skill to achieve the skeleton before changing the mathematical logic of Kernel. It is recommended to get the correct direct-invoke kernel and then optimize the performance with the profiling document.
+在修改 kernel 数学逻辑前使用本 skill 选择实现骨架。推荐先得到正确的 direct-invoke kernel，再用 profiling 文档做性能优化。
 
-## 1. Template Selection Table
+## 1. 模板选择表
 
-| operator form | Initial skeleton | Main risks |
+| 算子形态 | 初始骨架 | 主要风险 |
 |---|---|---|
-| unary/binary elementwise | flatten + vector tile | Dype Cast and tail mask |
-| broadcast elementwise | Linear output index map to input | Integer index costs |
-| row reduction | One or more rows per nuclear process | accuracy |
-| large reduction | Sub-contracting + Phase II merger | Workspace or atomic cost |
-| softmax/logsumexp | max pass + exp/sum pass + normalize | Spill and workspace |
-| gather/scatter/index | Contigous Quick Path + General Path | Crossing borders and writing conflicts |
-| matmul + epilogue | Keep Cube main path and try to integrate UB/L0C epilogue | Cube/Vector load balance |
+| unary/binary elementwise | flatten + vector tile | dtype cast 与 tail mask |
+| broadcast elementwise | 线性输出 index 映射到输入 offset | 整数索引开销 |
+| row reduction | 每核处理一行或若干行 | 累加精度 |
+| large reduction | 分段归约 + 二阶段合并 | workspace 或 atomic 成本 |
+| softmax/logsumexp | max pass + exp/sum pass + normalize | 溢出和 workspace |
+| gather/scatter/index | contiguous 快路径 + generic 路径 | 越界和写冲突 |
+| matmul + epilogue | 保持 Cube 主路径，尽量融合 UB/L0C epilogue | Cube/Vector 负载平衡 |
 
-## 2. Elementwise Bones
+## 2. Elementwise 骨架
 
-Gradually equalize the output of a contigouous to one-dimensional elements:
+输出 contiguous 时优先展平成一维元素数：
 
 ```text
 for each core:
@@ -38,27 +38,27 @@ for each core:
   handle tail
 ```
 
-Rules:
+规则：
 
-- tile length meets both vector block size and 32B moving particle sizes.
-- Preprocessing of scalar parameters is placed in host tilling.
-- Output dtype does not calculate dtype at the same time, but only at the end.
-- The `where`-type operator predicate is generated in UB to avoid intermediate results writing back to GM.
+- tile 长度同时满足 vector block size 和 32B 搬运粒度。
+- scalar 参数的预处理放到 host tiling。
+- 输出 dtype 与计算 dtype 不同时，只在最后统一 Cast。
+- `where` 类算子的 predicate 在 UB 内生成，避免中间结果写回 GM。
 
-## 3. Broadcast skeleton
+## 3. Broadcast 骨架
 
-Break speed path for common broadcast:
+为常见 broadcast 拆快路径：
 
-- I'm sorry, I'm sorry, I'm sorry, I'm sorry.
-- trailing-dim broadcast: transformation along the last dimension of vector.
-- Scalar input: Each file loads only once.
-- General Broadcast: Use indexMapping fallback.
+- same shape：直接 elementwise。
+- trailing-dim broadcast：沿最后一维向量化。
+- scalar input：每个 tile 只加载一次 scalar。
+- general broadcast：使用 index mapping fallback。
 
-Don't let all Shape go general index happening; it usually becomes scalar-born.
+不要让所有 shape 都走 general index mapping；它通常会变成 scalar-bound。
 
-## 4. Reduction skeleton
+## 4. Reduction 骨架
 
-Define before encoding:
+编码前先定义：
 
 ```text
 outer  = product(dims before reduced axis)
@@ -66,22 +66,22 @@ reduce = product(reduced dims)
 inner  = product(dims after reduced axis)
 ```
 
-Select order:
+选择顺序：
 
-1. `inner == 1` gives priority to consecutive block returns.
-2. When `reduce` is smaller, a core handles one or more rows.
-3. When `reduce` is large, break into multiple core sub-contracts and merge them with workspace or atomic.
-4. fp16/bf16 for sensitive fate using fp32 accumulator as required by reference accuracy.
+1. `inner == 1` 时优先做连续块归约。
+2. `reduce` 较小时，一个 core 处理一行或多行。
+3. `reduce` 很大时，拆成多 core 分段归约，再用 workspace 或 atomic 合并。
+4. fp16/bf16 的敏感归约按参考精度要求使用 fp32 accumulator。
 
-tail rule:
+tail 规则：
 
-- The last description file must be valid.
-- max/min uses correct effect value.
-- sum/prod visible initialization, without UB default content.
+- 最后一个 reduction tile 必须 mask 无效 lane。
+- max/min 使用正确 identity value。
+- sum/prod 显式初始化，不依赖 UB 默认内容。
 
-## 5. Softmax-Like skeleton
+## 5. Softmax-Like 骨架
 
-Numerical stabilization path:
+数值稳定路径：
 
 ```text
 row_max = reduce_max(x)
@@ -90,50 +90,50 @@ row_sum = reduce_sum(tmp)
 y = tmp / row_sum
 ```
 
-Rules:
+规则：
 
-- When rows can be placed in UB, first preserve the intermediate result in UB.
-- Long row uses more pass tilling and workspace.
-- epsilon can only be introduced when the syntax allows.
-- The output Shape and dtype must match reference implementation.
+- row 能放入 UB 时，优先保留中间结果在 UB。
+- 长 row 使用多 pass tiling 和 workspace。
+- epsilon 只能在参考语义允许时引入。
+- 输出 shape 和 dtype 必须与参考实现一致。
 
-## 6. Indexed operator
+## 6. Indexed 算子
 
-For gather, scatter, nonzero, index-put, etc.:
+适用于 gather、scatter、nonzero、index-put 等：
 
-- Verify index dtype and bases when feasible on the host side.
-- Separates the contigous fast path from the generic path.
-- Writing a conflict must be defined in a visible way: semantics such as tomic/add/last-write cannot be confused.
-- Do not rephrase the silence of indexed semantics into dense elementwise.
+- 可行时在 host 侧验证 index dtype 和 bounds。
+- 将 contiguous 快路径与 generic 路径分开。
+- 写冲突必须显式定义：atomic/add/last-write 等语义不能混淆。
+- 不要把 indexed 语义静默改写成 dense elementwise。
 
 ## 7. Matmul Epilogue
 
-If the mission is a matmul-like plus bias, action, scale:
+若任务是 matmul-like 加 bias、activation、scale：
 
-- Keep Cube Tiling on the right main path first.
-- Simple epilogue try to merge before writing back to GM.
-- fp32 accumulation is used for semantic reference requirements.
-- Quant/dequant scale 's playout writing tilling data, without any hidden assumptions.
+- 先保持 Cube tiling 主路径正确。
+- 简单 epilogue 尽量在写回 GM 前融合。
+- 参考语义要求时使用 fp32 accumulation。
+- quant/dequant scale 的 layout 写入 tiling data，不用隐式假设。
 
-## 8. Select the fast path from the sample form
+## 8. 从样本形态选择快路径
 
-Multishape operator does not select a generic skeleton by operator only. Enter the sample into a small semantic mode, then break down the fast path for a high frequency or high-time mode, and eventually keep the complete gerneric fallback.
+多 shape 算子不要只按算子名选一个通用骨架。先把输入样本归入少数语义模式，再为高频或高耗时模式拆快路径，最后保留完整 generic fallback。
 
-Common bins:
+常见分桶：
 
-| Drums | Conditions for determination | Bones recommended. |
+| 分桶 | 判定条件 | 推荐骨架 |
 |---|---|---|
-| same-shape contiguous elementwise | All input sape is the same and contigouous | flatten + bulk DataCopy + vector tile |
-| scalar broadcast | Some input numel=1 | Only one scalar or host scalar for each file |
-| last-dim broadcast | `(outer, D)` and `(D,)` or golf | Line-by-line processing, reusing Broadcast input |
-| small-row reduction |   Reduce dim small, row many   | Multi-line authorization, scalar Statute if necessary |
-| single-tile row reduction | One line completes the UB | CopyIn, UB complete all passs at once |
-| large-row reduction | Single Line Over UB | Subtile + Phase 2 Merge or Workspace |
-| contiguous indexed segment | index forms a continuous segment | DataCopy continuous block to avoid element by element GetValue |
-| identity / single segment | Special semantics for scatter/segment review | Direct copy, sum or localaccumulation |
-| special value | All-zero, all-NaN, constant input | Semantic Fast Path Filling or Skip Calculator |
+| same-shape contiguous elementwise | 所有输入 shape 相同且 contiguous | flatten + bulk DataCopy + vector tile |
+| scalar broadcast | 某输入 numel=1 | 每 tile 只加载一次 scalar 或 host 侧传 scalar |
+| last-dim broadcast | `(outer, D)` 与 `(D,)` 或高维 trailing broadcast | 按行处理，复用 broadcast 输入 |
+| small-row reduction | reduce dim 很小、row 数很多 | 多行合批，必要时标量规约 |
+| single-tile row reduction | 单行能完整放入 UB | 一次 CopyIn，UB 内完成所有 pass |
+| large-row reduction | 单行超过 UB | 分 tile 累加 + 二阶段合并或 workspace |
+| contiguous indexed segment | index 形成连续段 | DataCopy 连续块，避免逐元素 GetValue |
+| identity / single segment | scatter/segment reduce 的特殊语义 | 直接 copy、sum 或局部 accumulation |
+| special value | all-zero、all-NaN、constant 输入 | 语义快路径填充或跳过计算 |
 
-host side recommends the generation of mode fields, and the Kernel side does only light branching:
+host 侧推荐生成 mode 字段，kernel 侧只做轻量分支：
 
 ```cpp
 enum class PatternMode : int32_t {
@@ -159,7 +159,7 @@ PatternMode Classify(const at::Tensor& x, const at::Tensor& y, int64_t axis) {
 }
 ```
 
-The device end does not drag all modes into a complex inner circle. The mode branch should determine, as far as possible, at the `Process` outer level:
+device 端不要把所有模式揉进一条复杂内层循环。模式分支应尽量在 `Process` 外层决定：
 
 ```cpp
 void Process() {
@@ -173,30 +173,30 @@ void Process() {
 }
 ```
 
-## 9. Family-level realization details
+## 9. 家族级实现细节
 
 ### 9.1 Elementwise / Activation
 
-- Removes constant `Adds(x, 0)` and unnecessary fp32 round-trip.
-- Reference onlyaccuracyRaised on requestaccuracy;fp16/bf16 nativePath to be independently verifiederror.
-- Exp, log, tanh, rsqrt link prioritizes the intermediate integration phase, avoiding a calc buffer per step.
-- All-zero, all-NaN, constant input can have semantic speed paths, but the dtype overlay of normal input cannot be changed.
+- 去掉恒等 `Adds(x, 0)` 和不必要的 fp32 往返。
+- 只在参考精度要求时升精度；fp16/bf16 native 路径要单独验证误差。
+- exp、log、tanh、rsqrt 链路优先融合中间阶段，避免每步都占一个 calc buffer。
+- 对 all-zero、all-NaN、constant 输入可以有语义快路径，但不能改变普通输入的 dtype 覆盖。
 
 ### 9.2 Broadcast Elementwise
 
-- Same-shape, scalar, last-dim broadcast must precede the general index happening.
-- `div/mod` in general Broadcast shall use the stide and increments in the host side axis, kernel, as far as possible.
-- If the broadcast input is small, you can load the entire section to the UB and repeat it in a file.
+- same-shape、scalar、last-dim broadcast 必须先于 general index mapping。
+- general broadcast 中 `div/mod` 应尽量在 host 侧合轴，kernel 内用 stride 和增量 offset。
+- 若 broadcast 输入很小，可以整段加载到 UB，在一个 tile 内反复复用。
 
 ### 9.3 Reduction / Softmax-like
 
-- small D: Multi-line approvals, or scalar reduction synchronisation.
-- Mediam D: A movement of UB, max/sum/normalize stringed in UB.
-- large D: Split tile cumulative, save partial, then combine in two stages.
-- Softmax/logsumexp to maintain numerical stability: `max -> exp(x-max) -> sum -> normalize`, do not destroy spill protection for less pass.
+- small D：多行合批，或标量规约减少同步。
+- medium D：一行进 UB，max/sum/normalize 在 UB 内串起来。
+- large D：分 tile 累加，保存 partial，再做二阶段合并。
+- softmax/logsumexp 要保持数值稳定：`max -> exp(x-max) -> sum -> normalize`，不要为了少一 pass 破坏溢出保护。
 
 ### 9.4 Indexed / Geometry
 
-- Priority is given to identifying continuous periods, dim0/dim1 common axes, intensity reduce, single security.
-- Change `GetValue/SetValue` to UB + Continuous DataCopy, which is the primary optimisation direction for operator in the Gate/scatter/resize class.
-- Geometrics of operator are projected at the beginning of the bat, with only incremental advancements in the inner layer.
+- 优先识别连续段、dim0/dim1 常见轴、identity reduce、single segment。
+- 把 `GetValue/SetValue` 改成 UB 暂存 + 连续 DataCopy，是 gather/scatter/resize 类算子的首要优化方向。
+- 几何类算子的 row base、plane base、weight table base 在 batch 开头预计算，内层只做增量推进。

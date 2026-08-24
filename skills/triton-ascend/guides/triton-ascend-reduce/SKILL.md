@@ -1,6 +1,6 @@
 ---
 name: triton-ascend-reduce
-description: "Applicable to contract of return(reduce)CategoryoperatorAnd a combination of steps with a treaty.operatorOptimistic guidance (e.g., consolidated).operatorIncluding:sum, mean, max, min, prod, argmax, argmin, cumsum, cumprod, softmax, logsoftmax, layernorm, rmsnorm, groupnorm, instancenorm, batchnorm, l1norm, l2norm, frobeniusnorm, var, std, average_pooling, sum_poolingWait. It's particularly important: when the dimension is not the last dimension (e.g.dim=1Returnshape=[B,F,D1,D2]) needs to be properly addressed in the multi-dimensional index and in the two-stage contract.PyTorch normalized_shapeMultiaxis to One Semantic Description. Not applicable to pure element-by-fact calculations ormatrix multiplication.If operator is a loss function (element-by-element calculation before global conclusion), the guidance should be selected."
+description: "适用于归约(reduce)类算子和含归约子步骤的复合算子（如归一化）的优化指南。典型算子包括：sum, mean, max, min, prod, argmax, argmin, cumsum, cumprod, softmax, logsoftmax, layernorm, rmsnorm, groupnorm, instancenorm, batchnorm, l1norm, l2norm, frobeniusnorm, var, std, average_pooling, sum_pooling 等。特别重要：当归约维度不是最后一维（如 dim=1 归约 shape=[B,F,D1,D2]），需要正确处理多维索引和两阶段归约。包含 PyTorch normalized_shape 多轴归一化语义说明。不适用于纯逐元素运算或矩阵乘法。如果算子是损失函数（先逐元素计算再全局归约），应选择 elementwise-reduce-fused 指南。"
 category: guide
 version: "1.0.0"
 metadata:
@@ -10,62 +10,62 @@ metadata:
   operator_type: "reduce"
 ---
 
-# Reduce operator Optimization
+# Reduce 算子优化
 
-> Applies to contract operations that require the aggregation of multiple values
+> 适用于需要聚合多个值的归约操作
 
-## Apply operator
+## 适用算子
 
-**Base contract**: sum, mean, max, min, prod
-**: softmax, logsoftmax, playnorm, rmsnorm, groupnorm, watchnorm
-**Statistics**: varance, std
+**基础归约**: sum, mean, max, min, prod
+**归一化**: softmax, logsoftmax, layernorm, rmsnorm, groupnorm, batchnorm
+**统计**: variance, std
 
-## Critical Optimization: Calculating Reorganization (latency Convention)
+## 关键性能优化：计算重组（延迟归约）
 
-> **Ascend `tl.sum`/`tl.max`/`tl.min`, etc., has a high cost of contracting instructions**, and each of the iterative periods within the cycle is referred to dating as a performance bottleneck. Core thinking:**In the cycle, only element-by-element accumulation (`+=`) is done, and again after the cycle has been completed.**
+> **Ascend 上 `tl.sum`/`tl.max`/`tl.min` 等归约指令开销较大**，循环内每次迭代都调用归约会成为性能瓶颈。核心思路：**循环内只做逐元素累加（`+=`），循环结束后再执行一次归约**。
 
-### Counter Mode vs Correct Parameter
+### 反模式 vs 正确范式
 
 ```python
-# ❌ reverse mode: tl.sum is transferred every time in the cycle, resulting in N/BLONK_SIZE sub-register
+# ❌ 反模式：循环内每次都调 tl.sum，产生 N/BLOCK_SIZE 次归约
 total = 0.0
 for offset in range(0, N, BLOCK_SIZE):
     block = tl.load(ptr + offset + tl.arange(0, BLOCK_SIZE), ...)
-    total += tl.sum(block)  # Every one of them returns. → It's expensive.
+    total += tl.sum(block)  # 每次迭代都归约 → 开销大
 
-# ✅ Correct: Element-by-Element in cycle, final sexual return
+# ✅ 正确：循环内只做逐元素累加，最后一次性归约
 acc = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)
 for offset in range(0, N, BLOCK_SIZE):
     block = tl.load(ptr + offset + tl.arange(0, BLOCK_SIZE), ...)
-    acc += block               # Element by Elements addIt's no cost.
-total = tl.sum(acc)            # This is the only time I've returned.
+    acc += block               # 逐元素 add，无归约开销
+total = tl.sum(acc)            # 仅此一次归约
 ```
 
-### 2D scene (return along an axis)
+### 2D 场景（沿某一轴归约）
 
 ```python
-# ❌ inverse mode: every return along axis=0 in the cycle
+# ❌ 反模式：循环内每次沿 axis=0 归约
 acc_1d = tl.zeros((BLOCK_N,), dtype=tl.float32)
 for m_start in range(0, M, BLOCK_M):
     tile = tl.load(...)  # [BLOCK_M, BLOCK_N]
-    acc_1d += tl.sum(tile, axis=0)  # Every one of them returns.
+    acc_1d += tl.sum(tile, axis=0)  # 每次迭代都归约
 
-# ✅ Correct: Maintain 2D loader, Last sexual return
+# ✅ 正确：保持 2D 累加器，最后一次性归约
 acc_2d = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 for m_start in range(0, M, BLOCK_M):
     tile = tl.load(...)  # [BLOCK_M, BLOCK_N]
-    acc_2d += tile                      # Hold 2DNo return.
-result = tl.sum(acc_2d, axis=0)         # Last return. → [BLOCK_N]
+    acc_2d += tile                      # 保持 2D，无归约
+result = tl.sum(acc_2d, axis=0)         # 最后一次归约 → [BLOCK_N]
 ```
 
-### Conditions of application
+### 适用条件
 
-- **Combinable mode of operation**: sum (`+=`), prod (`*=`) etc.
-- **Non-sum union (max/min) also applies**: circular inline with `tl.maximum`/`tl.minimum` to take extreme values by element, last `tl.max`/`tl.min`
-- **UB volume trade-off**: 2D loader uses more UB (uniform buffer zone) to ensure that `BLOCK_M × BLOCK_N × dtype_size` does not exceed UB capacity. BLONK_SIZE is appropriately reduced when UB is insufficient
-- **Mask Processing**: initialize the loader into the returned dollar(s)sum → 0,prod → 1,max → -inf,min → inf), with`other=Yen!`Dealing with borders
+- **可结合律操作**：sum（`+=`）、prod（`*=`）等满足结合律的操作均可使用此范式
+- **非 sum 归约（max/min）也适用**：循环内用 `tl.maximum`/`tl.minimum` 逐元素取极值，最后一次 `tl.max`/`tl.min`
+- **UB 容量权衡**：2D 累加器占用更多 UB（统一缓冲区），需确保 `BLOCK_M × BLOCK_N × dtype_size` 不超出 UB 容量。当 UB 不够时可适当减小 BLOCK_SIZE
+- **掩码处理**：累加器初始化为归约的幺元（sum → 0、prod → 1、max → -inf、min → inf），用 `other=幺元` 处理边界
 
-### Full example: Sum description over a summary
+### 完整示例：Sum reduction over a dimension
 
 ```python
 @triton.jit
@@ -75,7 +75,7 @@ def sum_reduce_kernel(
     BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr,
     NUM_CORES: tl.constexpr = 20,
 ):
-    """Input X[B, M, N] → Output Y[B, N]Go along. M Axial Summation"""
+    """Input X[B, M, N] → Output Y[B, N]，沿 M 轴求和"""
     pid = tl.program_id(0)
     num_blocks_n = tl.cdiv(N, BLOCK_SIZE_N)
     total_blocks = B * num_blocks_n
@@ -86,7 +86,7 @@ def sum_reduce_kernel(
         n_offsets = n_start + tl.arange(0, BLOCK_SIZE_N)
         n_mask = n_offsets < N
 
-        # 2D cumulator, latency
+        # 2D 累加器，延迟归约
         acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
         for m_start in range(0, M, BLOCK_SIZE_M):
@@ -94,15 +94,15 @@ def sum_reduce_kernel(
             m_mask = m_offsets < M
             x_offset = b_idx * M * N + m_offsets[:, None] * N + n_offsets[None, :]
             x_block = tl.load(x_ptr + x_offset, mask=m_mask[:, None] & n_mask[None, :], other=0.0)
-            acc += x_block  # Element-by-Element, no return.
+            acc += x_block  # 逐元素累加，不归约
 
-        result = tl.sum(acc, axis=0)  # One-time return after cycle
+        result = tl.sum(acc, axis=0)  # 循环结束后一次性归约
         tl.store(y_ptr + b_idx * N + n_offsets, result, mask=n_mask)
 ```
 
-## Universal Return Strategy
+## 通用归约策略
 
-### 1. Binary + Atomic Operations
+### 1. 块内归约 + 原子操作
 
 ```python
 @triton.jit
@@ -115,19 +115,19 @@ def reduction_kernel(input_ptr, output_ptr, n_elements, BLOCK_SIZE: tl.constexpr
     tl.atomic_add(output_ptr, block_sum)
 ```
 
-## Non-last dimension return (key difficult points)
+## 非最后维度归约（关键难点）
 
-When the entropy dimension is not the last dimension of the tensor (e.g. the consummation of the sape `[B, F, D1, D2]` along `dim=1`),**do not use permute + reshape pre-treatment**, which will result in significant expenses at the host end. The right approach is**to process directly through the dimensional index in Kernel**.
+当归约维度不是 tensor 的最后一维（例如对 shape `[B, F, D1, D2]` 沿 `dim=1` 归约），**不要使用 permute + reshape 预处理**，这会在 host 端产生巨大开销。正确做法是**在 kernel 内通过多维索引直接处理**。
 
-### Core thinking
+### 核心思路
 
-In RMSNorom, for example, `[B, F, D1, D2]` follows `dim=1` (F dimension):
-- **grid 0-D**: all-batch (B)
-- **grid 1D**: equalize D1×D2 with each program for a D1D2 block
-- **kernel inner cycle**: Part of the Entries F
-- **Two phases**: first phase of cumulative statistics (e.g., squares), second phase of output with statistical aggregation
+以 RMSNorm 对 `[B, F, D1, D2]` 沿 `dim=1`（F 维度）归约为例：
+- **grid 第 0 维**：遍历 batch（B）
+- **grid 第 1 维**：将 D1×D2 展平后分块，每个 program 处理一个 D1D2 块
+- **kernel 内循环**：遍历归约维度 F 的分块
+- **两阶段**：第一阶段累积统计量（如平方和），第二阶段用统计量归一化输出
 
-### Standard model: two-stage multi-dimensional return
+### 标准模式：两阶段多维归约
 
 ```python
 @triton.jit
@@ -137,30 +137,30 @@ def norm_kernel(
     eps: tl.constexpr,
     BLOCK_SIZE_F: tl.constexpr, BLOCK_SIZE_D1D2: tl.constexpr,
 ):
-    pid_b = tl.program_id(0)          # batch Dimensions
-    pid_d1d2 = tl.program_id(1)       # D1*D2 Index to block after leveling
+    pid_b = tl.program_id(0)          # batch 维度
+    pid_d1d2 = tl.program_id(1)       # D1*D2 展平后的块索引
 
     total_d1d2 = D1 * D2
     d1d2_start = pid_d1d2 * BLOCK_SIZE_D1D2
     d1d2_offsets = d1d2_start + tl.arange(0, BLOCK_SIZE_D1D2)
     d1d2_mask = d1d2_offsets < total_d1d2
 
-    # Phase 1: Accumulation of statistics along F dimensions (calculating reorganization: latency contract)
+    # 阶段1：沿 F 维度累积统计量（计算重组：延迟归约）
     accum = tl.zeros((BLOCK_SIZE_F, BLOCK_SIZE_D1D2), dtype=tl.float32)
     num_blocks_f = tl.cdiv(F, BLOCK_SIZE_F)
 
     for f_block in range(num_blocks_f):
         f_offsets = f_block * BLOCK_SIZE_F + tl.arange(0, BLOCK_SIZE_F)
         f_mask = f_offsets < F
-        # Multi-dimensional index: x[b, f, d1, d2] → x_ptr + b*F*D1*D2 +f*D1*D2 +d1d2
+        # 多维索引：x[b, f, d1, d2] → x_ptr + b*F*D1*D2 + f*D1*D2 + d1d2
         x_offsets = pid_b * F * total_d1d2 + f_offsets[:, None] * total_d1d2 + d1d2_offsets[None, :]
         load_mask = f_mask[:, None] & d1d2_mask[None, :]
         x_tile = tl.load(x_ptr + x_offsets, mask=load_mask, other=0.0)
-        accum += x_tile * x_tile  # Hold 2D Plus, don't return to the circle.
+        accum += x_tile * x_tile  # 保持 2D 累加，不在循环内归约
 
-    rms = tl.sqrt(tl.sum(accum, axis=0) / F + eps)  # One-time return after cycle
+    rms = tl.sqrt(tl.sum(accum, axis=0) / F + eps)  # 循环结束后一次性归约
 
-    # Phase 2: Normalized output (same cycle structure)
+    # 阶段2：归一化输出（同样的循环结构）
     for f_block in range(num_blocks_f):
         f_offsets = f_block * BLOCK_SIZE_F + tl.arange(0, BLOCK_SIZE_F)
         f_mask = f_offsets < F
@@ -171,7 +171,7 @@ def norm_kernel(
         tl.store(y_ptr + x_offsets, y_tile, mask=load_mask)
 ```
 
-### Hostend Start
+### Host 端启动
 
 ```python
 def norm_forward(x, eps=1e-5):
@@ -185,32 +185,32 @@ def norm_forward(x, eps=1e-5):
     return y
 ```
 
-### Key points
+### 关键要点
 
-1. **Not permute/reshape**: making `permute → contiguous → view(N, D)` at the host end is extremely expensive for tensor
-2. **multi-dimensional index formula**: `x[b, f, d1, d2]` offset in continuous memory = `b*F*D1*D2 + f*D1*D2 + d1*D2 + d2`, simplified to `b*F*total_d1d2 + f*total_d1d2 + d1d2` if D1D2 is displayed
-3. **2D file load**: 2D offset matrix constructed with `[:, None]` and `[None, :]`, data obtained from `[BLOCK_F, BLOCK_D1D2]` at a load
-4. **Calculating Reorganization**: `accum += x_tile * x_tile` within cycle keep 2D cumulation, once `tl.sum(accum, axis=0)` has been reconnected to avoid every time `tl.sum` is called
-5. **grid size**: second dimension `cdiv(D1*D2, BLOCK_SIZE_D1D2)`, may exceed 65535 for larger D1*D2, need to note the grid cap limit for Ascend
+1. **不要 permute/reshape**：在 host 端做 `permute → contiguous → view(N, D)` 对大 tensor 开销极大
+2. **多维索引公式**：`x[b, f, d1, d2]` 在连续内存中的偏移 = `b*F*D1*D2 + f*D1*D2 + d1*D2 + d2`，如果将 D1D2 展平则简化为 `b*F*total_d1d2 + f*total_d1d2 + d1d2`
+3. **2D tile 加载**：用 `[:, None]` 和 `[None, :]` 构造 2D 偏移矩阵，一次 load 获取 `[BLOCK_F, BLOCK_D1D2]` 的数据
+4. **计算重组**：循环内 `accum += x_tile * x_tile` 保持 2D 累加，循环结束后 `tl.sum(accum, axis=0)` 一次性归约，避免每次迭代调用 `tl.sum`
+5. **grid 规模**：第二维为 `cdiv(D1*D2, BLOCK_SIZE_D1D2)`，对于较大的 D1*D2 可能超过 65535，需要注意 Ascend 的 grid 上限限制
 
-## PyTorch Normalization/Register operator Semantics (important)
+## PyTorch 归一化/归约算子语义（重要）
 
-### Normalized_shape Multiaxis
+### normalized_shape 多轴语义
 
-`nn.LayerNorm(normalized_shape)` when `normalized_shape` is tuple, the integration range is**the product of the last `len(normalized_shape)` dimension**, not the individual dimension.
+`nn.LayerNorm(normalized_shape)` 中 `normalized_shape` 是 tuple 时，归一化范围是 **最后 `len(normalized_shape)` 个维度的乘积**，不是单个维度。
 
 ```python
-# Example: input Shape = (B, F, D1, D2), normalized_shape = (F, D1, D2)
-# Correct: Normalize F×D1 ×D2 = final 3 dimensions, N = F * D1 * D2
-# Error: Normalize F dimension only
+# 示例：input shape = (B, F, D1, D2), normalized_shape = (F, D1, D2)
+# 正确：归一化 F×D1×D2 = 最后 3 个维度，N = F * D1 * D2
+# 错误：只归一化 F 维度
 
-# kernel correctly achieved:
-total_norm_size = F * D1 * D2  # normalized_shape Multiplication of dimensions
-# Do with the last leg (normalized_shape) mean/var
+# kernel 中正确实现：
+total_norm_size = F * D1 * D2  # normalized_shape 各维度的乘积
+# 沿最后 len(normalized_shape) 个维度做 mean/var
 ```
 
-### Contract of loss function
+### 损失函数归约
 
-- `nn.MSELoss(reduction='mean')`: Average for all elements
-- `nn.CrossEntropyLoss`: Enter logits `(N, C)` + figures `(N,)`, internal log_softmax + nll_loss
-- loss functions are mostly**elementwise calculate + global reduce**, first press elementwise parsing, then combined with `tl.sum` or `tl.atomic_add`
+- `nn.MSELoss(reduction='mean')`: 对所有元素取均值
+- `nn.CrossEntropyLoss`: 输入 logits `(N, C)` + targets `(N,)`, 内部含 log_softmax + nll_loss
+- loss 函数多数是 **elementwise 计算 + 全局 reduce**，先按 elementwise 展平处理，最后用 `tl.sum` 或 `tl.atomic_add` 汇总

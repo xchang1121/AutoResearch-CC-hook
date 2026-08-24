@@ -34,23 +34,23 @@ class WorkerInterface(ABC):
                      ) -> Tuple[bool, str, Dict[str, Any]]:
         """
         Execute verification task.
-
-        Note: device management (acquire/release) is the responsibility of the caller
-        {\\cHFFFFFF}{\\cH00FFFF} Worker is only responsible for implementing the script that has been generated (script contains the correct data_id)
+        
+        注意：device 的管理（acquire/release）由调用方负责
+        worker 只负责执行已经生成好的脚本（脚本中已包含正确的 device_id）
 
         Args:
-            Package_data: Verification project content.
-                or a local directory path (only used when LocalWorker directly reuses an existing directory).
+            package_data: Verification project内容。可为TAR字节流（远程/本地通用）
+                或本地目录路径（仅LocalWorker直接复用现有目录时使用）。
             task_id: Unique task identifier.
             op_name: Operator name.
             timeout: Execution timeout in seconds.
 
         Returns:
             Tuple[bool, str, Dict[str, Any]]: (success, log_output, artifacts)
-            - Access: Verify success
-            -log_output: Execute log
-            - documents: generated during execution in {relative_path: json_content}
-              For example: \"autotune_info_case_0.json\":, \"subdir/result.json\": }
+            - success: 验证是否成功
+            - log_output: 执行日志
+            - artifacts: 执行过程中生成的文件内容，格式为 {relative_path: json_content}
+              例如: {"autotune_info_case_0.json": {...}, "subdir/result.json": {...}}
         """
         pass
 
@@ -67,13 +67,13 @@ class WorkerInterface(ABC):
 
         Returns:
             Dict[str, Any]: Profiling results, including:
-                - gen_time: Generate code execution time
-                -base_time: baseline code implementation time
-                - Speed-up.
-                - Roofline_time: SOlar used roofline predictive time (microseconds, optional)
-                - Roofline_speedup: Roofline_time / g_time (optional)
-                -Roofline: Roofline Detail Dictionary (optional)
-                - documents: generated during execution in {relative_path: json_content}
+                - gen_time: 生成代码执行时间
+                - base_time: 基准代码执行时间
+                - speedup: 加速比
+                - roofline_time: SOLAR fused roofline 预测时间（微秒，可选）
+                - roofline_speedup: roofline_time / gen_time（可选）
+                - roofline: roofline 详情字典（可选）
+                - artifacts: 执行过程中生成的文件内容，格式为 {relative_path: json_content}
         """
         pass
 
@@ -84,9 +84,9 @@ class WorkerInterface(ABC):
                                  ) -> Tuple[bool, str, bytes]:
         """
         Execute task_desc and generate reference data.
-
-        For the CUDA-to-Asend conversion scenario: execute the Triton-CUDA code on the GPU Worker.
-        Saves the output as a reference data (.pt file) for NPU Worker to verify the correctness of the converted code.
+        
+        用于 CUDA-to-Ascend 转换场景：在 GPU Worker 上执行 Triton-CUDA 代码，
+        保存输出作为参考数据（.pt 文件），供 NPU Worker 验证转换后的代码正确性。
 
         Args:
             package_data: The compressed project (TAR bytes) containing reference.py and verify script.
@@ -96,20 +96,20 @@ class WorkerInterface(ABC):
 
         Returns:
             Tuple[bool, str, bytes]: (success, log_output, reference_data_bytes)
-            -success: Successfully generate reference data
-            -log_output: Execute log
-            - Reference_data_bytes:.pt binary content (when successful), empty b''
+            - success: 是否成功生成参考数据
+            - log_output: 执行日志
+            - reference_data_bytes: .pt 文件的二进制内容（成功时），失败时为空 b''
         """
         pass
 
     @abstractmethod
-    async def profile_single_task(self, package_data: bytes, task_id: str, op_name: str,
+    async def profile_single_task(self, package_data: bytes, task_id: str, op_name: str, 
                                    profile_settings: Dict[str, Any]) -> Dict[str, Any]:
         """
         Execute single task profiling (only measure task_desc performance, no base comparison).
-
-        A separate measure of the performance of a certain section of the code does not allow comparison.
-        Applies to a scenario that requires a separate measurement of a Model execution time.
+        
+        单独测量某段代码的执行性能，不进行 base vs generation 对比。
+        适用于需要单独测量某个 Model 执行时间的场景。
 
         Args:
             package_data: The compressed project (TAR bytes) containing profile script.
@@ -119,22 +119,22 @@ class WorkerInterface(ABC):
 
         Returns:
             Dict[str, Any]: Profiling results, including:
-                - time_us: execution time (microseconds)
-                - Success.
-                -log: Execute Log
+                - time_us: 执行时间（微秒）
+                - success: 是否成功
+                - log: 执行日志
         """
         pass
 
     @abstractmethod
     async def get_doc(self, doc_name: str) -> str:
         """
-        Retrieving the visible document contents of the worker environment.
+        获取 Worker 所在环境可见的文档内容。
 
         Args:
-            Doc_name: Document identifier, e. g. \"triton_ascend_api\"
+            doc_name: 文档标识，例如 "triton_ascend_api"
 
         Returns:
-            st: Document content
+            str: 文档内容
         """
         pass
 

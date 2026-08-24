@@ -2,10 +2,10 @@
 ```python
 sub_tensor = tl.extract_slice(tensor, [0], [32], [1])
 ```
-- **Activation**: Extracts a slice from the input tensor by offset, size and step.
-- **Parameters**:
-  - `ful`: Source tensor to extract slices
-  - `offsets`: Initial offset of slices on all dimensions
-  - `sizes`: Size of slices on all dimensions
-  - `strides`: Length of slices in all dimensions
-- **Return**: after extract tensor
+- **作用**: 从输入张量中按照偏移量、大小和步幅提取一个切片。
+- **参数**:
+  - `ful`: 要提取切片的源张量
+  - `offsets`: 切片在各维上的起始偏移
+  - `sizes`: 切片在各维上的大小
+  - `strides`: 切片在各维上的步长
+- **返回**: 提取后的子张量

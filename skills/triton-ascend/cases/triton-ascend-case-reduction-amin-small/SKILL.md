@@ -1,6 +1,6 @@
 ---
 name: triton-ascend-case-reduction-amin-small
-description: "Moderate 1D integration (amin) optimization: Moderate parallelity (grid = best 2.21us at 8), existence of optimal balance point (too small, resulting in overloading of individual loads, overloading of movement control costs) and full return scenario for medium size 1D data (60 000 elements)"
+description: "中等规模1D归约（amin）优化：适中并行度（grid=8时最优2.21us），存在最优平衡点（过小导致单块负载过重、过大引入调度开销），适用于中等规模1D数据（6万级元素）的全量归约场景"
 category: case
 version: "1.0.0"
 metadata:
@@ -9,19 +9,19 @@ metadata:
   hardware: "Atlas A2, Atlas A3"
 ---
 
-# Medium Size 1D Amin Recession Optimization
+# 中等规模 1D Amin 归约优化
 
-## Task characteristics
-- **Data size**(65536,), medium size 1D
+## 任务特征
+- **数据尺寸**：(65536,)，中等规模1D数据
 
-## Optimization: moderate parallelity
+## 优化：适中并行度
 
 ```python
-# (AI core=40)
+# （AI core=40）
 # 1. grid=4<40 -> 2.47 us
 triton.Config({'BLOCK_SIZE': 16384})
 
-# 2. Grid = 8<40 -> 2.21 us best
+# 2. grid=8<40 -> 2.21 us 最优
 triton.Config({'BLOCK_SIZE': 8192})
 
 # 3. grid=32<40 -> 2.92 us
@@ -34,5 +34,5 @@ triton.Config({'BLOCK_SIZE': 1639})
 triton.Config({'BLOCK_SIZE': 512})
 ```
 
-### Summary
-Medium-sized data with the optimal number of appropriate hours of grids. There are optimal parallel balance points: too small grids lead to overloading of a single block, and too large introduces excessive dispatch costs.
+### 总结
+中等规模数据，网格数适当小时性能最佳。存在最优并行度平衡点：网格数过小导致单块负载过重，过大则引入过多调度开销。

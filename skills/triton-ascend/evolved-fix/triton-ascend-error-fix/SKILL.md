@@ -1,6 +1,6 @@
 ---
 name: triton-ascend-error-fix
-description: triton-ascend common error fixation after failure to verify, compile or run: UB/CBUF spill, BiShengir compilation failure, syntax restriction violation, numerical correctness, multi-dimensional index breakdown error, tensor continuity
+description: triton-ascend 验证、编译或运行失败后的常见错误修复：UB/CBUF溢出、BiShengIR编译失败、语法限制违反、数值正确性、多维索引分解错误、张量连续性
 category: fix
 version: "1.0.0"
 metadata:
@@ -10,122 +10,122 @@ metadata:
   hardware: "Atlas A2, Atlas A3, Atlas A5"
 ---
 
-## 1. UB / CBF Spill
+## 1. UB / CBUF 溢出
 
-- **Systems**: `cbuf overflow`
-- **Gin**: Partition parameter (BLONK_M/N/K) is too large to exceed Ascend UB capacity
-- **Refurbishment**: Reduced segment parameters, usually BLONK_M=64, BLONK_N=128 is the safe starting point
+- **报错特征**: `cbuf overflow`
+- **根因**: 分块参数（BLOCK_M/N/K）过大，超出 Ascend UB 容量
+- **修复**: 减小分块参数，通常 BLOCK_M=64, BLOCK_N=128 是安全起点
 
 ```python
-# Error: Too large the UB overflow
+# 错误：分块过大导致 UB overflow
 BLOCK_M, BLOCK_N, BLOCK_K = 128, 256, 256
 
-# Rehabilitation: Safety threshold
+# 修复：安全起始点
 # CUBE (matmul fp16): BLOCK_M=64, BLOCK_N=64, BLOCK_K=32
 # CUBE (matmul fp32): BLOCK_M=32, BLOCK_N=32, BLOCK_K=32
 # VEC (elementwise):  BLOCK_SIZE=1024~2048
 BLOCK_M, BLOCK_N, BLOCK_K = 64, 64, 32
 ```
 
-4D tensor matrix multiplication to use the UB dimension extra space, it is proposed to extend the bat to the grid dimension rather than the inner circle.
+4D tensor 矩阵乘法中 batch 维度额外占用 UB 空间，建议将 batch 展开到 grid 维度而非内层循环。
 
-## 2. BiShengir/ HiVM compilation failed
+## 2. BiShengIR / HiVM 编译失败
 
-- **Systems**: `hivm.hir.vsel: Unsupported op for finding the root alloc`, `Failed to run BiShengHIR pipeline`
-- **Gin**: compilerZ1XQ does not support complex mask combination or pointer mode
+- **报错特征**: `hivm.hir.vsel: Unsupported op for finding the root alloc`、`Failed to run BiShengHIR pipeline`
+- **根因**: 编译器后端不支持复杂的 mask 组合或指针运算模式
 
-### 2a. Overcomplicated calculation of inline addresses
+### 2a. 内联地址计算过于复杂
 
 ```python
-# Error
+# 错误
 tl.store(c_ptr + off_m[:, None] * stride_cm + off_n[None, :] * stride_cn, acc, mask=mask)
 
-# Repair: Split into intermediate variables
+# 修复：拆分为中间变量
 c_ptrs = c_ptr + off_m[:, None] * stride_cm + off_n[None, :] * stride_cn
 tl.store(c_ptrs, acc, mask=mask)
 ```
 
-### 2b. `tl.where` + complex mask leads to vsel error
+### 2b. `tl.where` + 复杂 mask 导致 vsel 错误
 
 ```python
-# Error: Mask + tl. where to trigger hivm.hir.vsel error
+# 错误：嵌套 mask + tl.where 触发 hivm.hir.vsel 错误
 a_tri_mask = a_offsets_k[None, :] >= a_offsets_m[:, None]
 a_valid_mask = a_mask_m & a_mask_k
 a = tl.where(a_tri_mask & a_valid_mask, a, 0.0)
 
-# Fix: Replace tl.where with a multiplication (multiply after Bool mask to float)
+# 修复：改用乘法替代 tl.where（将 bool mask 转为 float 后相乘）
 a_tri_mask = (a_offsets_k[None, :] >= a_offsets_m[:, None]).to(tl.float16)
 a_valid_mask = (a_mask_m).to(tl.float16) * (a_mask_k).to(tl.float16)
 a = a * a_tri_mask * a_valid_mask
 ```
 
-## 3. Triton's Grammar Restrictions Violation
+## 3. Triton 语法限制违反
 
-### 3a. Prohibition of `continue` / `break` / `return`
+### 3a. 禁止 `continue` / `break` / `return`
 
 ```python
-# Error: unsuppleted AST node type: Continue
+# 错误：unsupported AST node type: Continue
 for i in range(N):
     if condition:
         continue
     do_work()
 
-# Restoration: packaged in if-else
+# 修复：用 if-else 包裹
 for i in range(N):
     if not condition:
         do_work()
 ```
 
-### 3b. index error
+### 3b. constexpr 索引错误
 
 ```python
-# Error: ValueError ('unsuppleted tensor index: constexpr [0]')
+# 错误：ValueError('unsupported tensor index: constexpr[0]')
 result = tl.sum(data, axis=0)
 tl.atomic_add(out_ptr, result[0])
 
-# Repair: tl.sum returned scalar, directly used
+# 修复：tl.sum 已返回标量，直接使用
 result = tl.sum(data, axis=0)
 tl.atomic_add(out_ptr, result)
 ```
 
-### 3c. tensor.cast type not compatible
+### 3c. tensor.cast 类型不兼容
 
 ```python
-# Error:cast incompatible images
+# 错误：cast incompatible shapes
 result = tl.dot(a_fp16, b_fp16)
 
-# Restoration: Visible designation of fp32 loader
+# 修复：显式指定 fp32 累加器
 result = tl.dot(a_fp16, b_fp16, acc=tl.zeros([M, N], dtype=tl.float32))
 ```
 
-### 3d. Post-failure tracking
+### 3d. 失败后定位速查
 
-| Misreporting/incident | Common Roots | Modify Direction |
+| 报错/现象 | 常见根因 | 修改方向 |
 |----------|----------|----------|
-| `unsupported AST node type: Continue` | `continue` / `break` / `return` | Change to `if-else` Package Valid Branch |
-| Dynamic `while` loop | Ascend backend does not support dynamic `while` | Use a statically bounded `for` loop with an `if` guard |
-| `unsupported tensor index` | Python slice or replay scalar `[0]` | Use `tl.extract_slice`/ Use scalar directly |
-| `hivm.hir.vsel` | `tl.where` Select Complex Mask, Pointer or Ofset | Split the static branch, or multiply the data after turning mask dtype |
-| `cast incompatible` | Implicit dtype/shape extrapolation failed | Visible accumulator dtype and `.to(dtype)` |
+| `unsupported AST node type: Continue` | `continue` / `break` / `return` | 改成 `if-else` 包裹有效分支 |
+| while 相关编译失败 | Ascend 后端不支持动态 while | 改成静态上限 `for` + 循环体内 `if` |
+| `unsupported tensor index` | Python 切片或 reduction scalar `[0]` | 用 `tl.extract_slice` / 直接使用 scalar |
+| `hivm.hir.vsel` | `tl.where` 选择复杂 mask、指针或 offset | 拆分静态分支，或将 mask 转 dtype 后乘数据 |
+| `cast incompatible` | 隐式 dtype/shape 推导失败 | 显式 accumulator dtype 和 `.to(dtype)` |
 
-## 4. Numerical correctness issue
+## 4. 数值正确性问题
 
-- **Systems**: `AsserviceError: output inconsistent, err_cnt=XXXX '
+- **报错特征**: `AssertionError: 输出不一致, err_cnt=XXXX`
 
-### 4a. Triangular matrix mask error
+### 4a. 三角矩阵 mask 方向错误
 
 ```python
-# Upper Triangle: Ensure that col > = row area is not zero
+# 上三角: 确保 col >= row 的区域非零
 row_idx = block_m * BLOCK_M + tl.arange(0, BLOCK_M)
 col_idx = block_k * BLOCK_K + tl.arange(0, BLOCK_K)
 tri_mask = col_idx[None, :] >= row_idx[:, None]
 a = tl.load(a_ptr + ..., mask=tri_mask & bounds_mask, other=0.0)
 ```
 
-### 4b. 4D tensor dimension decomposition error
+### 4b. 4D tensor 维度分解错误
 
 ```python
-# Right-watch dimension decomposition
+# 正确的 batch 维度分解
 pid = tl.program_id(0)
 batch_idx = pid // num_blocks_per_batch
 block_idx = pid % num_blocks_per_batch
@@ -133,34 +133,34 @@ b0 = batch_idx // dim1
 b1 = batch_idx % dim1
 ```
 
-### 4c. Reduction accuracy lost
+### 4c. Reduction 精度丢失
 
 ```python
-# fp32 Thrusters to avoid fp16 accuracy's loss
+# fp32 累加器避免 fp16 精度丢失
 acc = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
 for k in range(0, K, BLOCK_K):
     a = tl.load(...)  # fp16
     b = tl.load(...)  # fp16
-    acc += tl.dot(a, b)  # fp32 Gradient
+    acc += tl.dot(a, b)  # fp32 累加
 result = acc.to(tl.float16)
 ```
 
-## 5. MultiDirect index decomposition error
+## 5. 多维循环索引分解错误
 
-- **System feature**: Incorrect calculation (no translation misreported)
-- **Ghen**: Index decomposition/restoration logic error after multidimensional questions have been spread to one dimension. Common in Norm, Poling, multiple bat operator
-- **Rehabilitated**: using clear loop nesting + visible dimension decompose to avoid a fragile one-dimensional stretch map
+- **报错特征**: 计算结果不正确（无编译报错）
+- **根因**: 将多维问题展平为一维后，索引分解/还原逻辑出错。常见于 Norm、Pooling、多 batch 算子
+- **修复**: 使用清晰的循环嵌套 + 显式的维度分解，避免脆弱的一维展平映射
 
 ```python
-# Easier to be wrong: complex 1-D mapping
+# 易错：复杂的一维展平映射
 total_tasks = N * G
 for task_idx in range(pid, total_tasks, CORE_NUM):
     n_idx = task_idx // G
     g_idx = task_idx % G
-    c_local = offsets // S       # It's not very clear. It's easy to write wrong.
+    c_local = offsets // S       # 含义不清晰，容易写错
     hw = offsets - c_local * S
 
-# Recommendations: Visible multilayered + clear local index
+# 推荐：显式的多层嵌套 + 清晰的局部索引
 for n in range(pid, N, CORE_NUM):
     for g_idx in range(num_groups):
         for i in range(0, group_elems, BLOCK_SIZE):
@@ -169,9 +169,9 @@ for n in range(pid, N, CORE_NUM):
             spatial_idx = local_idx % hw_size
 ```
 
-## 6. tensor continuity
+## 6. 张量连续性
 
-Force `.contiguous()` at the Kernel wrapper entrance:
+在 kernel wrapper 入口处强制 `.contiguous()`：
 
 ```python
 if not x.is_contiguous():
@@ -181,9 +181,9 @@ if not x.is_contiguous():
 ---
 ## Quick Checklist
 
-1. **Compiled failed+ "ub overflow" / "cbuf overflow"** →Zoom OutBLOCKDimensions§1)
-2. **Compiled Failed + "hivm.hir"/ "root alloc"**→ Simplified mark / Split pointer calculation (§2)
-3. **Compiled failed+ "unsupported AST"** →Check for forbidden syntax tables (%2)§3)
-4. **Certification failed + "err_cnt"**→ check mark orientation, index calculation, accuracy (§4)
-5. **Incorrect but no error**→ Check multi-dimensional index decomposition logic (§5)
-6. **ResultNaNOr a silent error.** →Check continuity (%)§6)
+1. **编译失败 + "ub overflow" / "cbuf overflow"** → 缩小 BLOCK 尺寸（§1）
+2. **编译失败 + "hivm.hir" / "root alloc"** → 简化 mask / 拆分指针运算（§2）
+3. **编译失败 + "unsupported AST"** → 检查禁止语法表（§3）
+4. **验证失败 + "err_cnt"** → 检查 mask 方向、索引计算、精度（§4）
+5. **结果不正确但无报错** → 检查多维索引分解逻辑（§5）
+6. **结果 NaN 或静默错误** → 检查连续性（§6）

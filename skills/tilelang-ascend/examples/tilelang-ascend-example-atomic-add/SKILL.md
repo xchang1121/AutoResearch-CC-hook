@@ -1,6 +1,6 @@
 ---
 name: tilelang-ascend-example-atomic-add
-description: "atomic_add of TileLang Ascend DeveloperMode achieves the example. When you need to generateall-reduceoperatorOr multi-nucleus to add to the same output area.reduceCategoryoperatoryou can refer to this example."
+description: "atomic_add 的 TileLang Ascend Developer 模式实现示例。当需要生成all-reduce算子或多核并行累加到同一输出区域的 reduce 类算子时可参考此示例。"
 category: example
 version: "1.0.0"
 metadata:
@@ -10,29 +10,29 @@ metadata:
   operator_type: "reduction"
 ---
 
-# Tomic_add (more block atoms) - TileLang Ascend (Developer mode)
+# atomic_add（多 block 原子累加）— TileLang Ascend 实现示例（Developer 模式）
 
-**Programming mode**: Devloper (`pass_configs` AutoSync + Memory Planning)
+**编程模式**：Developer（`pass_configs` 自动同步 + 内存规划）
 
-**Key technical points**:
-- `T.tile.atomic_add(dst_gm, src_local)` - Multiple block/core atoms added to the same GM area
-- Zero GM output before calling (`torch.zero_()` or kernel `T.tile.fill` + `T.copy` zero)
-- UB → GM Path: Victor nuclei returns GM from UB atoms
-- L0C → GM Path: Cube Nuclear GEMM Result Back GM from L0C Atom
-- `pass_configs` Open `AUTO_SYNC` + `MEMORY_PLANNING` without handwritten `T.Scope("V")` or `T.barrier_all()`
+**关键技术点**：
+- `T.tile.atomic_add(dst_gm, src_local)` — 多 block/core 原子累加到同一 GM 区域
+- 调用前必须清零 GM 输出（`torch.zero_()` 或 kernel 内 `T.tile.fill` + `T.copy` 清零）
+- UB → GM 路径：Vector 核计算结果从 UB 原子写回 GM
+- L0C → GM 路径：Cube 核 GEMM 结果从 L0C 原子写回 GM
+- `pass_configs` 开启 `AUTO_SYNC` + `MEMORY_PLANNING`，混合模式下无需手写 `T.Scope("V")` 或 `T.barrier_all()`
 
-## Scene Description
+## 场景说明
 
-When more than one block/core needs to add its own partial result to the same GM output area, normal `T.copy` will cover each other and `T.tile.atomic_add` must be used to guarantee atom accumulation.
+当多个 block/core 需要将各自的 partial result 累加到同一 GM 输出区域时，普通 `T.copy` 会互相覆盖，必须使用 `T.tile.atomic_add` 保证原子累加。
 
-Typical scenario:
-- **Spit-K GEMM**: multiple blocks along K-dimensional splits, calculating partial matrix multipliers, atoms added to the same GM output
-- **Deportation is not integral**: more blocks do reduce between different lines of the same line, atoms cumulative result to GM
-- **Full reduce**: all blocks contribute partial values to the same region, atoms aggregated
+典型场景：
+- **Split-K GEMM**：多个 block 沿 K 维切分，各自计算部分矩阵乘结果，原子累加到同一 GM 输出
+- **行归约非整除**：多 block 对同一行不同区间做 reduce，原子累加行结果到 GM
+- **全 reduce**：所有 block 对同一区域贡献部分值，原子累加汇总
 
-## Example I: UB → GM Atomic Plus (1D)
+## 示例一：UB → GM 原子累加（1D）
 
-Multiple blocks fly 1.0 each to UB, and then atoms add up to the same GM output. Finally, GM values = num_blocks × VEC_NUM.
+多个 block 各自 fill 1.0 到 UB，然后原子累加到同一 GM 输出。最终 GM 每个元素的值 = num_blocks × VEC_NUM。
 
 ```python
 import tilelang
@@ -63,9 +63,9 @@ def atomic_add_1d(num_blocks, tile_n, dtype):
     return main
 ```
 
-## Example two: UB → GM Atomic Plus (2D region)
+## 示例二：UB → GM 原子累加（2D region）
 
-Multiple blocks each fill 1.0 to 2D UB, then atoms are added to the same 2D GM area.
+多个 block 各自 fill 1.0 到 2D UB，然后原子累加到同一 2D GM 区域。
 
 ```python
 tile_m = 4

@@ -1,6 +1,6 @@
 ---
 name: triton-cuda-patterns
-description: "Triton CUDA Standard Realization Template and Code Template for the three core programming models (vector/Element by Elements, Resignation, matrix multiplication). This applies to CUDA internal nuclear code generation scenarios that need to quickly determine which type of programming mode operator belongs to or that need to understand the structure of the basic code of each model."
+description: "Triton CUDA 三大核心编程模式（向量/逐元素、归约、矩阵乘法）的标准实现范式和代码模板。适用于需要快速确定算子属于哪种编程模式、或需要了解各模式基本代码结构的 CUDA 内核代码生成场景"
 category: method
 version: "1.0.0"
 metadata:
@@ -14,13 +14,13 @@ structure:
     - triton-cuda-matmul
 ---
 
-# Triton CUDA programming mode
+# Triton CUDA 编程模式
 
-## 3.1 vector operating mode
+## 3.1 向量操作模式
 
-For element-level operations: Adding, Multiplication, Activation Functions, etc.
+适用于元素级运算：加法、乘法、激活函数等。
 
-### Standard code structure
+### 标准代码结构
 
 ```python
 @triton.jit
@@ -28,29 +28,29 @@ def vector_add_kernel(a_ptr, b_ptr, c_ptr, n_elements, BLOCK_SIZE: tl.constexpr)
     pid = tl.program_id(0)
     offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
-
+    
     a = tl.load(a_ptr + offsets, mask=mask)
     b = tl.load(b_ptr + offsets, mask=mask)
     c = a + b
-
+    
     tl.store(c_ptr + offsets, c, mask=mask)
 ```
 
-### Apply operator
-- Algorithmic Operations: add, Mul, sub, div
-- Activate function: relu, sigmoid, taunh (required with `tl.extra.cuda.libdevice.tanh`), gelu
-- Mathematical functions: ext, log, sqrt, pow
+### 适用算子
+- 算术运算: add, mul, sub, div
+- 激活函数: relu, sigmoid, tanh（需用 `tl.extra.cuda.libdevice.tanh`）, gelu
+- 数学函数: exp, log, sqrt, pow
 
-### Key points
-- Use 1-D index and offset
-- Border processing with `mask`
-- Simple direct data stream: Load → calculate → storage
+### 关键要点
+- 使用一维索引和偏移
+- 边界处理用 `mask`
+- 简单直接的数据流：加载 → 计算 → 存储
 
-## 3.2 Models of return
+## 3.2 归约模式
 
-Applies to sum, max, min.
+适用于求和、最大值、最小值等聚合操作。
 
-### Standard code structure
+### 标准代码结构
 
 ```python
 @triton.jit
@@ -58,32 +58,32 @@ def reduction_kernel(input_ptr, output_ptr, n_elements, BLOCK_SIZE: tl.constexpr
     pid = tl.program_id(0)
     offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
-
-    # Loading data
+    
+    # 加载数据
     data = tl.load(input_ptr + offsets, mask=mask, other=0.0)
-
-    # Internal Convention
+    
+    # 块内归约
     block_sum = tl.sum(data, axis=0)
-
-    # Atomic Operations Return global memory
+    
+    # 原子操作写回全局内存
     tl.atomic_add(output_ptr, block_sum)
 ```
 
-### Apply operator
-- Basic affiliation: sum, mean, max, min
-- Normalize: softmax, logsoftmax, playnorm, watchnorm
-- Statistics: varance, std
+### 适用算子
+- 基础归约: sum, mean, max, min
+- 归一化: softmax, logsoftmax, layernorm, batchnorm
+- 统计: variance, std
 
-### Key points
-- Block internal union: use `tl.sum`, `tl.max`, etc.
-- Atomic Operations: Write global memory back using `tl.atomic_add` etc.
-- Numerical stability: minus maximum value to prevent spill (see Triton-cuda-reduce)
+### 关键要点
+- 块内归约：使用 `tl.sum`, `tl.max` 等
+- 原子操作：使用 `tl.atomic_add` 等写回全局内存
+- 数值稳定性：减去最大值防止溢出（见 triton-cuda-reduce）
 
-## 3.3 matrix multiplication mode
+## 3.3 矩阵乘法模式
 
-For multi-dimensional block calculations such as matrix multiplication.
+适用于矩阵乘法等多维块计算。
 
-### Standard code structure
+### 标准代码结构
 
 ```python
 @triton.jit
@@ -95,16 +95,16 @@ def matmul_kernel(
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
 ):
-    # Acquire program ID
+    # 获取程序 ID
     pid_m = tl.program_id(0)
     pid_n = tl.program_id(1)
 
-    # Initialise accumulator
+    # 初始化累加器
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
-    # K-dimensional cycle
+    # K 维度循环
     for k in range(0, K, BLOCK_SIZE_K):
-        # Create a block pointer
+        # 创建块指针
         a_block_ptr = tl.make_block_ptr(
             base=a_ptr, shape=(M, K), strides=(stride_am, stride_ak),
             offsets=(pid_m * BLOCK_SIZE_M, k),
@@ -116,14 +116,14 @@ def matmul_kernel(
             block_shape=(BLOCK_SIZE_K, BLOCK_SIZE_N), order=(1, 0)
         )
 
-        # Loading data blocks
+        # 加载数据块
         a = tl.load(a_block_ptr, boundary_check=(0, 1))
         b = tl.load(b_block_ptr, boundary_check=(0, 1))
 
-        # Matrix multiplied by cumulative
+        # 矩阵乘累加
         accumulator += tl.dot(a, b)
 
-    # Storage results (required for visible conversion type, matching output dtype)
+    # 存储结果（需显式转换类型，匹配输出 dtype）
     c = accumulator.to(c_ptr.dtype.element_ty)
     c_block_ptr = tl.make_block_ptr(
         base=c_ptr, shape=(M, N), strides=(stride_cm, stride_cn),
@@ -133,7 +133,7 @@ def matmul_kernel(
     tl.store(c_block_ptr, c, boundary_check=(0, 1))
 ```
 
-### Host Side Start
+### Host 侧启动
 
 ```python
 class ModelNew(torch.nn.Module):
@@ -162,32 +162,32 @@ class ModelNew(torch.nn.Module):
         return c
 ```
 
-### Apply operator
-- Matrix operation: matmul, bmm (batch matmul), linear
-- Volume: conv2d, conv3d
-- Other multi-dimensional calculations
+### 适用算子
+- 矩阵运算: matmul, bmm (batch matmul), linear
+- 卷积: conv2d, conv3d（im2col 变换后）
+- 其他多维计算
 
-### Key points
-- **2D Grid**: using `grid=(grid_m, grid_n)` 2D parallel
-- **Branch calculation**: break-down of large arrays into small blocks to reduce memory occupancy
-- **K dimension cycle**: multi-part product added
-- **block_ptr**: Simplify 2D data access using `tl.make_block_ptr`
-- **Tensor Core**: Auto-use Tensor Core with `tl.dot`
+### 关键要点
+- **2D Grid**: 使用 `grid=(grid_m, grid_n)` 二维并行
+- **分块计算**: 将大矩阵分成小块，减少内存占用
+- **K 维度循环**: 累加多个部分乘积
+- **block_ptr**: 使用 `tl.make_block_ptr` 简化 2D 数据访问
+- **Tensor Core**: 使用 `tl.dot` 自动利用 Tensor Core
 
-## Mode Selection Guide
+## 模式选择指南
 
-| operator Type | Recommended Mode | Key features |
+| 算子类型 | 推荐模式 | 关键特征 |
 |---------|---------|---------|
-| Element-wise | vector operating mode | Element-by-Element calculation |
-| Reduction | Reunification Mode | Multiple values need to be aggregated |
-| MatMul/Conv | matrix multiplication mode | Multi-dimensional block calculations, 2D Grid |
-| Attention | Convention +matrix multiplication | Group mode, see Triton-cuda-attention |
+| Element-wise | 向量操作模式 | 逐元素独立计算 |
+| Reduction | 归约模式 | 需要聚合多个值 |
+| MatMul/Conv | 矩阵乘法模式 | 多维块计算，2D Grid |
+| Attention | 归约 + 矩阵乘法 | 组合模式，见 triton-cuda-attention |
 
-## best practice
+## 最佳实践
 
-1. **Select the appropriate mode**: Select the base mode based on operator characteristics
-2. **Optimizing block size**: balancing parallelity and resource occupancy
-3. **Note boundary**: use mask to handle irregular shape
-4. **Numerical stability**: special attention for reduce class operator
-5. **Memory access**: Optimization of data layout to increase Cache Rate
-6. **Using Hardware Features**: Optimizing pipeline using num_warps/num_stages
+1. **选择合适的模式**: 根据算子特性选择基础模式
+2. **优化块大小**: 平衡并行度和资源占用
+3. **注意边界**: 使用 mask 处理不规则形状
+4. **数值稳定性**: 对于 reduce 类算子特别注意
+5. **内存访问**: 优化数据布局，提高缓存命中率
+6. **利用硬件特性**: 使用 num_warps/num_stages 优化流水线

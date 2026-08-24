@@ -2,10 +2,10 @@
 ```python
 tl.store(ptr + offsets, result, mask=mask)
 ```
-- **Parameters**:
-  - `pointer`: Memory pointer
-  - `value`: Value to store
-  - `mask`: Boolean mask, True indicates a valid position
-  - `boundary_check`: Border check dimensions (0, 1) or None
-- **Use**: Store data to global memory
+- **参数**:
+  - `pointer`: 内存指针
+  - `value`: 要存储的值
+  - `mask`: 布尔掩码，True 表示有效位置
+  - `boundary_check`: 边界检查维度 (0, 1) 或 None
+- **用途**: 将数据存储到全局内存
 

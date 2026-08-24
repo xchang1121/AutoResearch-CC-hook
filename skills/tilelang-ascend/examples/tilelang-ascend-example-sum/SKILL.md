@@ -1,6 +1,6 @@
 ---
 name: tilelang-ascend-example-reduction-sum
-description: "TileLang Ascend reduction-sum examples that demonstrate reusable code structure and pipeline patterns for reduction operators."
+description: "列归约（reduce_sum）的 TileLang Ascend 实现示例。当生成 reduce-x 类算子时可参考此示例的代码结构与双缓冲流水线模式。"
 category: example
 version: "2.0.0"
 metadata:
@@ -10,7 +10,7 @@ metadata:
   operator_type: "reduction"
 ---
 
-# Reduce_sum
+# 列归约（reduce_sum）
 
 ```python
 import tilelang
@@ -50,7 +50,7 @@ def reduce_x_kernel(M, N, block_M, block_N, dtype="float"):
                     a_ub
                 )
                 T.reduce_sum(a_ub, sum_ub, dim=0, clear=False)
-
+            
             T.copy(
                 sum_ub,
                 B[cid * block_N + vid * sub_N : cid * block_N + (vid + 1) * sub_N]
@@ -61,7 +61,7 @@ def reduce_x_kernel(M, N, block_M, block_N, dtype="float"):
 class ModelNew(nn.Module):
     def __init__(self):
         super().__init__()
-
+        
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x.contiguous()

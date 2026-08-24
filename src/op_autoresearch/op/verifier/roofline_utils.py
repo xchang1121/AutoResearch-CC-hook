@@ -1,11 +1,25 @@
-"""SOLAR roofline integration tool.
+# Copyright 2025-2026 Huawei Technologies Co., Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-Design constraints:
-1. Do not modify the / Patch SOLAR repository.
-OP_AUTORESEARCH runtime relies only on the \"sular Python package installed\" and not on the local SOlar working tree.
-3. Auxiliary logic (e. g. solbench wrapper, Ascend arch config) that previously existed only in local SOlar changes
-   Move to OP_AUTORESEARCH for maintenance.
-4. The failure of roofline can only be downgraded and cannot affect the original profile main process.
+"""SOLAR roofline 集成工具。
+
+设计约束：
+1. 不修改 / patch SOLAR 仓库。
+2. OP_AUTORESEARCH 运行时只依赖“已安装的 solar Python 包”，不依赖本地 SOLAR 工作树。
+3. 之前只存在于本地 SOLAR 改动里的辅助逻辑（如 solbench wrapper、Ascend arch config）
+   迁移到 OP_AUTORESEARCH 自己维护。
+4. roofline 失败只能降级，不能影响原有 profile 主流程。
 """
 
 from __future__ import annotations
@@ -68,7 +82,7 @@ ARCH_ALIAS_TO_CONFIG_KEY = {
     "ascend950pr_9599": "ascend950_pr",
 }
 
-# These configurations were originally based on local SOlar changes; they are now maintained by OP_AUTORESEARCH itself, avoiding reliance on drop-out committees.
+# 这些配置原先依赖本地 SOLAR 改动；现在由 OP_AUTORESEARCH 自己维护，避免依赖 drop commit。
 OP_AUTORESEARCH_ROOFLINE_ARCH_CONFIGS = {
     "a100": {
         "name": "A100",
@@ -159,7 +173,7 @@ def compute_roofline_profile(
     task_id: str,
     profile_settings: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Calculates SOlar roofline for the current verify_dir."""
+    """为当前 verify_dir 计算 SOLAR roofline。"""
     verify_path = Path(verify_dir)
     bench_type = _infer_bench_type(verify_path, profile_settings.get("bench_type"))
     backend = str(profile_settings.get("backend", "")).lower()
@@ -169,11 +183,11 @@ def compute_roofline_profile(
     roofline_timeout = resolve_eval_timeout(profile_settings.get("timeout"))
 
     if not profile_settings.get("enable_roofline", True):
-        return _skipped_result("Roofline has been significantly closed", bench_type=bench_type, arch=arch)
+        return _skipped_result("roofline 已显式关闭", bench_type=bench_type, arch=arch)
 
     if backend not in {"cuda", "ascend"}:
         return _skipped_result(
-            f"backend={backend} Current Not Supported roofline",
+            f"backend={backend} 当前不支持 roofline",
             bench_type=bench_type,
             arch=arch,
         )
@@ -181,8 +195,8 @@ def compute_roofline_profile(
     solar_api, import_error = _import_solar_api()
     if solar_api is None:
         return _skipped_result(
-            "No solar Python package installed."
-            f"Executable: {SOLAR_INSTALL_HINT}. Original Error: {import_error}",
+            "未安装 solar Python 包。"
+            f"可执行: {SOLAR_INSTALL_HINT}. 原始错误: {import_error}",
             bench_type=bench_type,
             arch=arch,
         )
@@ -194,7 +208,7 @@ def compute_roofline_profile(
     )
     if arch_spec is None:
         return _skipped_result(
-            f"arch={arch} No currently available roofline Structure Configuration",
+            f"arch={arch} 当前没有可用的 roofline 架构配置",
             bench_type=bench_type,
             arch=arch,
         )
@@ -213,7 +227,7 @@ def compute_roofline_profile(
         elif bench_type == "cann":
             # CANN-Bench: roofline not applicable, return skip result
             return _skipped_result(
-                "CANN-Bench does not support roofline rating for the time being",
+                "CANN-Bench 暂不支持 roofline 评分",
                 bench_type=bench_type,
                 arch=arch,
             )
@@ -234,7 +248,7 @@ def compute_roofline_profile(
         result.setdefault("op_name", op_name)
         return result
     except Exception as exc:  # noqa: BLE001
-        logger.warning("[%s:%s] roofline calculation failed: %s", task_id, op_name, exc, exc_info=True)
+        logger.warning("[%s:%s] roofline 计算失败: %s", task_id, op_name, exc, exc_info=True)
         return {
             "success": False,
             "skipped": False,
@@ -255,7 +269,7 @@ def augment_roofline_metrics(
     gen_per_shape_us: Optional[list] = None,
     base_per_shape_us: Optional[list] = None,
 ) -> Dict[str, Any]:
-    """Add roofline indicators related to profile measured time.
+    """补充与 profile 实测时间相关的 roofline 指标。
 
     ``speedup_vs_generated`` / ``speedup_vs_baseline`` are the geomean of the
     per-shape ratios ``roofline_case[i] / gen[i]`` when the per-shape arrays
@@ -297,7 +311,7 @@ def augment_roofline_metrics(
 
 
 def write_roofline_profile_result(verify_dir: str, roofline_result: Dict[str, Any]) -> str:
-    """Write roofline results into verify_dir/roofline_profile_result.json."""
+    """将 roofline 结果写入 verify_dir/roofline_profile_result.json。"""
     output_path = Path(verify_dir) / ROOFLINE_RESULT_JSON
     output_path.write_text(
         json.dumps(sanitize_floats(roofline_result), ensure_ascii=False, indent=2),
@@ -311,7 +325,7 @@ def resolve_arch_spec(
     verify_dir: Path,
     explicit_arch_config: Optional[str] = None,
 ) -> Optional[str]:
-    """Parsing OP_AUTORESEARCHarch as rooflinearch-config parameter."""
+    """将 OP_AUTORESEARCH arch 解析为 roofline arch-config 参数。"""
     if explicit_arch_config:
         explicit_path = Path(os.path.expanduser(explicit_arch_config))
         return str(explicit_path.resolve()) if explicit_path.exists() else explicit_arch_config
@@ -366,11 +380,11 @@ def _compute_sol_roofline(
     timeout = resolve_eval_timeout(timeout)
     workload_path = verify_dir / "workload.jsonl"
     if not workload_path.is_file():
-        raise FileNotFoundError(f"SOL workload File does not exist: {workload_path}")
+        raise FileNotFoundError(f"SOL workload 文件不存在: {workload_path}")
 
     workloads = [line for line in workload_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     if not workloads:
-        raise ValueError(f"SOL workload Empty: {workload_path}")
+        raise ValueError(f"SOL workload 为空: {workload_path}")
 
     wrappers_dir = verify_dir / "_roofline_sol_wrappers"
     wrappers_dir.mkdir(parents=True, exist_ok=True)
@@ -429,11 +443,11 @@ def _compute_single_case_roofline(
     )
     processor = solar_api["PyTorchProcessor"](processing_config)
     if not processor.process_model_file(str(source_file), str(graph_dir)):
-        raise RuntimeError(f"[process_model] Process failed: {source_file}")
+        raise RuntimeError(f"[process_model] 处理失败: {source_file}")
 
     graph_path = graph_dir / "pytorch_graph.yaml"
     if not graph_path.is_file():
-        raise FileNotFoundError(f"Not generated pytorch_graph.yaml: {graph_path}")
+        raise FileNotFoundError(f"未生成 pytorch_graph.yaml: {graph_path}")
 
     precision = _normalize_precision_name(precision_override) if precision_override else _infer_graph_precision(graph_path)
 
@@ -450,11 +464,11 @@ def _compute_single_case_roofline(
         enable_rename=True,
     )
     if convert_result is None:
-        raise RuntimeError(f"[toeinsum_model] Conversion Failed: {graph_path}")
+        raise RuntimeError(f"[toeinsum_model] 转换失败: {graph_path}")
 
     einsum_graph_path = einsum_dir / "einsum_graph_renamed.yaml"
     if not einsum_graph_path.is_file():
-        raise FileNotFoundError(f"Not generated einsum_graph_renamed.yaml: {einsum_graph_path}")
+        raise FileNotFoundError(f"未生成 einsum_graph_renamed.yaml: {einsum_graph_path}")
 
     analyzer = solar_api["EinsumGraphAnalyzer"](debug=False)
     analysis_result = analyzer.analyze_graph(
@@ -464,11 +478,11 @@ def _compute_single_case_roofline(
         copy_graph=True,
     )
     if analysis_result is None:
-        raise RuntimeError(f"[analyze_model] Analysis failed: {einsum_graph_path}")
+        raise RuntimeError(f"[analyze_model] 分析失败: {einsum_graph_path}")
 
     analysis_path = analysis_dir / "analysis.yaml"
     if not analysis_path.is_file():
-        raise FileNotFoundError(f"Not generated analysis.yaml: {analysis_path}")
+        raise FileNotFoundError(f"未生成 analysis.yaml: {analysis_path}")
 
     perf_model = solar_api["EinsumGraphPerfModel"](debug=False)
     perf_result = perf_model.predict(
@@ -479,7 +493,7 @@ def _compute_single_case_roofline(
         copy_analysis=True,
     )
     if perf_result is None:
-        raise RuntimeError(f"[predict_perf_model] The prediction failed.: {analysis_path}")
+        raise RuntimeError(f"[predict_perf_model] 预测失败: {analysis_path}")
 
     perf_data = perf_result
     arch_info = perf_data.get("arch") or {}
@@ -503,7 +517,7 @@ def _compute_single_case_roofline(
 
 def _aggregate_case_results(case_results: list[Dict[str, Any]], bench_type: str) -> Dict[str, Any]:
     if not case_results:
-        raise ValueError("There are no roofline case results")
+        raise ValueError("没有可聚合的 roofline case 结果")
 
     failures = [item for item in case_results if not item.get("success")]
     if failures:
@@ -548,9 +562,9 @@ def _aggregate_case_results(case_results: list[Dict[str, Any]], bench_type: str)
 
 
 def _create_solbench_wrapper(verify_dir: Path, wrapper_path: Path, workload_idx: int) -> None:
-    """Creates SOLBnch reference wrapper for individual workloads.
+    """为单个 workload 生成 SOLBench reference wrapper。
 
-    This logic is derived from `scripts/solbench.py` in the original local SOlar change and is now moved to OP_AUTORESEARCH for internal maintenance.
+    这段逻辑来自原本本地 SOLAR 改动中的 `scripts/solbench.py`，现迁到 OP_AUTORESEARCH 内部维护。
     """
     definition_path = verify_dir / "definition.json"
     reference_path = verify_dir / "reference.py"
@@ -752,7 +766,7 @@ def _find_framework_source_file(verify_dir: Path, op_name: str, framework: str) 
     if matches:
         return matches[0]
     raise FileNotFoundError(
-        f"Not found framework Source File: expected={exact} or any '*_{framework}.py' in {verify_dir}"
+        f"未找到 framework 源文件: expected={exact} or any '*_{framework}.py' in {verify_dir}"
     )
 
 
@@ -771,7 +785,7 @@ def _normalize_precision_name(raw: Optional[str]) -> str:
         return "fp32"
     text = str(raw).strip().lower()
     if text not in _PRECISION_ALIASES:
-        raise ValueError(f"Unsupported precision: {raw}")
+        raise ValueError(f"不支持的 precision: {raw}")
     return _PRECISION_ALIASES[text]
 
 

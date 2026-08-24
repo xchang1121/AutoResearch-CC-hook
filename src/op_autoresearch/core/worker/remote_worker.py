@@ -55,10 +55,10 @@ class RemoteWorker(WorkerInterface):
     Remote implementation of WorkerInterface.
     Delegates verification tasks to a remote VerificationService via HTTP.
 
-    RemoteWorker manages the device pool of a remote server via HTTP API:
-    -acquire_device(): request to assign device to remote server
-    -release_device(): return device to remote server
-    -Verify()/profile(): Send tasks to remote server execution
+    RemoteWorker 通过 HTTP API 管理远程服务器的设备池：
+    - acquire_device(): 向远程服务器请求分配设备
+    - release_device(): 归还设备给远程服务器
+    - verify()/profile(): 发送任务到远程服务器执行
 
     ``on_transient_failure``: optional callback the worker invokes once
     after a ConnectError on long-running calls (verify/profile). Caller
@@ -86,16 +86,16 @@ class RemoteWorker(WorkerInterface):
         payload["device_id"] = str(active[1])
         payload["lease_id"] = str(active[2])
         return payload
-
+    
     async def acquire_device(self, task_id: str = "unknown",
                              timeout: Optional[float] = None) -> Tuple[int, int]:
-        """Fetches a usable device from a remote worker.
+        """从远端 worker 获取一个可用设备。
 
-        ``timeout`` is device**Waiting budget**: pass to the service for queue waiting cap, yourself
-        . http_read_margin saves more, so* the service gives up * and returns 503, instead of
-        First read-timeout, leave a service that's still in line, waiter, just released.
-        device to an expired clit. connect still by ``_connect_timeout_s``
-        Founded (default 5s), tunnel breach Error → reconnect retry."""
+        ``timeout`` 是设备 **等待预算**：传给服务端做 queue 等待上限，自己
+        的 HTTP read 按 worker.http_read_margin 多留余量，所以*服务端先放弃*并返回 503，而不是
+        client 先 read-timeout、留下一个仍在排队的服务端 waiter 抢走刚释放
+        的设备给一个已经超时的 client。connect 仍由 ``_connect_timeout_s``
+        bounded（默认 5s），隧道断开快速 ConnectError → reconnect 重试。"""
         timing = worker_timing()
         wait_budget = float(timeout) if timeout is not None else timing.acquire_timeout
         read_timeout = wait_budget + timing.http_read_margin
@@ -121,7 +121,7 @@ class RemoteWorker(WorkerInterface):
 
     async def release_device(self, device_id: int, lease_id: int,
                              task_id: str = "unknown"):
-        """device was returned to the remote worker (with leave_id to block late release of the replaced lease)."""
+        """归还设备给远端 worker（带 lease_id，挡住对已被取代租约的晚到释放）。"""
         url = f"{self.worker_url}/api/v1/release_device"
         try:
             await self._post_with_reconnect(
@@ -138,7 +138,7 @@ class RemoteWorker(WorkerInterface):
                 self._active_lease.set(None)
 
     async def get_doc(self, doc_name: str) -> str:
-        """Pulls the contents of the document from a remote worker (GET, reconnect package)."""
+        """从远端 worker 拉取文档内容（GET，复用 reconnect 包装）。"""
         url = f"{self.worker_url}/api/v1/docs/{doc_name}"
         try:
             result = await self._get_with_reconnect(
@@ -179,15 +179,15 @@ class RemoteWorker(WorkerInterface):
                 last_exc = e
                 if attempt + 1 < attempts:
                     logger.warning(
-                        f"[{task_id}] Connection worker {self.worker_url} Failed "
-                        f"(No.) {attempt + 1}/{attempts} Number of calls "
-                        f"on_transient_failure Try again after"
+                        f"[{task_id}] 连接 worker {self.worker_url} 失败 "
+                        f"（第 {attempt + 1}/{attempts} 次）；调用 "
+                        f"on_transient_failure 后重试"
                     )
                     try:
                         self.on_transient_failure()
                     except Exception as cb_err:
                         logger.error(
-                            f"[{task_id}] on_transient_failure Drop the anomaly:{cb_err}"
+                            f"[{task_id}] on_transient_failure 抛异常：{cb_err}"
                         )
                     continue
                 raise
@@ -211,14 +211,14 @@ class RemoteWorker(WorkerInterface):
                 if attempt + 1 < attempts:
                     logger.warning(
                         f"[{task_id}] GET {url} ConnectError "
-                        f"(No.) {attempt + 1}/{attempts} Number of calls "
-                        f"on_transient_failure Try again after"
+                        f"（第 {attempt + 1}/{attempts} 次）；调用 "
+                        f"on_transient_failure 后重试"
                     )
                     try:
                         self.on_transient_failure()
                     except Exception as cb_err:
                         logger.error(
-                            f"[{task_id}] on_transient_failure Drop the anomaly:{cb_err}"
+                            f"[{task_id}] on_transient_failure 抛异常：{cb_err}"
                         )
                     continue
                 raise
@@ -277,7 +277,7 @@ class RemoteWorker(WorkerInterface):
         Send profiling task to remote worker.
 
         Returns:
-            Dict[str, Any]: Include gen_time, base_time, Speedup, phrases
+            Dict[str, Any]: 包含 gen_time, base_time, speedup, artifacts 等字段
         """
         profile_url = f"{self.worker_url}/api/v1/profile"
         timeout = resolve_eval_timeout(profile_settings.get('timeout'))
@@ -314,10 +314,10 @@ class RemoteWorker(WorkerInterface):
         """
         Send single task profiling request to remote worker.
 
-        A separate measure of the performance of a certain section of the code does not allow comparison.
+        单独测量某段代码的执行性能，不进行 base vs generation 对比。
 
         Returns:
-            Dict[str, Any]: Paragraph containing time_us, access, log
+            Dict[str, Any]: 包含 time_us, success, log 等字段
         """
         profile_url = f"{self.worker_url}/api/v1/profile_single_task"
         timeout = resolve_eval_timeout(profile_settings.get('timeout'))
@@ -336,7 +336,7 @@ class RemoteWorker(WorkerInterface):
                 task_id=task_id,
             )
             return result
-
+                
         except httpx.RequestError as e:
             error_msg = f"Network error communicating with worker at {self.worker_url}: {e}"
             logger.error(f"[{task_id}] {error_msg}")
@@ -355,22 +355,22 @@ class RemoteWorker(WorkerInterface):
                                  ) -> Tuple[bool, str, bytes]:
         """
         Send reference generation task to remote worker.
-
-        For the CUDA-to-Asend conversion scenario: execute the Triton-CUDA code on a remote GPU Worker.
-        Generates reference data (.pt file) and returns its binary content.
-
+        
+        用于 CUDA-to-Ascend 转换场景：在远程 GPU Worker 上执行 Triton-CUDA 代码，
+        生成参考数据（.pt 文件）并返回其二进制内容。
+        
         Args:
-            Package_data: Verify package data (TAR bytes)
-            task_id: Task ID
-            Op_name: operator name
-            Timeout: Timeout
-
+            package_data: 验证包数据（TAR bytes）
+            task_id: 任务ID
+            op_name: 算子名称
+            timeout: 超时时间
+            
         Returns:
             Tuple[bool, str, bytes]: (success, log, reference_data_bytes)
         """
         timeout = resolve_reference_timeout(timeout)
         import base64
-
+        
         generate_ref_url = f"{self.worker_url}/api/v1/generate_reference"
 
         try:
@@ -381,9 +381,9 @@ class RemoteWorker(WorkerInterface):
                 'timeout': str(timeout),
             }, task_id)
             logger.info(f"[{task_id}] Sending generate_reference request to {generate_ref_url}")
-            # Walk uniform packaging - Previously n nudised httpx. AsyncClint
-            # Breaktime does not trigger on_transient_fair, cross
-            # Back reference data generation will be unresponsive.
+            # 走统一的 reconnect 包装 —— 之前裸 httpx.AsyncClient 让 tunnel
+            # 断时 generate_reference 不会触发 on_transient_failure，跨
+            # backend 参考数据生成会无响应。
             result = await self._post_with_reconnect(
                 generate_ref_url, files=files, data=data,
                 read_timeout=timeout + worker_timing().http_read_margin,
@@ -393,7 +393,7 @@ class RemoteWorker(WorkerInterface):
             log = result.get('log', '')
 
             if success:
-                # transfer_data encoded in base64
+                # reference_data 以 base64 编码传输
                 ref_data_b64 = result.get('reference_data', '')
                 if ref_data_b64:
                     ref_bytes = base64.b64decode(ref_data_b64)

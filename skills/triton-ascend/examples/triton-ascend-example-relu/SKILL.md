@@ -1,6 +1,6 @@
 ---
 name: triton-ascend-example-relu
-description: "The full Triton Ascend example of the ReLU element by element operator. The standard mode for demonstrating vector 's element by element operation: 1D split, mask border processing, staggering. The code structure of this example can be consulted when generating the elementwise type operator."
+description: "ReLU 逐元素算子的完整 Triton Ascend 实现示例。展示向量化逐元素操作的标准模式：1D 分块遍历、mask 边界处理、交错循环。当生成 elementwise 类算子时可参考此示例的代码结构。"
 category: example
 version: "1.0.0"
 metadata:
@@ -11,7 +11,7 @@ metadata:
   framework: torch
 ---
 
-# ReLU - Triton Ascend
+# ReLU — Triton Ascend 实现示例
 
 ```python
 import torch

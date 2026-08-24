@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Huawei Technologies Co., Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """One-shot SSH probe — gathers structured facts about the remote.
 
 Returns raw facts only. Classification (severity / suggestion) belongs to
@@ -24,10 +38,10 @@ from .remote_env import source_env_var_bash
 # arch detection matches the requested probe device when provided and
 # falls back to the first visible device otherwise. Name spelling is
 # normalized by ``arch_normalize`` rather than a hard-coded SKU table.
-# Report check to remove exit code instead of tail output - CANN Initialization may go to stderr
-# Writing LOG_WarnING (e.g. log directory permissions), even if Import succeeds in contaminating the last line, it is not possible to write about it.
-# Tail-1 is miscalculated Fatal. Capture stdout+stderr to var, see first $?
-# Okay, it's still stderr's end.
+# import 检查走 exit code 而不是 tail 输出 —— CANN 初始化可能往 stderr
+# 写 LOG_WARNING（如日志目录权限），即使 import 成功也会污染最后一行，
+# 用 tail -1 会被误判 fatal。捕获 stdout+stderr 到 var，先看 $? 再决定
+# 报 ok 还是 stderr 尾行。
 _PROBE_BASH = r"""
 env_script={env_script}
 repo_path={repo_path}
@@ -68,10 +82,10 @@ echo "CUDA_ARCH:$(CUDA_NAME="$CUDA_NAME" python -c 'import os; from op_autoresea
 echo "CUDA_DEVICES:$(nvidia-smi -L 2>/dev/null | grep -c '^GPU ')"
 echo "CPU_ARCH:$(python -c 'from op_autoresearch.op.utils.arch_normalize import normalize_cpu_arch_name; print(normalize_cpu_arch_name() or "")' 2>/dev/null)"
 echo "PORT_PID:$(lsof -ti :$port -sTCP:LISTEN 2>/dev/null | head -1)"
-# Space left on remote disk (Land disk)MB)—— /tmp + / The smaller one.daemon When you get up, you'll write a journal.
-# Python logging flush Failed → "Logging error" cascade Take it. stderr I don't know what to do.
-# Upstream should... fatal Intercept.BusyBox / Alpine of df Not supported --output;go. awk
-# Parsing No. 4 ColumnsAvailable KB), multi-target least.
+# 远端磁盘剩余空间（MB）—— /tmp + / 中较小那个。daemon 起来后会写日志、
+# Python logging flush 失败 → "Logging error" cascade 把 stderr 灌爆，
+# 上游应该 fatal 拦截。BusyBox / Alpine 的 df 不支持 --output；走 awk
+# 解析第 4 列（Available KB），多目标取最小。
 echo "DISK_FREE_MB:$(df -kP /tmp / 2>/dev/null | awk 'NR>1 {{print int($4/1024)}}' | sort -n | head -1)"
 echo "LOG_TAIL_BEGIN"
 [ -f "$log_file" ] && tail -20 "$log_file" || echo "(no log: $log_file)"
@@ -123,14 +137,14 @@ def probe_remote(ssh_alias: str, env_script: Optional[str], port: int,
         log_file=shlex.quote(log),
         env_setup=source_env_var_bash("env_script"),
     )
-    # Stderr goes PIPE instead of DEVNULL - SSH fax failed (VPN does not open/ network)
-    # Invalid / unclassified configuration error / host arias does not exist) error only occurs in stderr, thrown
-    # This ssh is run-and-exit
-    # (non-f backstage) Won't trigger Windows-f kind of pope-deadlock.
-    # ConectTimeout limits 10s to allow SSH to give up early (default 60s+), plus
-    # BatchMode=yes disables password prompt (CI / non-interactive set of cards stdin).
-    # LogLevel =ERROR: That would include "Connection closed"/ "timed out"
-    # The IFO level diagnostics were also crushed, and the probes were in need of them.
+    # stderr 走 PIPE 而不是 DEVNULL —— SSH 透传失败时（VPN 没开 / 网络
+    # 不通 / 免密配置错 / host alias 不存在）错误只在 stderr 出现，丢
+    # 了诊断就只剩"tunnel 起失败"一行很难用。这条 ssh 是 run-and-exit
+    # （非 -f 后台），不会触发 Windows -f 那种 pipe-deadlock。
+    # ConnectTimeout 限定 10s 让 SSH 早早放弃（默认要等 60s+），加
+    # BatchMode=yes 禁掉密码 prompt（CI / 非交互场景下别卡 stdin）。
+    # 不加 LogLevel=ERROR：那会连"Connection closed"/"timed out" 这类
+    # INFO 级诊断也一起压掉，probe 这边正需要它们。
     try:
         out = subprocess.run(
             ["ssh",
@@ -141,16 +155,16 @@ def probe_remote(ssh_alias: str, env_script: Optional[str], port: int,
             text=True, timeout=30,
         )
     except subprocess.TimeoutExpired:
-        return {"_SSH_ERROR": "ssh probe 30s timeout (env.sh source/ torch_npu) "
-                              "Import may not respond; manual ssh run)"}
+        return {"_SSH_ERROR": "ssh probe 30s 超时（env.sh source / torch_npu "
+                              "import 可能无响应；手动 ssh 进去跑一遍）"}
     except Exception as e:
         return {"_SSH_ERROR": str(e)[:200]}
 
     if out.returncode != 0:
-        # SSH fax failed: condition / mouth / hostlias not found. stderr usually
-        # Writes one or two lines of characters ("Connaction timed out" / "Permission written)
-        # (publickey) / "Could not resolve hostname xx")
-        # Classify, let the root cause be clear in the first line of the diagnostic form.
+        # SSH 透传失败：connect / auth / host alias 没找到。stderr 通常
+        # 写一两行人话（"Connection timed out" / "Permission denied
+        # (publickey)" / "Could not resolve hostname xxx"），直接回给
+        # classify，让诊断表里第一行就把根因报清楚。
         err = (out.stderr or "").strip() or f"ssh exit rc={out.returncode}"
         return {"_SSH_ERROR": err[:200]}
 

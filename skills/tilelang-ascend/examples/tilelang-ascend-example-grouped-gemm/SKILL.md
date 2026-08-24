@@ -1,6 +1,6 @@
 ---
 name: tilelang-ascend-example-grouped-gemm
-description: "The TileLang Ascend Express mode of grouping/dynamic batches achieves the example. This example is referenced when operator with grouping/dynamic batches is generated."
+description: "分组/动态批次的 TileLang Ascend Expert 模式实现示例。当生成含分组/动态批次的算子时可参考此示例。"
 category: example
 version: "1.0.0"
 metadata:
@@ -9,16 +9,16 @@ metadata:
   hardware: "Atlas A2, Atlas A3"
 ---
 
-# Group matrix multiplication - TileLang Ascend Implementation Example (Expert Mode)
+# 分组矩阵乘法 — TileLang Ascend 实现示例（Expert 模式）
 
-**Programming mode**: Express (manual management of L1/L0C memory level)
+**编程模式**：Expert（手动管理 L1/L0C 内存层级）
 
-**Key technical points**:
-- **block_metadata projection**: replace 3-D Kernel with the `[batch_idx, m_start, valid_rows]` table describing the attribution of each block
-- **D1 Kernel + manual index breakdown**: `T.Kernel(total_m_blocks * n_num)` + `cid // n_num` / `cid % n_num`
-- **Static Cycle Boundary**: `T.ceildiv(K, block_K)` Alternative Dynamic Boundary (TileLang Ascend does not support the number of cycles dependent on tensor value)
+**关键技术点**：
+- **block_metadata 预计算表**：替代三维 Kernel，用 `[batch_idx, m_start, valid_rows]` 表描述每个 block 的归属
+- **一维 Kernel + 手动索引分解**：`T.Kernel(total_m_blocks * n_num)` + `cid // n_num` / `cid % n_num`
+- **静态循环边界**：`T.ceildiv(K, block_K)` 替代动态边界（TileLang Ascend 不支持循环次数依赖 tensor 值）
 
-## Host side: block_metadata projected
+## Host 侧：block_metadata 预计算
 
 ```python
 def construct_inputs(batch_sizes_list, K, N, block_M, device, dtype):
@@ -44,7 +44,7 @@ def construct_inputs(batch_sizes_list, K, N, block_M, device, dtype):
     return A, B, block_metadata
 ```
 
-## Kernel: Group GEMM
+## Kernel：分组 GEMM
 
 ```python
 @tilelang.jit(out_idx=[2])
@@ -111,7 +111,7 @@ def grouped_gemm(batch_sizes_list, K, N, block_M, block_N, block_K, dtype="float
     return kernel
 ```
 
-**Called**:
+**调用方式**：
 
 ```python
 func = grouped_gemm(tuple([64, 128, 256]), 8192, 8192, 64, 64, 64)
@@ -119,8 +119,8 @@ A, B, block_metadata = construct_inputs([64, 128, 256], 8192, 8192, 64, device, 
 out = func(A, B, block_metadata)
 ```
 
-**Design elements**:
-- Static cycle boundary + condition judgement (replacement dynamic boundary): `batch_sizes_list` flows to `@jit` layer by tuple and expands to specific values during the compilation period to avoid dynamic cycle boundary
-- Expected scale (replacement of 3D Kernel): `block_metadata` is projected from host to pass in Kernel, instead of 3D block number of `T.Kernel`
-- `m_start` read from metadata table to achieve different starting offsets between groups
-- Kernel: `T.Kernel(total_blocks)` + manual index breakdown
+**设计要点**：
+- 静态循环边界 + 条件判断（替代动态边界）：`batch_sizes_list` 以 tuple 传入 `@jit` 层，在编译期展开为具体值，避免动态循环边界
+- 预计算表（替代三维 Kernel）：`block_metadata` 由 host 预计算并作为 tensor 传入 kernel，替代 `T.Kernel` 的三维 block 数
+- `m_start` 从 metadata 表读取，实现分组间不同起始偏移
+- Kernel: `T.Kernel(total_blocks)` + 手动索引分解

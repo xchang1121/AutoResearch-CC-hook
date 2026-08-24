@@ -1,121 +1,121 @@
-# Reduction-type operator scene route
+# Reduction 类算子场景路由
 
-> This document is used for**scene determination**and**policy selection**. Once the scene is determined, you enter the corresponding detailed document by link.
-
----
-
-## Axes
-
-Simplify the N-Vape +axes to less dimensions. Each dimension is marked as**A**(retention axis) or**R**(contracting axis) and then:
-1. **Elimination of redundancy**: size = 1 and memory continuity dimension elimination
-2. **Consolidation of adjacent congener type axes**: adjacent dimensions are A (or both R) → amalgamation (multiplier)
-
-**Example:**
-- Shape = [2,100,4], axes = [1,2] → Mark A, R, R → adjoining R Merge → [2,400] = (A, R) → Single axis AR
-- Shape = [2,3,4,5,6,7,8], axes = [1,2,4] → Mark A, R, R, R, A, A → adjoining R Merged → [2, 12, 5, 6, 56] = (A, R, R, A) → Polyaxis
+> 本文档用于**场景判定**和**策略选择**。确定场景后，按链接进入对应详细文档。
 
 ---
 
-## scene determination process
+## 合轴
+
+将 N 维 shape + axes 简化为更少维度。每个维度标记为 **A**（保留轴）或 **R**（归约轴），然后：
+1. **消除冗余维度**：size=1 且内存连续的维度消除
+2. **合并相邻同类型轴**：相邻维度都是 A（或都是 R）→ 合并（乘积）
+
+**示例**：
+- shape=[2,100,4], axes=[1,2] → 标记 A,R,R → 相邻 R 合并 → [2, 400] = (A, R) → 单轴 AR
+- shape=[2,3,4,5,6,7,8], axes=[1,2,4] → 标记 A,R,R,A,R,A,A → 相邻 R 合并 → [2,12,5,6,56] = (A,R,A,R,A) → 多轴归约
+
+---
+
+## 场景判定流程
 
 ```
-Organisation: shape, axes (Axis of Return)
+给定: shape, axes (归约轴)
 
-Step 0: Combined axis (see previous section)
-  Tags A/R → Eliminate redundancies → Merge adjacent type axes
+Step 0: 合轴（见上节）
+  标记 A/R → 消除冗余维 → 合并相邻同类型轴
 
-Step 1: Is it a single axle or a multiaxis?
-  ├─ Single axle(s)AR or ARA)→ Step 2
-  └─ MultiaxisARAR Reciprocal sequences)→ Shape Three-step transformation (for more details) multi-axis-transform.md)
-       Expand into embedded loops, each R Viv's contract of return. Step 2 Decision
+Step 1: 合轴后是单轴还是多轴？
+  ├─ 单轴（AR 或 ARA）→ Step 2
+  └─ 多轴（ARAR 等交替序列）→ Shape 三步变换（详见 multi-axis-transform.md）
+       展开为嵌套循环，每个 R 维的归约按 Step 2 判定
 
-Step 2: A0 Decision modalities
-  ├─ A0 = 1 → AR Mode (per line) R An element of continuity. Use Level 2 Reduce API)
-  │   ├─ Yes.UBprocessing at least1Line Data → AR-FullLoad    → [ar-fullload.md]
-  │   └─ Otherwise... → AR-ColSplit    → [ar-colsplit.md]
+Step 2: A0 决定模式
+  ├─ A0 = 1 → AR 模式（每行 R 个元素连续，用 Level 2 Reduce API）
+  │   ├─ 可以在UB中至少处理1整行数据 → AR-FullLoad    → [ar-fullload.md]
+  │   └─ 否则 → AR-ColSplit    → [ar-colsplit.md]
   │
-  └─ A0 > 1 → ARA Mode[R,A0] Blocks continuous, use Pattern::Reduce::RA)
-      ├─ Yes.UBprocessing allR*tileA0LenData (%1)32Byte Alignment) → ARA-FullLoad  → [ara-fullload.md]
-      └─ Otherwise... → ARA-RowSplit  → [ara-rowsplit.md]
+  └─ A0 > 1 → ARA 模式（[R,A0] 块连续，用 Pattern::Reduce::RA）
+      ├─ 可以在UB中处理所有R*tileA0Len数据（32字节对齐） → ARA-FullLoad  → [ara-fullload.md]
+      └─ 否则 → ARA-RowSplit  → [ara-rowsplit.md]
 
-Common exceptions. AR or ARAPress up:
-  - axis=0(extreme dimension)→ A1=1, ARA Mode
-  - All-axis return.        → Merge all dimensions into R, A0=1, AR Mode
-  - Norm Category (substance)+Radio conversion)→ Part of the contract. AR/ARAThe transformation is applied layer logic.
+常见特例（本质都是 AR 或 ARA，按上面走）：
+  - axis=0（最外维）→ A1=1, ARA 模式
+  - 全轴归约        → 所有维度合并为 R, A0=1, AR 模式
+  - Norm 类（归约+广播变换）→ 归约部分走 AR/ARA，变换部分是应用层逻辑
 ```
 
-**Positive dimension**(selected on the basis of operator characteristics and data size after determination of branch):
+**正交维度**（确定分支后，根据算子特征和数据规模选择）：
 
-| Dimensions | Options | Conditions of application | Detailed documents |
+| 维度 | 选项 | 适用条件 | 详细文档 |
 |------|------|---------|---------|
-| Algebra Selection | Welford Online | Split + Require flow to calculate two related statistics | [algorithms.md](algorithms.md#2-welford-online-alpha one time) |
-| Multi-nuclear strategy | Group Reduce | R Too big for mononuclear processing + A too small for parallel | [algorithms.md](algorithms.md #3-group-reduce cross-cutting Convention) |
-| accuracy policy | Half plus | Great vector sum accuracy is sensitive. | [algorithms.md](algorithms.md#5-dichotomy-addition) |
-| Index Tracking | With-Index | Reunification + Return polar position | [with-index.md](with-index.md) |
+| 算法选择 | Welford Online | 分载 + 需要流式计算两个相关统计量 | [algorithms.md](algorithms.md#2-welford-online-算法在线单遍) |
+| 多核策略 | Group Reduce | R 太大单核处理不完 + A 太小不足以并行 | [algorithms.md](algorithms.md#3-group-reduce跨核归约) |
+| 精度策略 | 二分累加 | 大向量 sum 精度敏感 | [algorithms.md](algorithms.md#5-二分累加dichotomy-addition) |
+| 索引跟踪 | With-Index | 归约+返回极值位置 | [with-index.md](with-index.md) |
 
 ---
 
-## General rules
+## 通用规则
 
-The following rules apply to all scenarios. The Tiling Design Principles and the tmpBufSize formula are in [tiling-fields.md] (tiling-fields.md).
+以下规则适用于所有场景。Tiling 设计原则和 tmpBufSize 公式见 [tiling-fields.md](tiling-fields.md)。
 
-**RLength vs rLengthAlign parameter used in comparison table**:
+**rLength vs rLengthAlign 参数使用对照表**:
 
-| Parameter Position | Use rLength (valid data) | Use rLengthAlign (after alignment) |
+| 参数位置 | 用 rLength（有效数据） | 用 rLengthAlign（对齐后） |
 |---------|:---:|:---:|
 | DataCopyPad blockLen | ✅ | ❌ |
-| Reduce API count(Level 2) | ✅ | ❌ |
-| UB internal rowofset calculation | ❌ | ✅ |
-| Buffer Size Distribution | ❌ | ✅ |
+| Reduce API count（Level 2） | ✅ | ❌ |
+| UB 内 rowOffset 计算 | ❌ | ✅ |
+| Buffer 大小分配 | ❌ | ✅ |
 
 ---
 
-## S1: AR mode (best possible return)
+## S1: AR 模式（最内维归约）
 
-Application: A single-axis return with a condensed tail axis
+适用: 合轴后单轴归约，且归约轴式尾轴的场景
 
-R elements in each row continue, using Level 2 Reduce API line-by-line return.
+每行 R 个元素连续，使用 Level 2 Reduce API 逐行归约。
 
-**AR branch decision tree**:
+**AR 分支决策树**：
 
 ```
-AR Mode (A1, R),A0 = 1
+AR 模式 (A1, R)，A0 = 1
     │
-    ├─ Yes.UBprocessing at least1The whole line of data?
+    ├─ 可以在UB中至少处理1整行数据？
     │   │
-    │   YES → AR-FullLoad(All)
-    │   │     Line R Elemental presence UB,CopyIn We'll finish our contract at once.
-    │   │     The intermediate result is directly reused and does not need to be duplicated
+    │   YES → AR-FullLoad（全载）
+    │   │     整行 R 个元素驻留 UB，CopyIn 一次完成归约
+    │   │     中间结果直接复用，不需要重复搬入
     │   │
-    │   NO  → AR-ColSplit(Distributed)
-    │         Loading of column-direction sub-contracts, every move in Ar < AR An element
-    │         Need to cross chunk MergeMax/Add)
+    │   NO  → AR-ColSplit（分载）
+    │         对列方向分段加载归约，每次搬入 Ar < AR 个元素
+    │         需要跨 chunk 合并（Max/Add）
     │
-    └─ Both models are used. Level 2 Reduce API(data continuous, not required) Pattern)
+    └─ 两种模式都使用 Level 2 Reduce API（数据连续，无需 Pattern）
 ```
 
-| Branch | Conditions | Annotations | Detailed documents |
+| 分支 | 条件 | 说明 | 详细文档 |
 |------|------|------|---------|
-| **FullLoad** | You can process at least one whole row of data in UB | Row-wide UB, intermediate result directly reused | [ar-fullload.md](ar-fullload.md) |
-| **Partition (ColSpit)** | Other | Column directional segment, each time you move to Ar < AR elements, merge over chunk | [ar-colsplit.md](ar-colsplit.md) |
+| **全载（FullLoad）** | 可以在UB中至少处理1整行数据 | 整行驻留 UB，中间结果直接复用 | [ar-fullload.md](ar-fullload.md) |
+| **分载（ColSplit）** | 其他 | 对列方向分段，每次搬入 Ar < AR 个元素，跨 chunk 合并 | [ar-colsplit.md](ar-colsplit.md) |
 
-> **Index variant**: AR-FullLoad uses `ReduceMax(calIndex=true)`, as detailed in [with-index.md] (with-index.md), if return to polar position is required.
+> **索引变体**：需要返回极值位置时，AR-FullLoad 用 `ReduceMax(calIndex=true)`，详见 [with-index.md](with-index.md)。
 
-> **According to scalar broadcasting operation**: Level 2 Reduce contract [R] received 1 scalar.
-> If follow-up needs to broadcast scalar to [R] vector involved in element-by-fact calculations, use `Adds(dst, src, scalar, count)`
-> or `Muls(dst, src, scalar, count)`, an API call complete to replace Duplicate fill + Add/Mul operation.
-> More about `/ascendc-api-best-practices`'s `api-arithmetic.md`.
+> **AR 归约后的标量广播操作**：Level 2 Reduce 归约 [R] 后得到 1 个标量。
+> 如果后续需要将该标量广播到 [R] 向量参与逐元素运算，使用 `Adds(dst, src, scalar, count)`
+> 或 `Muls(dst, src, scalar, count)`，一次 API 调用完成，替换 Duplicate 填充 + Add/Mul操作。
+> 详见 `/ascendc-api-best-practices` 的 `api-arithmetic.md`。
 
 ---
 
-## S2: ARA Mode
+## S2: ARA模式
 
-Application: One-axis return and one-axis non-axis scenario
+适用: 合轴后单轴归约，且归约轴非尾轴场景
 
-> **Core Cognizance**: ARA mode `(A1, R, A0)`, after split along outer layer A1, handles one `[R, A0_inner]` block each time.
-> The block continues in the GM, and the whole block moves into the UB, which is the two-dimensional matrix of `(R, alignedCols)`.
+> **核心认知**：ARA 模式 `(A1, R, A0)` 下，沿外层 A1 切分后，每次处理一个 `[R, A0_inner]` 块。
+> 该块在 GM 中连续，整块搬入 UB 后即为 `(R, alignedCols)` 的二维矩阵，
 
-**Data stream**:
+**数据流**:
 ```
 GM (A1, R, A0) → DataCopyPad(blockCount=R) → UB (R × alignedCols)
     ↓
@@ -124,89 +124,89 @@ GM (A1, R, A0) → DataCopyPad(blockCount=R) → UB (R × alignedCols)
 UB (alignedCols) → GM (A1, A0)
 ```
 
-**Key API Call**:
+**关键 API 调用**:
 ```cpp
 uint32_t alignedCols = ((tileA0Len * sizeof(float) + 31) / 32) * 32 / sizeof(float);
 uint32_t srcShape[] = {R, alignedCols};
 ReduceMax<float, Pattern::Reduce::RA>(resultLocal, xLocal, tmpLocal, srcShape, true);
 ```
 
-**ARA branch decision tree**:
+**ARA 分支决策树**：
 
 ```
-ARA Mode (A1, R, A0),A0 > 1
+ARA 模式 (A1, R, A0)，A0 > 1
     │
-    ├─ Yes.UBprocessing allR*tileA0LenData (%1)32Bytes Alignment)
+    ├─ 可以在UB中处理所有R*tileA0Len数据（32字节对齐）？
     │   │
-    │   YES → ARA-FullLoad(All)
-    │   │     [R, tileA0Len] Entire Stay UB,CopyIn All at once. R The return of the line
-    │   │     The intermediate result is directly reused and does not need to be duplicated
+    │   YES → ARA-FullLoad（全载）
+    │   │     [R, tileA0Len] 整块驻留 UB，CopyIn 一次完成全部 R 行的归约
+    │   │     中间结果直接复用，不需要重复搬入
     │   │
-    │   NO  → ARA-RowSplit(Distributed)
-    │         Every move in r < R All right, let's split it up a few times before we finish it all. R The return of the line
-    │         Need to cross chunk MergeMax/Add)
+    │   NO  → ARA-RowSplit（分载）
+    │         每次搬入 r < R 行，分多次才能完成全部 R 行的归约
+    │         需要跨 chunk 合并（Max/Add）
     │
-    └─ Both models are used. Pattern::Reduce::RA  Don't need   Transpose)
+    └─ 两种模式都使用 Pattern::Reduce::RA（不需要 Transpose）
 ```
-- TileA0Len is a0 for each nuclear treatment following the polynuclear splitting of A0 (<=A0)
+- tileA0Len 是沿着A0进行多核切分后每个核处理的a0(<=A0)
 
-| Branch | Conditions | Annotations | Detailed documents |
+| 分支 | 条件 | 说明 | 详细文档 |
 |------|------|------|---------|
-| **FullLoad** | You can process all R*tileA0Len data in UB (32 bytes alignment) | R-line once in UB, intermediate result directly reuse | [ara-fullload.md](ara-fullload.md) |
-| **RowSpit** | Other | Cross chunk merger after each move to r < R row | [ara-rowsplit.md](ara-rowsplit.md) |
+| **全载（FullLoad）** | 可以在UB中处理所有R*tileA0Len数据（32字节对齐） | R 行一次放入 UB，中间结果直接复用 | [ara-fullload.md](ara-fullload.md) |
+| **分载（RowSplit）** | 其他 | 每次搬入 r < R 行，分多次归约后跨 chunk 合并 | [ara-rowsplit.md](ara-rowsplit.md) |
 
-> **Index variant**: `Pattern::Reduce::RA` is replaced with `Compare+Select` line-by-line inverted positions that need to be returned.
-> For details, see [with-index.md] (with-index.md).
+> **索引变体**：需要返回极值位置时，用 `Compare+Select` 逐行迭代替代 `Pattern::Reduce::RA`。
+> 详见 [with-index.md](with-index.md)。
 
-> **ARA radio operation upon contract**:Pattern::Reduce::RA contract [R, signedcols] and then get the result of [1, signedcols] vector.
-> If follow-up needs to broadcast the vector back [R, signedCols] participating in element-by-fact calculations, using the sub/Div/Mul equivalent binary API
-> Binary RepeatParams version, setting up `src1RepStride=0`, an API call to finish all R lines,
-> No manual cycle or extra broadcast buffer is required. See `api-arithmetic.md` for details of `/ascendc-api-best-practices`.
+> **ARA 归约后的广播操作**：Pattern::Reduce::RA 归约 [R, alignedCols] 后得到 [1, alignedCols] 的结果向量。
+> 如果后续需要将该向量广播回 [R, alignedCols] 参与逐元素运算，使用 Sub/Div/Mul 等二元 API 的
+> BinaryRepeatParams 版本，设置 `src1RepStride=0`，一次 API 调用完成所有 R 行，
+> 无需手动循环或额外 broadcast buffer。详见 `/ascendc-api-best-practices` 的 `api-arithmetic.md`。
 
-### S3: Multi-axis Convention
+### S3: 多轴归约
 
-Application: Multi-axis return, e.g. ARARA scene
+适用: 合轴后多轴归约，比如：ARARA场景
 
-**Shape transformation**: Any N-Vipe +axes is compressed by a three-step transition to an A/R alternation sequence.
-For details, see [multi-axis-transform.md] (multi-axis-transform.md).
+**Shape 变换**：任意 N 维 shape + axes 经三步变换压缩为 A/R 交替序列。
+详见 [multi-axis-transform.md](multi-axis-transform.md)。
 
-### S4: Welford Online (R requires UB slices)
+### S4: Welford Online（R 需 UB 切片）
 
-**Appendix**: two relevant statistics will need to be calculated in a fluid fashion under the ARA model (the second relies on the first incremental update). Typical operator: reduce_var / reduce_std. See [algorithms.md](algorithms.md#2-welford-online-on-line one time).
+**适用**: ARA 模式下需要流式计算两个相关统计量（第二个依赖第一个的增量更新）。典型算子：reduce_var / reduce_std。参见 [algorithms.md](algorithms.md#2-welford-online-算法在线单遍)。
 
-### S5: Group Reduce(R cross-nucleus)
+### S5: Group Reduce（R 跨核）
 
-**Conditions**: R is too big to complete all R returns; and A is too small to make full use of the polynuclear
+**条件**: R 太大，单核无法完成全部 R 归约；同时 A 太小不足以充分利用多核
 
 ```
-Phase1(nuclear independence): Per nuclear handling A[Paragraph] × R[Paragraph]Output partial → workspace
+Phase1（各核独立）: 每核处理 A[段] × R[段]，输出 partial → workspace
 SyncAll()
-Phase2(consolidated): All over the place. partial, merge into final result
+Phase2（合并）: 遍历各核 partial，合并为最终结果
 ```
 
 Workspace: `coreNum × CeilAlign(outAAlign × 2 × sizeof(int32_t), 256)`
 
 ---
 
-## S6: Global return
+## S6: 全局归约
 
-Application: reduce_sum (axes = all axes), reduce_max (axes = all axes)
+适用: reduce_sum(axes=所有轴), reduce_max(axes=所有轴)
 
-All elements are divided on a nuclear equal basis and are merged (Atomic or Visible Merge) in two stages after the individual nuclear reunification.
+所有元素按核均分，各核独立归约后两阶段合并（Atomic 或显式 Merge）。
 
 ```
-Stage1: All nuclear facilities ReduceSum(mySlice) → partial → workspace[blockIdx * 64B]
+Stage1: 各核 ReduceSum(mySlice) → partial → workspace[blockIdx * 64B]
 Stage2:
-  ModalitiesA: SetAtomicAdd → DataCopy → SetAtomicNone → SyncAll
-  ModalitiesB: SyncAll → core0 Walking through workspace Merge
+  方式A: SetAtomicAdd → DataCopy → SetAtomicNone → SyncAll
+  方式B: SyncAll → core0 遍历 workspace 合并
 ```
 
 ---
 
-## Cross-Scene Reference
+## 跨场景参考
 
-| Theme | Documentation |
+| 主题 | 文档 |
 |------|------|
-| Multiple Output Buffer Equation | [multi-output-buffer.md](multi-output-buffer.md) |
-| Universal Tiling Field Definition | [tiling-fields.md](tiling-fields.md) |
-| Index tracking variants | [with-index.md](with-index.md) |
+| 多输出 Buffer 方程 | [multi-output-buffer.md](multi-output-buffer.md) |
+| 通用 Tiling 字段定义 | [tiling-fields.md](tiling-fields.md) |
+| 索引跟踪变体 | [with-index.md](with-index.md) |

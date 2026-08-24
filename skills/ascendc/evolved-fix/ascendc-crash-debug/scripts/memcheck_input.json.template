@@ -1,44 +1,44 @@
 {
   "skill": "ascendc-crash-debug",
   "version": "2.0",
-  "Description": "AscendC memory detection configuration file template - Copy this file as memcheck_input.json and fill out parameters",
+  "description": "AscendC 内存检测配置文件模板 - 将此文件复制为 memcheck_input.json 并填写参数",
 
   "operator": {
     "name": "sparse_flash_attention_enhance",
-    "Description": "operator name"
+    "description": "算子名称"
   },
 
   "paths": {
     "code_base_dir": "training/ascendc/src",
-    "Description": "Code Repository Directory (which must contain build.sh)"
+    "description": "代码库根目录（必须包含 build.sh 的目录）"
   },
 
   "testing": {
     "test_script_dir": "training/ascendc/src/ops-transformer/attention/sparse_flash_attention_enhance/tests/st",
     "test_script_exe": "pytest test_npu_sparse_flash_attention_enhance.py",
-    "Description": "ST test script absolute path"
+    "description": "ST 测试脚本绝对路径"
   },
 
   "environment": {
     "device_type": "ascend910b",
     "cann_env": "/latest",
-    "Description": "NPU device Type and CANN Environment Path"
+    "description": "NPU 设备类型和 CANN 环境路径"
   },
 
   "compilation": {
     "sanitizer_options": "-sanitizer;-g",
-    "Description": "Compile Options. -g Get Full Debug Information"
+    "description": "编译选项。-g 获取完整调试信息"
   },
 
   "memcheck": {
     "log_level": "3",
     "slog_print_to_stdout": "true",
     "timeout": 600,
-    "Description": "Memcheck Run Configuration"
+    "description": "Memcheck 运行配置"
   },
 
   "options": {
     "rebuild": true,
-    "description": "Enforce options control. rebuild=false equals --skip-build command line options"
+    "description": "执行选项控制。rebuild=false 等同于 --skip-build 命令行选项"
   }
 }

@@ -1,6 +1,6 @@
 ---
 name: triton-cuda-memory
-description: "CUDA GPU memory access optimization strategy, including shared memory usage, combined access, Bank Conflict avoidance and data layout optimization techniques. Application to memory bandwidth restricted, need to optimize global memory access efficiency, or to process large-scale data for CUDA kernel performance optimization"
+description: "CUDA GPU 内存访问优化策略，包括共享内存利用、合并访存、Bank Conflict 避免和数据布局优化技巧。适用于内存带宽受限、需要优化全局内存访问效率、或处理大规模数据的 CUDA 内核性能优化场景"
 category: implementation
 version: "1.0.0"
 metadata:
@@ -8,53 +8,53 @@ metadata:
   dsl: triton_cuda
 ---
 
-# Memory access optimization
+# 内存访问优化
 
-Memory access is a key bottleneck for GPU performance. This document provides the Triton CUDA memory access optimization policy.
+内存访问是 GPU 性能的关键瓶颈。本文档提供 Triton CUDA 的内存访问优化策略。
 
 ---
 
-## 1. GPU Memory Level
+## 1. GPU 内存层次
 
-### Memory bandwidth and latency
+### 内存带宽和延迟
 
-| Memory Type | bandwidth (A100) | latency | Capacity |
+| 内存类型 | 带宽 (A100) | 延迟 | 容量 |
 |---------|-------------|------|------|
-| Organisation | ~19 TB/s | 1 cycle | 256 KB/SM |
-| shared memory | ~19 TB/s | ~20 cycles | 164 KB/SM |
-| L2 Cache | ~5 TB/s | ~100 cycles | 40 MB |
-| global memory (HBM) | ~2 TB/s | ~400 cycles | 40/80 GB |
+| 寄存器 | ~19 TB/s | 1 cycle | 256 KB/SM |
+| 共享内存 | ~19 TB/s | ~20 cycles | 164 KB/SM |
+| L2 缓存 | ~5 TB/s | ~100 cycles | 40 MB |
+| 全局内存 (HBM) | ~2 TB/s | ~400 cycles | 40/80 GB |
 
-### Optimization principle
+### 优化原则
 
-- **Reduced global memory access**: using shared memory and register
-- **Consolidated Access**: same warp insider access continuous address
-- **Increased L2 Cache Rate**: Through technology such as Grouping
+- **减少全局内存访问**: 利用共享内存和寄存器
+- **合并访问 (Coalesced Access)**: 同一 warp 内线程访问连续地址
+- **提高 L2 缓存命中率**: 通过 Grouped Ordering 等技术
 
 ---
 
-## 2. Merge Access (Coalesced Access)
+## 2. 合并访问 (Coalesced Access)
 
-### What's a combined visit?
+### 什么是合并访问？
 
-When 32 threads of the same warp access consecutive memory addresses, GPU can consolidate these requests into one or a few memory services, significantly increasing the utilization of bandwidth.
+当同一 warp 中的 32 个线程访问连续的内存地址时，GPU 可以将这些请求合并为一次或少量内存事务，大幅提高带宽利用率。
 
 ```python
-# Correct: combined access (continuous address)
+# 正确：合并访问（连续地址）
 @triton.jit
 def coalesced_kernel(input_ptr, output_ptr, n, BLOCK_SIZE: tl.constexpr):
     pid = tl.program_id(0)
-    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)  # Continuous Offset
+    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)  # 连续偏移
     mask = offsets < n
     data = tl.load(input_ptr + offsets, mask=mask)
     tl.store(output_ptr + offsets, data, mask=mask)
 
-# Error: Non-merger access (jumping address)
+# 错误：非合并访问（跳跃地址）
 @triton.jit
 def strided_kernel(input_ptr, output_ptr, n, stride, BLOCK_SIZE: tl.constexpr):
     pid = tl.program_id(0)
     offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    # Each thread leaps the length elements, leading to non-merger access
+    # 每个线程跳跃 stride 个元素，导致非合并访问
     strided_offsets = offsets * stride
     mask = strided_offsets < n
     data = tl.load(input_ptr + strided_offsets, mask=mask)
@@ -62,26 +62,26 @@ def strided_kernel(input_ptr, output_ptr, n, stride, BLOCK_SIZE: tl.constexpr):
 
 ---
 
-## 3. Block Selection Policy
+## 3. 块大小选择策略
 
-### Preference principle
-- **Balancing parallelity and resource consumption**, avoiding oversized or too small
-- **BLONK_SIZE**Common value: 128, 256, 512, 1024
-- Too small: insufficient parallels to make full use of warp
-- Oversized: register/shared memory spill, occupancy drop
+### 调优原则
+- **平衡并行度与资源占用**，避免过大或过小
+- **BLOCK_SIZE** 常用值：128, 256, 512, 1024
+- 过小：并行度不足，无法充分利用 warp
+- 过大：寄存器/共享内存溢出，occupancy 下降
 
-### Recommended Settings
-- **Element-wise operator**: BLONK_SIZE = 1024 or 512
-- **Reduce operator**: BLONK_SIZE = triton.next_power_of_2(n_cols)
-- **MatMull operator**: BLONK_M = 128, BLONK_N = 128, BLONK_K = 32-64
+### 推荐设置
+- **Element-wise 算子**：BLOCK_SIZE = 1024 或 512
+- **Reduce 算子**：BLOCK_SIZE = triton.next_power_of_2(n_cols)
+- **MatMul 算子**：BLOCK_M = 128, BLOCK_N = 128, BLOCK_K = 32-64
 
 ---
 
-## 4. 2D Data Memory Access Optimization
+## 4. 2D 数据内存访问优化
 
-### Prefer `tl.make_block_ptr`
+### 优先使用 `tl.make_block_ptr`
 
-For 2D data (e.g. matrix),**priority is given to `tl.make_block_ptr` in conjunction with `boundary_check`**, which automatically optimizes memory consolidation.
+对于 2D 数据（如矩阵），**优先使用 `tl.make_block_ptr` 配合 `boundary_check`**，可自动优化内存合并。
 
 ```python
 @triton.jit
@@ -97,8 +97,8 @@ def matmul_kernel(
 ):
     pid_m = tl.program_id(0)
     pid_n = tl.program_id(1)
-
-    # Create 2D Block Pointer
+    
+    # 创建 2D Block Pointer
     A_block_ptr = tl.make_block_ptr(
         base=A_ptr,
         shape=(M, K),
@@ -107,21 +107,21 @@ def matmul_kernel(
         block_shape=(BLOCK_M, BLOCK_K),
         order=(1, 0),  # Row-major
     )
-
-    # Automatically handle borders using baseary_check
+    
+    # 使用 boundary_check 自动处理边界
     a = tl.load(A_block_ptr, boundary_check=(0, 1))
 ```
 
-### Stride Design Elements
-- **Specificly designed stride parameters**, error setting will seriously affect performance
-- **Successive visits**: ensuring continuity and locality of memory visits
-- **Low main order (Row-major)**: PyTorch default, stride(0) > stride(1)
+### Stride 设计要点
+- **仔细设计 stride 参数**，错误设置会严重影响性能
+- **连续访问**：确保内存访问的连续性和局部性
+- **行主序 (Row-major)**: PyTorch 默认，stride(0) > stride(1)
 
 ---
 
-## 5. Optimization of one-dimensional access to a continuous memory
+## 5. 连续内存的一维访问优化
 
-### Recommended option: one-dimensional access after transition
+### 推荐方案：转连续后用一维访问
 
 ```python
 class ModelNew(torch.nn.Module):
@@ -129,45 +129,45 @@ class ModelNew(torch.nn.Module):
         super().__init__()
 
     def forward(self, input_tensor):
-        # Conversion from non-continuous tensor to continuous (one-time costs)
+        # 非连续张量转为连续（一次性开销）
         if not input_tensor.is_contiguous():
             input_tensor = input_tensor.contiguous()
-
+        
         output_tensor = torch.empty_like(input_tensor)
         n_elements = input_tensor.numel()
         grid = (triton.cdiv(n_elements, BLOCK_SIZE),)
-
+        
         elementwise_kernel[grid](
-            input_tensor, output_tensor,
-            n_elements,
+            input_tensor, output_tensor, 
+            n_elements, 
             BLOCK_SIZE=1024
         )
         return output_tensor
 ```
 
-### Performance Comparison
+### 性能对比
 
-| Programme | Advantages | Disadvantages |
+| 方案 | 优势 | 劣势 |
 |------|------|------|
-| **`.contiguous()` + 1-D access** | Merge Access, Cache Friendly | One-time memory copy cost |
-| **stride access** | No copy required. | Non-merger access, accumulated costs |
+| **`.contiguous()` + 一维访问** | 合并访问，缓存友好 | 一次性内存拷贝开销 |
+| **stride 访问** | 无需拷贝 | 非合并访问，累积开销大 |
 
-**Recommendation**: The non-continuous tensor first calls the `.contiguous()` conversion, then uses one-dimensional access, and the overall performance is better.
+**建议**：非连续张量先调用 `.contiguous()` 转换，再用一维访问，整体性能更优。
 
 ---
 
-## 6. L2 Cache Optimization
+## 6. L2 缓存优化
 
 ### Grouped Ordering
 
-For MatMul et al. 2D operator, increase the L2 Cache Cache Rate by grouping:
+对于 MatMul 等 2D 算子，通过分组遍历提高 L2 缓存命中率：
 
 ```python
-# Standard pass: L2 Cache utilization is low
+# 标准遍历：L2 缓存利用率低
 pid_m = pid // num_pid_n
 pid_n = pid % num_pid_n
 
-# Grouped Ordering: L2 High utilization of caches
+# Grouped Ordering：L2 缓存利用率高
 GROUP_SIZE_M = 8
 num_pid_in_group = GROUP_SIZE_M * num_pid_n
 group_id = pid // num_pid_in_group
@@ -185,15 +185,15 @@ task_m, task_n = tl.swizzle2d(pid_m, pid_n, num_pid_m, num_pid_n, GROUP_SIZE)
 
 ---
 
-## 7. Software pipeline (Software Pipelining)
+## 7. 软件流水线 (Software Pipelining)
 
-### Num_stages Arguments
+### num_stages 参数
 
-Controls the pre-take level by `num_stages`, hides the memory latency:
+通过 `num_stages` 控制预取级数，隐藏内存延迟：
 
-- **num_stages=2**: Minimum shared memory
-- **num_stages=3-4**: usually best
-- **num_stages=5+**: May exceed the shared memory limit
+- **num_stages=2**: 最少的共享内存使用
+- **num_stages=3-4**: 通常最优
+- **num_stages=5+**: 可能超出共享内存限制
 
 ```python
 @triton.autotune(
@@ -203,42 +203,42 @@ Controls the pre-take level by `num_stages`, hides the memory latency:
         triton.Config({...}, num_stages=4, num_warps=8),
     ],
     key=[...],
-    restore_value=['output_ptr'],  # Must: list all output pointer parameter names
+    restore_value=['output_ptr'],  # 必须：列出所有输出指针参数名
 )
 ```
 
 ---
 
-## 8. best practice
+## 8. 最佳实践
 
-### Element-wise operator
-1. Transient: `input.contiguous()`
-2. 1-D access: `ptr + offsets`
+### Element-wise 算子
+1. 转连续：`input.contiguous()`
+2. 一维访问：`ptr + offsets`
 3. BLOCK_SIZE = 1024
 
-### 2D operator (MatMul, Attention)
-1. Use `tl.make_block_ptr`
-2. Match `boundary_check`
-3. Grouped Ordering Optimizing L2 Cache
-4. Rational settings
+### 2D 算子（MatMul、Attention）
+1. 使用 `tl.make_block_ptr`
+2. 配合 `boundary_check`
+3. Grouped Ordering 优化 L2 缓存
+4. 合理设置 num_stages
 
-### A trap to avoid.
-- Non-continuous tensor direct access by stide
-- BLONK_SIZE setting too big to cause ocupancy to decline
-- Forget border checks lead to cross-border visits.
-- Ignore L2 Cache Optimization
+### 避免的陷阱
+- 非连续张量直接用 stride 访问
+- BLOCK_SIZE 设置过大导致 occupancy 下降
+- 忘记边界检查导致越界访问
+- 忽略 L2 缓存优化
 
 ---
 
-## 9. Debug Recommendations
+## 9. 调试建议
 
-### Performance screening
-1. Check if tensor is continuous: `tensor.is_contiguous()`
-2. Check if memory access merges
-3. Analyse memory bandwidth utilization using Nsight Computer
-4. Check if ccupancy is reasonable
+### 性能问题排查
+1. 检查张量是否连续：`tensor.is_contiguous()`
+2. 检查内存访问是否合并
+3. 使用 Nsight Compute 分析内存带宽利用率
+4. 检查 occupancy 是否合理
 
-### Common Errors
-- **Memory access cross-border**: check mark and baseary_check
-- **Poor performance**: check combined access and L2 cache optimization
-- **Result error**: Checks for correctness of stride calculation
+### 常见错误
+- **内存访问越界**：检查 mask 和 boundary_check
+- **性能不佳**：检查合并访问和 L2 缓存优化
+- **结果错误**：检查 stride 计算是否正确

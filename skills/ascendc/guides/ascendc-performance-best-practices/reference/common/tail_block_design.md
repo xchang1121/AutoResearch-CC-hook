@@ -1,104 +1,104 @@
-# Tail Block / Data Design Optimization
+# Tail Block / Data Alignment 优化设计
 
-## 1. Optimization of objectives
+## 1. 优化目标
 
-The input of data in operator such as Control, Poping, Gather, etc. often cannot be separated by core numbers or tile size, producing tail block (tail block). Naive achieves a fixed tile processing that leads to cross-border access, data competition, or load imbalance.
+在 Convolution、Pooling、Gather 等算子中，输入数据量往往不能被核心数或 tile 大小整除，产生尾块（tail block）。Naive 实现采用固定 tile 处理，导致尾块访问越界、数据竞争或负载不均衡。
 
-This optimization ensures a near-perfect load balance and proper border handling in all scenarios through double-track calculations, vector tailings processing, multi-dimensional Tiling tailings separation, etc.
+本优化通过双轨制计算、向量化尾块处理、多维度 Tiling 尾块分离等手段，确保在所有场景下实现近完美的负载均衡和正确的边界处理。
 
-| Indicators | naive | optimized | Proceeds |
+| 指标 | naive | optimized | 收益 |
 |------|-------|-----------|------|
-| End block processing | It's a simple cut. It could cross the border. | Double-track nuclear separation | Avoiding data competition and cross-border access |
-| End block calculation | scalar Looping | GatherMask vector processing | One-time processing of 64 elements, increasing 4-8 times |
-| Multiple load | Tail nucleotage or overload | Dynamic CostLimit + Tolerance Mechanism | Improved performance of non-completed scenes 10-30% |
-| Memory Alignment | Unconsidered Alignment | 32B/64B Alignment + DataCopyPad | Avoid loss of non-reciprocal access performance |
+| 尾块处理 | 简单截断，可能越界 | 双轨制 norm/tail 核分离 | 避免数据竞争和越界访问 |
+| 尾块计算 | 标量循环处理 | GatherMask 向量化处理 | 一次处理 64 个元素，提升 4-8 倍 |
+| 多核负载 | 尾核空闲或超载 | 动态 costLimit + 容忍度机制 | 非整除场景性能提升 10-30% |
+| 内存对齐 | 未考虑对齐 | 32B/64B 对齐 + DataCopyPad | 避免非对齐访问性能损失 |
 
 
-## 2. Overview of the structure
+## 2. 架构概览
 
-### 2.1 Storage tiers and data flows
+### 2.1 存储层级与数据流
 
-Tail Block processed data streams: The input data was moved from MTE2 to UB/L1 by MTE2 and divided into normal blocks (normBlock) and tails (tailBlock). Regular nuclear processing: 100% of `defaultUbFactor`'s data, tail processing of the remaining data. The tailings are filled with GatherMask vector or DataCopyPad, resulting in MTE3 writing back to GM, multi-nuclear competition scenes using AtomicAdd to avoid data competition.
+Tail Block 处理的数据流：输入数据经 MTE2 从 GM 搬入 UB/L1，分为正常块（normBlock）和尾块（tailBlock）。正常核处理 `defaultUbFactor` 整数倍的数据量，尾核处理剩余数据量。尾块使用 GatherMask 向量化处理或 DataCopyPad 对齐填充，结果经 MTE3 写回 GM，多核竞争场景使用 AtomicAdd 避免数据竞争。
 
-### 2.2 Two-track computing model
+### 2.2 双轨制计算模型
 
-The host side divides the data into normal core (normCore) and tail core (tailCore):
-- **Regular nuclei**: volume of data processed multiple times `defaultUbFactor`
-- **tail core**: processing of surplus data volume, separate calculation of number and size of tailing block cycles
+Host 侧将数据分为正常核（normCore）和尾核（tailCore）两组：
+- **正常核**：处理 `defaultUbFactor` 整数倍的数据量
+- **尾核**：处理剩余数据量，单独计算尾块循环次数和尾块大小
 
-KernelSide by side`blockIdx_`To determine whether they are normal or tailings, choose the corresponding cycling parameters.
+Kernel 侧根据 `blockIdx_` 判断自己是正常核还是尾核，选择对应的循环参数。
 
-### 2.3 Event Synchronization Model
+### 2.3 事件同步模型
 
-| Event type | Meaning | Purpose |
+| 事件类型 | 含义 | 用途 |
 |---------|------|------|
-| `MTE2_V` | MTE2 Move complete → allows Victor to read | Main data file readiness |
-| `V_MTE3` | Victor complete → to allow MTE3 to write back | End block calculation completed, writeable GM |
-| `PIPE_V` | Victor Pipe Barrier | Data dependency between vector commands |
+| `MTE2_V` | MTE2 搬运完成 → 允许 Vector 读取 | 主数据 tile 就绪 |
+| `V_MTE3` | Vector 完成 → 允许 MTE3 写回 | 尾块计算完成，可写 GM |
+| `PIPE_V` | Vector 管道屏障 | 向量化指令间数据依赖 |
 
-## 3. Key Parameter Configuration
+## 3. 关键参数配置
 
 ```cpp
-// Host side TilingData
+// Host 侧 TilingData
 struct TailBlockTiling {
-    uint32_t normBlockLoop;           // Number of normal nuclear cycles
-    uint32_t normBlockTailLoopSize;   // Normal nuclear final cycle size
-    uint32_t tailBlockLoop;           // Number of tailings cycle
-    uint32_t tailBlockTailLoopSize;   // Final Cyclical Size
-    uint32_t defaultValueUsedCoreNum; // Normal nuclei
-    uint32_t defaultUbFactor;         // Default UB Process Particle Degree
+    uint32_t normBlockLoop;           // 正常核循环次数
+    uint32_t normBlockTailLoopSize;   // 正常核最后循环大小
+    uint32_t tailBlockLoop;           // 尾核循环次数
+    uint32_t tailBlockTailLoopSize;   // 尾核最后循环大小
+    uint32_t defaultValueUsedCoreNum; // 正常核数量
+    uint32_t defaultUbFactor;         // 默认 UB 处理粒度
 };
 ```
 
-### 3.1 Tile Size Selection Principle
+### 3.1 Tile 大小选取原则
 
-| Parameters | Typical value | Annotations |
+| 参数 | 典型值 | 说明 |
 |------|--------|------|
-| `defaultUbFactor` | 64 / 128 / 256 | vector treatment particle size to align Vector unit width |
-| `alignCoef` | 32B / 64B | data type-related alignment coefficient (FP16 = 32B, FP32 = 64B) |
+| `defaultUbFactor` | 64 / 128 / 256 | 向量化处理粒度，需对齐 Vector 单元宽度 |
+| `alignCoef` | 32B / 64B | 数据类型相关对齐系数（FP16=32B, FP32=64B） |
 
-**Ascend binding**:
+**Ascend 对齐约束**：
 
-- Global Memoory Visit requires 32B alignment
-- Victor command optimal access particle size of 32B (FP16) or 64B (FP32)
-- Cube Matrix Multiplication requires 16x16 or 32x32 alignment
+- Global Memory 访问需 32B 对齐
+- Vector 指令最优访问粒度为 32B（FP16）或 64B（FP32）
+- Cube 矩阵乘需 16x16 或 32x32 对齐
 
 ```cpp
-// Alignment
+// 对齐计算
 uint32_t numPerBlock = ONE_BLK_SIZE / sizeof(T);  // 32B / sizeof(T)
 uint32_t alignedSize = (size + numPerBlock - 1) / numPerBlock * numPerBlock;
 ```
 
-### 3.2 Memory budget
+### 3.2 内存预算
 
-End block processing requires additional pattern buffer (for GatherMask) and index buffer:
-- `tmpPattern` Buffer: about 64B (uint32_t/uint16_tpattern)
-- `indexBuf` Buffer: 6 Index × tile sizes (for use in daaptive popling)
+尾块处理需要额外的 pattern buffer（用于 GatherMask）和索引 buffer：
+- `tmpPattern` buffer：约 64B（uint32_t/uint16_t pattern）
+- `indexBuf` buffer：6 个索引 × tile 大小（用于 adaptive pooling）
 
-## 4. Core Calculator Cycle
+## 4. 核心计算循环
 
-### 4.1 naive version (before optimization)
+### 4.1 naive 版本（优化前）
 
 ```cpp
-// Fixed file processing, no tail block special processing
+// 固定 tile 处理，无尾块特殊处理
 for (uint32_t i = 0; i < this->innerLoops; i++) {
     CopyIn(i);
     Compute(i);
     CopyOut(i);
 }
-// Problem: The last file may cross the border; the tail load is uneven
+// 问题：最后一 tile 可能越界；尾核负载不均
 ```
 
-### 4.2 Optimized version (after optimization): Two-track tail block processing
+### 4.2 optimized 版本（优化后）：双轨制尾块处理
 
 ```cpp
-// Host side: calculation of nuclear parameters norm/tail
+// Host 侧：计算 norm/tail 核参数
 normBlockLoop_ = Ops::Base::CeilDiv(normCoreHandleDefaultValues_, defaultUbFactor_);
 normBlockTailLoopSize_ = normCoreHandleDefaultValues_ - defaultUbFactor_ * (normBlockLoop_ - 1);
 tailBlockLoop_ = Ops::Base::CeilDiv(tailCoreHandleDefaultValues, defaultUbFactor_);
 tailBlockTailLoopSize_ = tailCoreHandleDefaultValues - defaultUbFactor_ * (tailBlockLoop_ - 1);
 
-// Kernel side: Select parameters according to blockIdx
+// Kernel 侧：根据 blockIdx 选择参数
 loop_ = tilingData_.normBlockLoop;
 tailLoopSize_ = tilingData_.normBlockTailLoopSize;
 if (blockIdx_ == tilingData_.defaultValueUsedCoreNum - 1) {
@@ -106,12 +106,12 @@ if (blockIdx_ == tilingData_.defaultValueUsedCoreNum - 1) {
     tailLoopSize_ = tilingData_.tailBlockTailLoopSize;
 }
 
-// Main cycle
+// 主循环
 for (uint32_t i = 0; i < loop_; i++) {
     bool isLastLoop = (i == loop_ - 1);
     uint32_t currentTileSize = isLastLoop ? tailLoopSize_ : defaultUbFactor_;
-
-    // Use DataCopyPad to process non-reciprocated tailings
+    
+    // 使用 DataCopyPad 处理非对齐尾块
     if (isLastLoop && currentTileSize != defaultUbFactor_) {
         DataCopyExtParams copyParams{1, static_cast<uint32_t>(currentTileSize * sizeof(T)), 0, 0, 0};
         DataCopyPadExtParams<T> padParams{false, 0, 0, 0};
@@ -119,30 +119,30 @@ for (uint32_t i = 0; i < loop_; i++) {
     } else {
         DataCopy(dataLocal, inTensorsGM[...], currentTileSize);
     }
-
+    
     Compute(dataLocal, currentTileSize);
     CopyOut(dataLocal, currentTileSize);
 }
 ```
 
-### 4.3 GatherMask vector tailings processing
+### 4.3 GatherMask 向量化尾块处理
 
 ```cpp
-// Reorder data with GatherMask for the end block of the last output point
+// 对于最后一个输出点的尾块，使用 GatherMask 进行数据重排
 if constexpr (std::is_same_v<T, float>) {
     LocalTensor<uint32_t> bufPattern = tmpPattern.Get<uint32_t>();
     int32_t preLeftShift = numPerBlock + lastLeftShift;
     bufPattern.SetValue(0, (1u << preLeftShift) - (1u << lastLeftShift));
-    GatherMask(outputLocal[gatherOffset], outputLocal[gatherOffset],
+    GatherMask(outputLocal[gatherOffset], outputLocal[gatherOffset], 
                bufPattern, true, mask, {1, 1, 8, 8}, rsvdCnt);
 }
-// Avoid tomic operation costs, correct tail block data layout
+// 避免 atomic 操作开销，正确处理尾块数据布局
 ```
 
-### 4.4 Atom Operating Processing of Non-System Data
+### 4.4 非对齐数据的原子操作处理
 
 ```cpp
-// Use AtomicAdd to avoid data competition for data that are not 32B alignment
+// 针对数据非 32B 对齐的情况，使用 AtomicAdd 避免数据竞争
 uint64_t mask0 = (1ul << numPerBlock) - (1ul << validDataLen);
 uint64_t mask[2] = {mask0, 0};
 Duplicate<T>(outputLocal, 0, mask, 1, 1, 1);
@@ -151,52 +151,52 @@ DataCopy(outputGlobal[offset], outputLocal, cTailAlign);
 SetAtomicNone();
 ```
 
-## 5. Key change points from live to tail_block
+## 5. 从 naive 到 tail_block 的关键修改点
 
-| Modify Item | (before optimization) | tail_block (optimized) |
+| 修改项 | naive（优化前） | tail_block（优化后） |
 |--------|---------------|---------------------|
-| Nuclear Type | Same amount of data for all nuclear processes | Two-track system: normCore + tailCore |
-| End block processing | Simple cut-off or cross-border visits | GatherMask vector / DataCopyPad Alignment |
-| Data competition | Unprotected. Possible conflict. | AtomicAdd/ Boundary Skip |
-| Load Balance | Fixed distribution | Dynamic CostLimit + Tolerance Mechanism |
-| Memory Alignment | Not considered | 32B/64B Alignment + padding |
-| Indexing | runtime division/mixing | IndexBuffer is expected to be reused |
+| 核类型 | 所有核处理相同数据量 | 双轨制：normCore + tailCore |
+| 尾块处理 | 简单截断或越界访问 | GatherMask 向量化 / DataCopyPad 对齐 |
+| 数据竞争 | 无保护，可能写冲突 | AtomicAdd / 边界跳过 |
+| 负载均衡 | 固定分配 | 动态 costLimit + 容忍度机制 |
+| 内存对齐 | 未考虑 | 32B/64B 对齐 + padding |
+| 索引计算 | 运行时除法/取模 | IndexBuffer 预计算复用 |
 
-## 6. note/ Constraint
+## 6. 注意事项 / 约束
 
-1. **Pattler type of GateMask**. Float type is uint32_tpatern, half/bfloat16_t uint16_tpatern.
+1. **GatherMask 的 pattern buffer 类型**。float 类型用 uint32_t pattern，half/bfloat16_t 用 uint16_t pattern。
 
-2. **AtomicAdd performance costs**. While ensuring correctness, atomic operations have a qualitative loss, preferential use of GatherMask to avoid competition.
+2. **AtomicAdd 的性能开销**。虽然保证正确性，但 atomic 操作有一定性能损失，优先使用 GatherMask 避免竞争。
 
-3. **The tail block size must be > 0**. If the tail block size is 0, the nuclear should return directly to avoid empty circulation.
+3. **尾块大小必须 > 0**。若尾块大小为 0，该核应直接返回，避免空循环。
 
-4. **End block of multi-dimensional Tiling**. Each dimension (Channel, Spatial, Batch) is independent in calculating the end block parameters.
+4. **多维度 Tiling 的尾块**。每个维度（Channel、Spatial、Batch）都需独立计算尾块参数。
 
-5. **Overlap testing**. The potential overlap of Kernel in Adaptive Pooling requires the detection and setting of `isOverLap` markers, using atomic add to ensure correctness.
+5. **重叠检测**。Adaptive Pooling 中 kernel 可能重叠，需检测并设置 `isOverLap` 标志，使用 atomic add 保证正确性。
 
-6. **The correctness of the data to be fully filled**. The SkipPad policy needs to ensure that zero of the padding area is not miscalculated in subsequent calculations (e.g. variance).
+6. **对齐填充的数据正确性**。SkipPad 策略需确保 padding 区域的 0 不会被错误计入后续计算（如方差）。
 
-7. **32B Alignment is a mandatory requirement**. Unmatched GM visits may result in hardware anomalies or reduced performance.
+7. **32B 对齐是硬性要求**。未对齐的 GM 访问可能导致硬件异常或性能下降。
 
-## 7. Implement common issue and Solutions
+## 7. 实施常见问题与解决方案
 
-### Q1: The amount of tailings processed is much smaller than the normal core, resulting in the tailings being completed soon but waiting for the normal core
-**A**: Use tolerance mechanism to allow a slight overload to reduce debris. `costLimit` dynamic calculated as "the total remaining cost / the remaining nuclear number".
+### Q1: 尾核处理量远小于正常核，导致尾核很快完成但需等待正常核
+**A**: 使用容忍度机制（tolerance ratio），允许轻微超载以减少碎片。`costLimit` 动态计算为"剩余总代价 / 剩余核数"。
 
-### Q2: Pattern calculator error for GatherMask leads to data reordering anomalies
-**A**: Ensure that `preLeftShift` and `lastLeftShift` are correctly calculated and that the pattern value is `(1u << preLeftShift) - (1u << lastLeftShift)`.
+### Q2: GatherMask 的 pattern 计算错误导致数据重排异常
+**A**: 确保 `preLeftShift` 和 `lastLeftShift` 计算正确，pattern 值为 `(1u << preLeftShift) - (1u << lastLeftShift)`。
 
-### Q3: DataCopyPad 's pedding value subsequent calculation
-**A**:Use`SkipPadSubMean`Waiting for strategy to skippaddingarea, or used before computing`Duplicate`FillpaddingArea is neutral (if)0 or MASK_VALUE).
+### Q3: DataCopyPad 的 padding 值污染后续计算
+**A**: 使用 `SkipPadSubMean` 等策略跳过 padding 区域，或在计算前用 `Duplicate` 填充 padding 区域为中性值（如 0 或 MASK_VALUE）。
 
-### Q4: Uncertainty of results due to the atoms at the end of the multi-nuclear scenario
-**A**: Using the quartile mode, reverse processing and detection of border index conflicts, skipping the conflict index is processed by the previous nuclear.
+### Q4: 多核场景下尾块原子加导致结果非确定性
+**A**: 使用确定性模式（deterministic mode），反向处理并检测边界索引冲突，跳过冲突索引由前一个核处理。
 
-## 8. Example of scene
+## 8. 场景用例
 
-### 8.1 Examples of each operator family
+### 8.1 各算子族实例
 
-**Elementwise**`[1000, 128]`, fileRows=256, tails 232, line 1:
+**Elementwise** `[1000, 128]`, tileRows=256，尾块 232 行，策略 1：
 
 ```cpp
 uint32_t loopCount = (rows + tileRows - 1) / tileRows;
@@ -210,12 +210,12 @@ for (uint32_t loop = 0; loop < loopCount; loop++) {
 }
 ```
 
-**MatMul**`M=1023`, blockM=128, tail 127.
+**MatMul** `M=1023`, blockM=128，尾块 127 行，策略 2+1：
 
 ```cpp
-// Host: Two-track subnuclei
+// Host：双轨制分核
 uint32_t mPerCore = CeilDiv(M, coreNum);
-// Kernel: Define M range based on blockIdx
+// Kernel：根据 blockIdx 确定 M 范围
 uint32_t localM = (blockIdx < coreNum - 1) ? mPerCore : M - blockIdx * mPerCore;
 uint32_t loopCount = (localM + blockM - 1) / blockM;
 for (uint32_t loop = 0; loop < loopCount; loop++) {
@@ -223,46 +223,46 @@ for (uint32_t loop = 0; loop < loopCount; loop++) {
 }
 ```
 
-**FlashAttention**`seqLen=1025`, fileSeq=1024, line 1, policy 1+3:
+**FlashAttention** `seqLen=1025`, tileSeq=1024，尾块 1 行，策略 1+3：
 
 ```cpp
 uint32_t kvLoopCount = (kvSeqLen + kvTileSize - 1) / kvTileSize;
 for (uint32_t kvLoop = 0; kvLoop < kvLoopCount; kvLoop++) {
     uint32_t curKvLen = (kvLoop == kvLoopCount - 1)
                             ? (kvSeqLen - kvLoop * kvTileSize) : kvTileSize;
-    if (curKvLen % 16 != 0) {  // Cube Input needs alignment
+    if (curKvLen % 16 != 0) {  // Cube 输入需对齐
         DataCopyPad(kLocal, kGm[...], copyParams, padParams);
     }
     if (isCausal && qLoop == kvLoopCount - 1) {
-        ApplyCausalMaskPartial(..., curKvLen);  // End block causal mask
+        ApplyCausalMaskPartial(..., curKvLen);  // 尾块 causal mask
     }
 }
 ```
 
 ---
 
-## 9. Selective decision-making and self-check list
+## 9. 选型决策与自检清单
 
-### 9.1 Selective decision-making
+### 9.1 选型决策
 
 ```
-if (operatorInclude iterative loops && The amount of data can't be used. tile Size Division):
-    → Enable tail_block Optimization
-    → Calculate normBlockLoop / tailBlockLoop
-    → End block use DataCopyPad or GatherMask
-    → Multi-nuclear scenario use AtomicAdd or certainty model
+if (算子包含迭代循环 && 数据量不能被 tile 大小整除):
+    → 启用 tail_block 优化
+    → 计算 normBlockLoop / tailBlockLoop
+    → 尾块使用 DataCopyPad 或 GatherMask
+    → 多核场景使用 AtomicAdd 或确定性模式
 else:
-    → Standard tile Just take care of it.
+    → 标准 tile 处理即可
 ```
 
-### 9.2 Self-check List
+### 9.2 自检清单
 
-- [ ] Host Side correctly calculates / tailBlockLoop / normBlockTailLoopSize / tailBlockTailLopSize
-- [ ] Kernel side with blockIdx_right selection of norm/tail parameters
-- [ ] Back directly when tail block size is 0
-- [ ] DataCopyPad Arguments Correct (blockCount, blockLen, srcStTriide, dstStride)
-- [ ] GatherMask Pattern type matches data type (faat→uint32_t, half→uint16_t)
-- [ ] 32B/64B Alignment constraints satisfied
-- [ ] AtomicAdd in SetAtomicAdd / SetAtomicNone pair
-- [ ] Correct reverse processing and border detection under certainty mode
-- [ ] accuracy Validation: achieves comparison with naive, error < 1e-5(FP32) or < 1e-3(FP16)
+- [ ] Host 侧正确计算 normBlockLoop / tailBlockLoop / normBlockTailLoopSize / tailBlockTailLoopSize
+- [ ] Kernel 侧根据 blockIdx_ 正确选择 norm/tail 参数
+- [ ] 尾块大小为 0 时核直接返回
+- [ ] DataCopyPad 参数正确（blockCount, blockLen, srcStride, dstStride）
+- [ ] GatherMask pattern 类型与数据类型匹配（float→uint32_t, half→uint16_t）
+- [ ] 32B/64B 对齐约束满足
+- [ ] AtomicAdd 在 SetAtomicAdd / SetAtomicNone 配对内使用
+- [ ] 确定性模式下反向处理和边界检测正确
+- [ ] 精度校验通过：与 naive 实现对比，误差 < 1e-5（FP32）或 < 1e-3（FP16）

@@ -1,6 +1,6 @@
 ---
 name: tilelang-ascend-example-reduction
-description: "The TileLang Ascend Express model achieves the example. The code structure of this example and the double buffering pipeline model can be consulted when you generate the operator category of reduce."
+description: "行归约（reduce_min）的 TileLang Ascend Expert 模式 pipeline 实现示例。当生成 reduce 类算子时可参考此示例的代码结构与双缓冲流水线模式。"
 category: example
 version: "2.0.0"
 metadata:
@@ -10,17 +10,17 @@ metadata:
   operator_type: "reduction"
 ---
 
-# Reduce_min - TileLang Ascend Pipeline (Expert mode)
+# 行归约（reduce_min）— TileLang Ascend Pipeline 实现示例（Expert 模式）
 
-**Programming mode**: Express (manual `T.Scope("V")` + `T.barrier_all()` + double buffering pipeline)
+**编程模式**：Expert（手动 `T.Scope("V")` + `T.barrier_all()` + 双缓冲流水线）
 
-**Key technical points**:
-- `T.alloc_ub` UB Memory Allocation (double buffering with `stages` dimensions)
-- `T.reduce_min` Return Operation (same as `T.reduce_max` / `T.reduce_sum`)
-- `T.Scope("V")` Victor Nuclear Separation
-- `T.barrier_all()` Nuclear Synchronization
-- `VEC_NUM = 2` Double nucleus parallel, `sub_M` block slice
-- `stages = 2` double buffering pipeline: Current block calculation parallels the next piece of data removal
+**关键技术点**：
+- `T.alloc_ub` UB 内存分配（带 `stages` 维度的双缓冲）
+- `T.reduce_min` 归约操作（同理可用 `T.reduce_max` / `T.reduce_sum`）
+- `T.Scope("V")` Vector 核分离
+- `T.barrier_all()` 核内同步
+- `VEC_NUM = 2` 双核并行，`sub_M` 子块切分
+- `stages = 2` 双缓冲流水线：当前块计算与下一块数据搬运并行
 
 ```python
 import tilelang
@@ -77,11 +77,11 @@ def reduce_min_pipeline(M, N, block_M, block_N, sub_M, dtype="float"):
     return main
 ```
 
-**Called**:
+**调用方式**：
 
 ```python
 func = reduce_min_pipeline(M, N, block_M, block_N, sub_M)
 c = func(a)
 ```
 
-**Constraint**: M must be the integer multiple of block_M and N must be the integer multiple of block_N. The non-integrated scene needs to padding or using the Devloper mode + `T.ceildiv`.
+**约束**：M 必须是 block_M 的整数倍，N 必须是 block_N 的整数倍。非整除场景需 padding 或使用 Developer 模式 + `T.ceildiv`。

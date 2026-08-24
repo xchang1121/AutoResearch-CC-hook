@@ -1,6 +1,6 @@
 ---
 name: pypto-optimization
-description: "PyPTO performance optimization rules and reference sequences. This applies to scenarios that require the optimization of tile/loop/renunciation performance, comparison of tile scenarios, interpretation of the same operator for different tile performance differences (especially softmax/logsoftmax/reduction/norm/loss)"
+description: "PyPTO 性能优化规则与调参顺序。适用于需要优化 tile/loop/归约性能、比较不同 tile 方案、解释同一算子不同 tile 性能差异（尤其 softmax/logsoftmax/reduction/norm/loss）的场景"
 category: method
 version: "1.0.0"
 metadata:
@@ -9,210 +9,210 @@ metadata:
   operator_patterns: "softmax,logsoftmax,reduction,norm,loss,tile,performance"
 ---
 
-# PyPTO performance optimization (continuous replenishment)
+# PyPTO 性能优化（持续补充）
 
-## Rule 1: Continuous removal first reaches the threshold and then finds dessert at the axis of return
+## 规则 1：连续搬运先达阈值，再在归约轴找甜点
 
-The following priority is given to operator (softmax, logsoftmax, sum/amax/amin, and `mean=sum/count` semantics) containing the contract of return:
-- For a fixed type `shape=(16,256,256), dim=1`, the default template is directly with `set_vec_tile_shapes(1, 16, 256)`.
-- First meet hard constraints: `prod(tile_shape) <= 16384` and `auto_tiles <= 2048`.
-- If `auto_tiles > 2048`, introduce the `loop + view/assemble` segment first, then fine-tune the file.
-- If a UB or OoOSchedule-related error is compiled/verified, priority is given to the reduction of `prod(tile_shape)` (often from `16384 -> 8192 -> 4096`).
-- **Empirical threshold for continuous movement**: `contiguous_bytes(tile) >= 1KB` (Empirical value, first performance threshold).
-- Under the same compileable bounds, the candidate that did not reach 1KB will be phased out by default,**not**directly selected simply because of the "axis of the Statute".
-- Only when the candidates can be compiled less than 1KB will the axes of the Statute be compared with the measurements in the `<1KB` candidate.
-- When the threshold is reached, do not default on the "Axes of the Statute" to be bigger and faster; and make a candidate test for the axis of the Statute (the default order `16 -> 32 -> 64`) and select desserts accordingly.
-- **tile is not wasted**: priority is given to each dimension `tile[i] <= shape[i]`. `tile[i]` is much greater than the corresponding dimension, which usually does not increase effective parallels, but wastes the resource budget and raises auto-tiling costs.
-- **Prohibition of misreading**: It is not "the better the better" or "the less the axle of the contract." When the criteria are met, the objective is to reduce the number of subparagraphs of the Statute instead of continuing to zoom in the non-axis of the Statute.
+对包含归约的算子（softmax、logsoftmax、sum/amax/amin，以及 `mean=sum/count` 语义）按以下优先级：
+- 对固定题型 `shape=(16,256,256), dim=1`，默认模板直接用 `set_vec_tile_shapes(1, 16, 256)`。
+- 先满足硬约束：`prod(tile_shape) <= 16384` 且 `auto_tiles <= 2048`。
+- 若 `auto_tiles > 2048`，优先引入 `loop + view/assemble` 分块，再做 tile 微调。
+- 若编译/验证出现 UB 或 OoOSchedule 相关报错，优先降 `prod(tile_shape)`（常见从 `16384 -> 8192 -> 4096`）。
+- **先让连续搬运达经验阈值**：`contiguous_bytes(tile) >= 1KB`（经验值，第一性能门槛）。
+- 在同等可编译约束下，未达 1KB 的候选默认淘汰，**不能**仅因“规约轴不分段”直接入选。
+- 只有当可编译候选都达不到 1KB 时，才在 `<1KB` 候选中比较规约轴分段与实测。
+- 达到阈值后，不要默认“规约轴越大越快”；对规约轴 tile 做候选实测（默认顺序 `16 -> 32 -> 64`），按实测选甜点。
+- **tile 不浪费**：优先让每一维 `tile[i] <= shape[i]`。`tile[i]` 远大于对应维度通常不会增加有效并行，反而会浪费 tile 预算并抬高 auto-tiling 开销。
+- **禁止误读**：不是“越连续越好”也不是“归约轴不切分”。连续搬运达标后，目标转为减少规约分段，而不是继续放大非规约轴 tile。
 
-Of which (key, prohibition of miscalculation):
+其中（关键，禁止误算）：
 - `contiguous_bytes(tile) = contiguous_tile_elems * dtype_bytes`
-- `contiguous_tile_elems` means**the number of tile elements in a continuous moving segment**, not the original number of `shape` elements.
-- The Vec scenario is by default estimated at the last dimension: `contiguous_tile_elems = tile[last_axis]` (without conversion/replacement).
-- Prioritize `tile[last_axis] <= shape[last_axis]`; do not "convert " through `tile > shape` before a continuous removal threshold is determined.
-- FP32 Common threshold: `contiguous_tile_elems >= 256` (approximately 1KB)
-- FP16/BF16 Common threshold: `contiguous_tile_elems >= 512` (approximately 1KB)
-- In retrospect: For `shape=(16,256,256), dim=1, tile=(1,256,64)`, consecutive handling is based on `tile[2]=64`, only `64*4=256B`,**not reaching 1KB**.
+- `contiguous_tile_elems` 指**一次连续搬运段里的 tile 元素数**，不是原始 `shape` 元素数。
+- Vec 场景默认按最后一维估算：`contiguous_tile_elems = tile[last_axis]`（不做转置/置换时）。
+- 连续搬运阈值判定前，优先满足 `tile[last_axis] <= shape[last_axis]`；不要通过 `tile > shape` 做“折算达标”。
+- FP32 常用阈值：`contiguous_tile_elems >= 256`（约 1KB）
+- FP16/BF16 常用阈值：`contiguous_tile_elems >= 512`（约 1KB）
+- 反例：`shape=(16,256,256), dim=1, tile=(1,256,64)` 时，连续搬运按 `tile[2]=64` 算，仅 `64*4=256B`，**未达到 1KB**。
 
-### Reason
+### 原因
 
-- In the absence of continuous handling, access to debris and overstepping costs will be the first bottlenecks.
-- Once a continuous move has reached a high-efficiency zone, the marginal returns are usually further amplified.
-- When the axis of return is too big, the monotask may be too fat (local return tree is heavier and storage/flow pressure is higher).
-- The return axle tile is over the hour and the segment and consolidation costs will rise.
-- It is therefore common for non-uniform relationships (U-types) to find dessert in the candidate for compliance, rather than to be singled out.
+- 连续搬运不足时，访存碎片和跨步开销会先成为瓶颈。
+- 连续搬运达到高效区后，进一步放大通常边际收益很低。
+- 归约轴 tile 过大时，单 task 可能过胖（局部归约树更重、寄存器/流水压力更高）。
+- 归约轴 tile 过小时，分段与合并开销会上升。
+- 因此常见是非单调关系（U 型），需要在达标候选中找甜点，而不是单调追大。
 
-### Example A: Softmax `(16, 16384), dim=1`
+### 示例 A：Softmax `(16, 16384), dim=1`
 
-- `set_vec_tile_shapes(1, 8192)`: 2 paragraphs per row (priority)
-- `set_vec_tile_shapes(2, 4096)`: 4 paragraphs per row
-- `set_vec_tile_shapes(4, 4096)`: 4 paragraphs per line with more budget allocated to non-return axes
+- `set_vec_tile_shapes(1, 8192)`：每行 2 段（优先）
+- `set_vec_tile_shapes(2, 4096)`：每行 4 段
+- `set_vec_tile_shapes(4, 4096)`：每行 4 段，且更多预算给了非归约轴
 
-Empirically, `(1, 8192)` is usually better than `(2, 4096)` and `(4, 4096)`.
+经验上，`(1, 8192)` 通常优于 `(2, 4096)` 和 `(4, 4096)`。
 
-### Example B: Reduction `(16, 64, 256, 256), dim=1`
+### 示例 B：Reduction `(16, 64, 256, 256), dim=1`
 
-- `set_vec_tile_shapes(1, 16, 1, 256)` / `(1, 32, 1, 256)` / `(1, 64, 1, 256)`: Both satisfy continuous handling compliance and require a dessert comparison.
-- `set_vec_tile_shapes(1, 1, 16, 256)`: Although the standards were continuously moved, the axis of the contract of return was not used effectively and was usually a poor candidate.
+- `set_vec_tile_shapes(1, 16, 1, 256)` / `(1, 32, 1, 256)` / `(1, 64, 1, 256)`：均满足连续搬运达标，需做甜点比较。
+- `set_vec_tile_shapes(1, 1, 16, 256)`：虽然连续搬运达标，但归约轴未被有效利用，通常是劣候选。
 
-This example reflects a hierarchy of rules: successive removal leads to compliance, followed by a return-axis dessert search.
+这个例子体现了层级规则：连续搬运先达标，达标后做归约轴甜点搜索。
 
-### Example C: TripletMarginlos Phase-1 `(128, 4096), dim=1`
+### 示例 C：TripletMarginLoss Phase-1 `(128, 4096), dim=1`
 
-- `set_vec_tile_shapes(4, 4096)`: Complete coverage of the attribute axis and higher parallelness of the bat axis (priority)
-- `set_vec_tile_shapes(1, 16384)`: A second-dimensional file clearly exceeds real dimensions `4096`, has a file budget waste
+- `set_vec_tile_shapes(4, 4096)`：归约轴完整覆盖，且 batch 轴并行度更高（优先）
+- `set_vec_tile_shapes(1, 16384)`：第二维 tile 明显超过真实维度 `4096`，存在 tile 预算浪费
 
-Empirically, `(4, 4096)` is usually better than `(1, 16384)`.
+经验上，`(4, 4096)` 通常优于 `(1, 16384)`。
 
-### Example D: 3D Max/Reduction `(16, 256, 256), dim=1`
+### 示例 D：3D Max/Reduction `(16, 256, 256), dim=1`
 
-- Candidate `set_vec_tile_shapes(1, 256, 64)`:
-  - The axis of the contract is not subdivided, but only `64*4=256B` (FP32) is moved continuously and does not meet the 1KB threshold.
-- Candidates for compliance:
-  - `set_vec_tile_shapes(1, 16, 256)`: Continuously moving the standard and returning to the axis segment 16 (this shape default priority).
-  - `set_vec_tile_shapes(1, 32, 256)`: Continuously move the standard and assign the axial fraction 8 (optional).
-  - `set_vec_tile_shapes(1, 64, 256)`: Continuously move the standard and assign the axial fraction 4 (not recommended for default).
+- 候选 `set_vec_tile_shapes(1, 256, 64)`：
+  - 归约轴不分段，但连续搬运仅 `64*4=256B`（FP32），未达 1KB 阈值。
+- 达标候选：
+  - `set_vec_tile_shapes(1, 16, 256)`：连续搬运达标，归约轴分 16 段（本形状默认优先）。
+  - `set_vec_tile_shapes(1, 32, 256)`：连续搬运达标，归约轴分 8 段（备选）。
+  - `set_vec_tile_shapes(1, 64, 256)`：连续搬运达标，归约轴分 4 段（不建议默认使用）。
 
-This example shows that the continuous removal threshold check must be based on `tile`. For the fixed shape, the default direct use of `(1,16,256)` does not replace the empirical conclusion with a "middle start ".
+这个例子说明：连续搬运阈值检查必须基于 `tile`。对该固定形状，默认直接采用 `(1,16,256)`，不以“中段起步”替代实证结论。
 
-### Example E: Refusal to "convert to meet " `(16, 256, 256), dim=1`
+### 示例 E：拒绝“折算达标” `(16, 256, 256), dim=1`
 
-- Candidate `set_vec_tile_shapes(1, 32, 512)`:
-  - It can be compiled, but `tile[2]=512 > shape[2]=256`, which is a budget waste candidate, should not be justified by "effictive = 256".
-- Conclusions
-  - Threshold judgement is based on the actual continuous period of `tile`; first selects `tile[last_axis] <= shape[last_axis]`'s candidacy, then makes `16/32/64`'s dessert comparison.
+- 候选 `set_vec_tile_shapes(1, 32, 512)`：
+  - 写法上可编译，但 `tile[2]=512 > shape[2]=256`，属于预算浪费候选，不应拿“effective=256”当达标理由。
+- 结论：
+  - 阈值判断以 `tile` 的实际连续段为准；先选 `tile[last_axis] <= shape[last_axis]` 的候选，再做 `16/32/64` 甜点比较。
 
-### Boundary application
+### 适用边界
 
-- This is the performance priority rule, not the semantic rule, and ultimately the test.
-- Exceptions may exist when the non-return axis is large and backend achieves speciality.
-- The continuous removal threshold `1KB` is the starting point of experience and not a hard constraint; it can be fine-tuned by profile results.
-- Threshold values judge the actual duration of `tile` without the full-dimensional length of `shape`.
-- Benchmark for stationary Shape, avoids the "converted to the standard" for `tile[last_axis] > shape[last_axis]`.
-- For two tiles, pipeline (e.g., the per-sample phase of CrossEntropy and the Batch reintegration phase), this rule is applied separately in stages.
-- For RMSNornm/BatchNomm such 3D contracts, if the axis of the contract is `C` and `C` is medium (e.g. 32/64/128), priority is given to the last dimension of continuous movement up to 1KB and then to the `C` axis file comparison for dessert.
-- `tile[i] > shape[i]` is not a grammatical error, but it is usually a performance signal, unless there is a clear and realistic measurement of the proceeds.
-- Cannot and does not need to calculate UB occupancy manually; based on `prod(tile_shape)` grade down + compilation.
+- 这是性能优先规则，不是语义规则，最终以实测为准。
+- 当非归约轴很大且后端实现特殊时，例外可能存在。
+- 连续搬运阈值 `1KB` 是经验起点，不是硬约束；可按 profile 结果微调。
+- 阈值判断使用 `tile` 的实际连续段，不使用 `shape` 的全维长度。
+- 对静态 shape 的 benchmark，优先避免 `tile[last_axis] > shape[last_axis]` 的“折算达标”写法。
+- 对两段 tile 的流水线（如 CrossEntropy 的 per-sample 阶段与 batch 归约阶段），要分阶段分别应用本规则。
+- 对 RMSNorm/BatchNorm 这类 3D 归约，若归约轴是 `C` 且 `C` 中等（如 32/64/128），优先让最后一维连续搬运先达 1KB，再对 `C` 轴 tile 做甜点比较。
+- `tile[i] > shape[i]` 不是语法错误，但通常是性能信号，除非有明确实测收益。
+- 无法也不需要手动精确计算 UB 占用；以 `prod(tile_shape)` 分级降档 + 编译实测为准。
 
-## Rule 2: `loop count` for mid-sweet, not extreme
+## 规则 2：`loop count` 取中间甜点，不取极端
 
-The scenes that apply to the fixed total volume of work, which are achieved through sections along the outer axis of `loop + view/assemble` (matmul, norm, reduction, loss) are common.
+适用于固定总工作量、通过 `loop + view/assemble` 沿外轴分块的场景（matmul、norm、reduction、loss 的分块实现都常见）。
 
-- When the total is fixed, it usually meets: `total_batch = loop_count * main_batch`.
-- `loop_count` is in essence a modulation of "task particle": the larger the `loop_count`, the smaller the single task; the smaller the `loop_count`, the larger the single task.
-- **Empirical patterns are usually of the U-type**: the best performance with intermediate desserts; both ends are likely to slow down.
+- 总量固定时，通常满足：`total_batch = loop_count * main_batch`。
+- 调 `loop_count` 本质是在调“任务粒度”：`loop_count` 越大，单任务越小；`loop_count` 越小，单任务越大。
+- **经验规律通常是 U 型**：存在中间甜点，性能最好；两端都可能变慢。
 
-### Reason (general)
+### 原因（通用）
 
-- `loop_count` is too big (taggered):
-  - Increased number and dependency of teams and increased costs of ready-queue/mobilization/aware.
-  - Common: `Wait Schedule Time`, `Wait Predecessor Time` significantly increased.
-- `loop_count` is too small (overweight mission):
-  - The single task internal submap is heavy and the single execution time is significantly higher.
-  - The parallel particle size becomes thicker, the load balance changes, and the tail core slows the total time.
+- `loop_count` 过大（任务过碎）：
+  - task 数量和依赖边增多，ready-queue/调度/唤醒开销放大。
+  - 常见现象：`Wait Schedule Time`、`Wait Predecessor Time` 显著上升。
+- `loop_count` 过小（任务过胖）：
+  - 单 task 内部子图变重，单次执行时间明显上升。
+  - 并行粒度变粗，负载均衡变差，尾核拖慢总时延。
 
-### Selective method (common reusable)
+### 选型方法（通用可复用）
 
-1. Brush candidate: `loop_count ∈ {8, 16, 32, 64, 128}` (or extension by scale of problem, etc.).
-2. Record harmonized indicators under the same process:
-   - `gen_time_us` (main target)
+1. 粗扫候选：`loop_count ∈ {8, 16, 32, 64, 128}`（或按问题规模等比扩展）。
+2. 记录同一 profile 流程下的统一指标：
+   - `gen_time_us`（主目标）
    - `avg Wait Schedule Time / core`
    - `avg Execute task num / core`
-   - `sum_dur` for main time-consuming PSG and `avg_dur`
-3. Decision logic:
-   - If `loop_count` is increased by `gen_time_us` and the water indicator is increased sharply, then enters the Permuted Area.
-   - If `loop_count` is reduced, `gen_time_us` rises and the main stage `avg_dur`/`sum_dur` lifts up, enters the "overweight".
-4. The best advantage is to choose between the "over-crash" and "over-fat" areas, with minor fine-tuning.
+   - 主耗时阶段（dominant PSG）的 `sum_dur` 与 `avg_dur`
+3. 判定逻辑：
+   - 若增大 `loop_count` 后 `gen_time_us` 上升且 wait 指标陡增，则进入“过碎区”。
+   - 若减小 `loop_count` 后 `gen_time_us` 上升且主阶段 `avg_dur`/`sum_dur`抬升，则进入“过胖区”。
+4. 在“过碎区”和“过胖区”之间选最优点，再做小范围微调。
 
-### Common error zone
+### 常见误区
 
-- Error A: "`loop_count` is smaller and faster".
-- Error B: "`loop_count` as soon as possible (in parallel with more).
-- Error C (Matmul HF): "`BASIC_BATCH=128` is the fixed best value".
-- Correct: Scanning for dessert, without a monotonous assumption.
+- 误区 A：“`loop_count` 越小越快”。
+- 误区 B：“`loop_count` 越大越快（并行更多）”。
+- 误区 C（Matmul 高频）：“`BASIC_BATCH=128` 是固定最佳值”。
+- 正解：先扫点找甜点，不做单调假设。
 
-### Matmul Reminder (HF)
+### Matmul 提醒（高频）
 
-- For matmul for `m` dimensional loop, fixation of `BASIC_BATCH` constant (e.g. 128/256) is prohibited.
-- Select the candidate in the space of `loop_count` and then reverse `BASIC_BATCH = ceil_div(m, loop_count)`.
-- The default candidate order is recommended: `16/32 -> 8/64 -> 1/max` (stop early as required).
-- Example:`m=16384` when,`loop=16/32`Correspond`BASIC_BATCH=1024/512`;`loop=8/64`Correspond`2048/256`.
-- In the event of a conflict with any illustrative constant, this article prevails.
+- 对 `m` 维 loop 的 matmul，禁止固定 `BASIC_BATCH` 常量（如 128/256）。
+- 先在 `loop_count` 空间选候选，再反推 `BASIC_BATCH = ceil_div(m, loop_count)`。
+- 推荐默认候选顺序：`16/32 -> 8/64 -> 1/max`（按需要早停）。
+- 例：`m=16384` 时，`loop=16/32` 对应 `BASIC_BATCH=1024/512`；`loop=8/64` 对应 `2048/256`。
+- 与任何示例常量冲突时，以本条为准。
 
-### Lazy Start (Recommends Default)
+### 偷懒起步法（推荐默认）
 
-- When `loop_count` is feasible for a wider range (e.g. `1 ~ 128`), do not sweep from both ends in sequence.
-- You can start directly with the mid-sweet candidate (often try first `16` or `32`).
-- The word "intermediate" here is**between logarithmic**, not the midpoint of arithmetic:
-  - The loop candidate usually changes by two steps (`1, 2, 4, ..., 128`).
-  - At this level, the middle of `1~128` is given priority to `16/32`, which avoids both the "overweight" and "overbreak" ends.
-- Quick process:
-  1. Check the mid-point candidate (`16/32`).
-  2. One more leap to each side (e.g. `8`, `64`).
-  3. Only fills the endpoints (`1`, `128`) as needed.
-- Purpose: First, avoid extremes at both ends quickly, give priority to the dessert area and then fine-tune it at a small scale.
+- 当 `loop_count` 可行范围较宽（如 `1 ~ 128`），不要从两端顺序扫。
+- 直接从中间甜点候选起步（常用先试 `16` 或 `32`）。
+- 这里的“中间”是**对数刻度中间**，不是算术中点：
+  - loop 候选通常按 2 倍步长变化（`1, 2, 4, ..., 128`）。
+  - 在该刻度下，`1~128` 的中段优先落在 `16/32`，可同时避开“过胖”和“过碎”两端。
+- 快速流程：
+  1. 先测中点候选（`16/32`）。
+  2. 再向两侧各扩一跳（如 `8`、`64`）。
+  3. 仅在需要时再补端点（`1`、`128`）。
+- 目的：先快速避开两端极值，优先命中可用甜点区，再做小范围微调。
 
-### Non-uniform examples (evidence only, not fixed answers)
+### 非单调示例（仅作证据，不是固定答案）
 
-A survey of case35 (Groupnorm) shows that:
-- `loop=16`: `630.30us` (More)
+case35（GroupNorm）一次实测：
+- `loop=16`: `630.30us`（更优）
 - `loop=8`: `649.58us`
 - `loop=32`: `649.42us`
 - `loop=64`: `804.96us`
 - `loop=128`: `936.66us`
 
-This example shows that `16` is better than `8/32`, and that `64/128` is clearly entering the "scattered area".
+该例表明：`16` 优于 `8/32`，而 `64/128` 明显进入“过碎区”。
 
-## Rule 3: Consolidation of successive axes of the Statute in preference (in semantic equivalent)
+## 规则 3：连续规约轴优先合并（语义等价时）
 
-PyPTO's attribution API (e. g. `sum/amax/amin`) supports only one `dim` at a time; `mean` semantics need to be achieved with `sum/count`.
-When the semantic of baseline is a "general statute for multiple continuum axes" and does not depend on the intermediate axis results, priority is given to the consolidation of these continuum axes by `reshape` in favour of a single axis.
+PyPTO 的归约 API（如 `sum/amax/amin`）一次只支持单个 `dim`；`mean` 语义需用 `sum/count` 实现。  
+当 baseline 语义是“对多个连续轴做总规约”且不依赖中间轴结果时，优先在 forward 先 `reshape` 合并这些连续规约轴，再做一次单轴规约。
 
-### Why?
+### 为什么
 
-- Repeatedly, `sum(dim=...)` will introduce the middle tensor and additional movement costs.
-- The consolidation of successive axes of statutes, followed by a single statute, would normally reduce intermediate writing and synchronization.
+- 连续多次 `sum(dim=...)` 会引入中间张量与额外调度开销。
+- 先合并连续规约轴，再单次规约，通常能减少中间写回与同步。
 
-### Common approaches
+### 通用做法
 
-First, the following three articles must be satisfied at the same time:
-1. The axle of the Statute is a contiguous continuous axis in the current tensor layout (which can be combined directly through reshape and does not require conversion/replacement).
-2. The intermediate statute results are not reused by other operators (only for subsequent Statutes, not input/output as branches).
-3. The merged semantic contract is fully consistent (statistically defined, zoomed in such a way as `sum`/`batchmean`/`sum/count`, output shape).
+先做判定，必须同时满足以下三条：
+1. 规约轴在当前张量布局中是相邻连续轴（可通过 reshape 直接合并，不需要转置/置换）。
+2. 中间规约结果不被其他算子复用（仅用于后续下一步规约，不作为分支输入/输出）。
+3. 合并后语义合同完全一致（规约定义、缩放方式如 `sum`/`batchmean`/`sum/count`、输出形状一致）。
 
-When three articles are satisfied:
-1. Consolidation of successive Statutes in Forward (reshape only, no replacement).
-2. In Kernel read a single Statute + the original text of the final Statute.
+满足三条时：
+1. 在 forward 合并连续规约轴（仅 reshape，不做置换）。
+2. kernel 内改为单次规约 + 原有最终规约语义。
 
-### Example:
+### 示例（仅示例）
 
-- Space fate of Norm `(N, C, H, W)`:
-  - If the goal is a joint statute for `H,W`, it can be transformed into a single-axis statute for `(N, C, H*W)`.
+- Norm 的空间归约 `(N, C, H, W)`：
+  - 若目标是对 `H,W` 联合规约，可先变为 `(N, C, H*W)`，再对单轴规约。
 
-### When should we not merge?
+### 何时不要合并
 
-- Intermediate axis results are required (e.g., the intermediate tensor would also be involved in other operators or as an observable output).
-- The axis of the Statute are not continuous, or the merger changes semantics (not purely reshape equivalent).
-- The merger resulted in a worse combination of `tile/loop` and no gain was measured.
+- 需要中间轴结果（例如中间张量还要参与其他算子或作为可观测输出）。
+- 规约轴不连续，或合并会改变语义（并非纯 reshape 等价）。
+- 合并后导致更差的 `tile/loop` 组合，实测无收益。
 
-## Quick Check List
+## 快速检查清单
 
-- [ ] Whether operator contains the Axis of the Convention
-- [ ] Whether continuous removal first meets the empirical threshold (approximately 1KB, calculated as `tile` consecutive period)
-- [ ] Whether to avoid using `tile[last_axis] > shape[last_axis]` as "effictive to meet standards"
-- [ ] After continuous removal, press`16 -> 32 -> 64`Reciprocal Axis Candidates (Ben)shapeDefault Preferred`16`)
-- [ ] Whether or not to make a comparison of axial desserts (e.g. `16/32/64`) in the candidate for compliance
-- [ ] Whether to avoid visible `tile[i] > shape[i]` (no gain waste)
-- [ ] Satisfactory for `prod(tile_shape) <= 16384` and `auto_tiles <= 2048`
-- [ ] If `auto_tiles > 2048`, change to loop segment before tile
-- [ ] If UB/OOOScheduule is wrong, whether to drop `prod(tile_shape)` from `16384` to `8192/4096` and try again
-- [ ] Whether at least two tile candidates have been measured
-- [ ] Whether `loop_count` Brush has been done (at least 3 points, 5 points recommended)
-- [ ] Whether the end of "overclosed (movement waiting)" and "overweight (single task overweight)" were checked simultaneously
-- [ ] Whether the matmul is first inverted by `loop_count`'s mid-point candidate `BASIC_BATCH` (rather than copying the constant)
-- [ ] Whether or not the multiaxis statutes have assessed the achievement of the equivalent of the "Continued Axis Together and One Axis Statutes"
+- [ ] 算子是否含归约轴
+- [ ] 连续搬运是否先达到经验阈值（约 1KB，按 `tile` 连续段计算）
+- [ ] 是否避免用 `tile[last_axis] > shape[last_axis]` 做“effective 折算达标”
+- [ ] 在连续搬运达标后，是否按 `16 -> 32 -> 64` 顺序比较归约轴候选（本形状默认首选 `16`）
+- [ ] 在达标候选中，是否做了归约轴甜点比较（如 `16/32/64`）
+- [ ] 是否避免明显的 `tile[i] > shape[i]`（无收益浪费）
+- [ ] 是否满足 `prod(tile_shape) <= 16384` 与 `auto_tiles <= 2048`
+- [ ] 若 `auto_tiles > 2048`，是否先改成 loop 分块再调 tile
+- [ ] 若出现 UB/OoOSchedule 报错，是否先将 `prod(tile_shape)` 从 `16384` 降到 `8192/4096` 再试
+- [ ] 是否至少实测了两组 tile 候选
+- [ ] 是否做了 `loop_count` 粗扫（至少 3 个点，建议 5 个点）
+- [ ] 是否同时排查了“过碎（调度等待）”与“过胖（单任务过重）”两端
+- [ ] matmul 是否先由 `loop_count` 中段候选反推 `BASIC_BATCH`（而非照抄固定常量）
+- [ ] 多轴规约是否评估过“连续规约轴先合并再单轴规约”的等价实现
 
-## To be completed
+## 待补充
 
-- Rule 4: Case split guidelines for two paragraphs tile
-- Rule 5: Impact of operator integration and numerical stability on performance
+- 规则 4：两段 tile 的 phase 划分准则
+- 规则 5：算子融合与数值稳定性对性能的影响

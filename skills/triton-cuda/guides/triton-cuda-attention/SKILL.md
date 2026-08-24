@@ -1,6 +1,6 @@
 ---
 name: triton-cuda-attention
-description: "A Triton-CUDA realization guide for Attention operator. Includes certified full examples of Flash Attention, variation of variants (Causal/GQA/MQA/RoPE), online Softmax algorithms and common errors"
+description: "Attention 算子的 Triton-CUDA 实现指南。包含经过验证的 Flash Attention 完整示例、各变体（Causal/GQA/MQA/RoPE）的差异改法、在线 Softmax 算法和常见错误"
 category: implementation
 version: "2.0.0"
 metadata:
@@ -12,26 +12,26 @@ metadata:
 
 # Triton-CUDA Attention
 
-## Online Softmax core algorithm
+## 在线 Softmax 核心算法
 
-Flash Attention reduces memory from O(L²) to O(L) by block + Online Softmax. Each KV block is processed:
+Flash Attention 用分块 + 在线 Softmax 将内存从 O(L²) 降到 O(L)。每处理一个 KV 块：
 
 ```python
-# Maintenance of three states: m_i (maximum of line), l_i (exp and ), acc (output loader)
-qk = tl.dot(q, k) * sm_scale_log2e       # Q @ K^T, pre-supplied log2(e) For use. exp2
-m_ij = tl.maximum(m_i, tl.max(qk, 1))    # Update max
-p = tl.math.exp2(qk - m_ij[:, None])     # Value stable exp(CUDA Use it. exp2 Faster)
-alpha = tl.math.exp2(m_i - m_ij)         # Modify Factor
-l_i = l_i * alpha + tl.sum(p, 1)         # Amend and update the denominator
-acc = acc * alpha[:, None]               # Aggregated results before amendment
-acc = tl.dot(p.to(v.dtype), v, acc)      # Add current block contribution
+# 维护三个状态: m_i(行最大值), l_i(exp和), acc(输出累加器)
+qk = tl.dot(q, k) * sm_scale_log2e       # Q @ K^T，预乘 log2(e) 以便用 exp2
+m_ij = tl.maximum(m_i, tl.max(qk, 1))    # 更新最大值
+p = tl.math.exp2(qk - m_ij[:, None])     # 数值稳定的 exp（CUDA 用 exp2 更快）
+alpha = tl.math.exp2(m_i - m_ij)         # 修正因子
+l_i = l_i * alpha + tl.sum(p, 1)         # 修正并更新分母
+acc = acc * alpha[:, None]               # 修正之前的累加结果
+acc = tl.dot(p.to(v.dtype), v, acc)      # 加上当前块贡献
 m_i = m_ij
-# End of cycle: output = acc / l_i[:, None]
+# 循环结束后: output = acc / l_i[:, None]
 ```
 
-## Full example: Standard Flash Attention
+## 完整示例：标准 Flash Attention
 
-Enter Q/K/V: `(B, H, L, D)`, validated by A100.
+输入 Q/K/V: `(B, H, L, D)`，经过 A100 验证。
 
 ```python
 import torch
@@ -64,7 +64,7 @@ def _flash_attn_fwd_kernel(
     v_offset = off_b * stride_vb + off_h * stride_vh
     o_offset = off_b * stride_ob + off_h * stride_oh
 
-    # K shapeDeclare as(D, N_CTX),tl.dot(q, k)Directly.Q@K^TThere is no need to switch
+    # K shape 声明为 (D, N_CTX)，tl.dot(q, k) 直接得到 Q@K^T 无需转置
     Q_block_ptr = tl.make_block_ptr(
         base=Q + q_offset, shape=(N_CTX, D), strides=(stride_qm, stride_qd),
         offsets=(pid_m * BLOCK_M, 0), block_shape=(BLOCK_M, D), order=(1, 0))
@@ -107,9 +107,9 @@ class ModelNew(torch.nn.Module):
         super().__init__()
 
     def forward(self, query, key, value):
-        # Enter playout: (B, H, L, D)
+        # 输入 layout: (B, H, L, D)
         #   B = batch_size, H = num_heads, L = seq_len, D = head_dim
-        # If external playout is different (e. g. (B, L, H, D)) it needs to be transpose and contigouous
+        # 若外部 layout 不同（如 (B,L,H,D)），需先 transpose 再 contiguous
         B, H, L, D = query.shape
         query, key, value = query.contiguous(), key.contiguous(), value.contiguous()
         out = torch.empty_like(query)
@@ -128,81 +128,81 @@ class ModelNew(torch.nn.Module):
         return out
 ```
 
-## Variant (based on standard FA differences)
+## 变体改法（基于标准 FA 的差异）
 
 ### Causal Attention
 
-Two amendments:
+两处修改：
 
 ```python
-# 1. Cycle upper bounds: only go through the current Q block position (with approximately half of the calculations saved)
+# 1. 循环上界：只遍历到当前 Q 块位置（节省约一半计算）
 offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
 offs_n = tl.arange(0, BLOCK_N)
 hi = tl.minimum((pid_m + 1) * BLOCK_M, N_CTX)
 for start_n in range(0, hi, BLOCK_N):
     start_n = tl.multiple_of(start_n, BLOCK_N)
-    # ...load k, calculate qk...
+    # ... 加载 k, 计算 qk ...
 
-    # 2. Add cause/effects to qk
+    # 2. 在 qk 上叠加因果 mask
     causal_mask = offs_m[:, None] >= (start_n + offs_n[None, :])
     qk = qk + tl.where(causal_mask, 0.0, float("-inf"))
-    # Follow-up online softmax remains the same...
+    # ... 后续在线 softmax 不变 ...
 ```
 
-### GQA(Grouped-Query Attention)
+### GQA（Grouped-Query Attention）
 
-Q has H_q head, K/V has H_kv head (H_q is an integer multiple of H_kv). Only read index:
+Q 有 H_q 个 head，K/V 有 H_kv 个 head（H_q 是 H_kv 的整数倍）。仅改 head 索引：
 
 ```python
-# kernel parameter increase: Q_NUM_HEADS, KV_NUM_HEADS
+# kernel 参数增加: Q_NUM_HEADS, KV_NUM_HEADS
 off_h_q = pid_bh % Q_NUM_HEADS
-# Key: Group map with whole / / not with % (% is staggered, not consistent with the PyTorch semantic)
+# 关键：用整除 // 做分组映射，不能用 % （% 是交错映射，与 PyTorch 语义不符）
 off_h_kv = off_h_q // (Q_NUM_HEADS // KV_NUM_HEADS)
 
-q_offset = off_b * stride_qb + off_h_q * stride_qh   # Q Use it. Q head
-k_offset = off_b * stride_kb + off_h_kv * stride_kh   # K Use it. KV head
-v_offset = off_b * stride_vb + off_h_kv * stride_vh   # V Use it. KV head
-o_offset = off_b * stride_ob + off_h_q * stride_oh    # Out Use it. Q head
-# host side Grid = (cdiv(L, BLONK_M), B*H_q)
+q_offset = off_b * stride_qb + off_h_q * stride_qh   # Q 用 Q head
+k_offset = off_b * stride_kb + off_h_kv * stride_kh   # K 用 KV head
+v_offset = off_b * stride_vb + off_h_kv * stride_vh   # V 用 KV head
+o_offset = off_b * stride_ob + off_h_q * stride_oh    # Out 用 Q head
+# host 侧 grid = (cdiv(L, BLOCK_M), B * H_q)
 ```
 
-### MQA(Multi-Query Attention)
+### MQA（Multi-Query Attention）
 
-Special case for GQA: H_kv=1. K/V does not have head dimensions:
+GQA 的特例：H_kv=1。K/V 没有 head 维度：
 
 ```python
-# Kernel: K/V stride remove stide_kh/stride_vh
-k_offset = off_b * stride_kb        # Just... batch Offset
+# kernel: K/V stride 去掉 stride_kh/stride_vh
+k_offset = off_b * stride_kb        # 只有 batch 偏移
 v_offset = off_b * stride_vb
-# host side: key = key. squeeze(1), pass 3 instead of 4
+# host 侧: key = key.squeeze(1)，传 3 个 stride 而非 4 个
 ```
 
-## Transformer speed check.
+## 变体速查
 
-| Variable | K/V shape | Kernel Changes | Host Changes |
+| 变体 | K/V 形状 | Kernel 改动 | Host 改动 |
 |------|----------|-------------|-----------|
-| Causal | Queen | + causal_mask + circulation upper boundary hi | None |
-| GQA | (B,H_kv,L,D) | Head Map `//` | Grid Press H_q |
-| MQA | (B,1,L,D) | K/V does not read distance | squeeze(1) |
+| Causal | 同 Q | + causal_mask + 循环上界 hi | 无 |
+| GQA | (B,H_kv,L,D) | head 映射 `//` | grid 按 H_q |
+| MQA | (B,1,L,D) | K/V 无 head stride | squeeze(1) |
 
-Variables are free to combine, for example, Causal+GQA, with a head map and causal mask.
+变体可自由组合，例如 Causal+GQA 同时应用 head 映射和 causal mask。
 
-## Common Errors
+## 常见错误
 
-| Error | Rehabilitation |
+| 错误 | 修复 |
 |------|------|
-| GQA head map with `%` instead of `//` | `off_h_kv = off_h_q // (H_q // H_kv)` |
-| Triton with `tensor[:, :half]` slice | Offset with `tl.arange` |
-| Runtime variable marked `tl.constexpr` | Only compile-period constants |
-| Forget `acc = acc * alpha[:, None]` | m_i Update must amend the previous acc |
-| Forget the end `acc / l_i` | Collapse Normalization After Cycle |
-| D unpad to 2 | `D_padded = triton.next_power_of_2(D)` |
-| Enter not `.contiguous()` | stride calculation relies on continuous memory |
+| GQA head 映射用 `%` 而非 `//` | `off_h_kv = off_h_q // (H_q // H_kv)` |
+| Triton 中用 `tensor[:, :half]` slice | 用 `tl.arange` 显式偏移 |
+| runtime 变量标了 `tl.constexpr` | 只有编译期常量标 constexpr |
+| 忘记 `acc = acc * alpha[:, None]` | m_i 更新后必须修正之前的 acc |
+| 忘记最终 `acc / l_i` | 循环后归一化 |
+| D 未 pad 到 2 的幂 | `D_padded = triton.next_power_of_2(D)` |
+| 输入未 `.contiguous()` | stride 计算依赖连续内存 |
 
-## Performance Point
+## 性能要点
 
-- CUDA on `tl.math.exp2` + pre-plication `sm_scale * 1.44269504`, faster than `tl.exp`
-- K shapeDeclare as`(D, N_CTX)`,`tl.dot(q, k)`It's straight.Q@K^TThere is no need to switch
-- Using `tl.make_block_ptr` + `tl.advance` is safer than manual offset
-- Thrusters must float32, `tl.dot(p.to(v.dtype), v, acc)` for accuracy conversion
-- Autotune: BLOCK_M/N takes 64 or 128, num_warps=4~8, num_stages=3~4
+- CUDA 上用 `tl.math.exp2` + 预乘 `sm_scale * 1.44269504`，比 `tl.exp` 快
+- K shape 声明为 `(D, N_CTX)`，`tl.dot(q, k)` 直接得 Q@K^T 无需转置
+- 用 `tl.make_block_ptr` + `tl.advance`，比手动偏移更简洁安全
+- 累加器必须 float32，`tl.dot(p.to(v.dtype), v, acc)` 做精度转换
+- Autotune: BLOCK_M/N 取 64 或 128，num_warps=4~8，num_stages=3~4

@@ -1,6 +1,6 @@
 ---
 name: triton-ascend-attention
-description: "It applies to attention.(attention)Type of mechanismoperator. WhenoperatorThe core calculation is:TransformerThis guide should be selected for style-based focus operations.operatorIncluding:self_attention, cross_attention, multi_head_attention, flash_attention, scaled_dot_product_attention, causal_attention, masked_attentionand so on.QKVMatrix multiplied by fraction, onlinesoftmaxits causes and consequencesmaskProcessing, processingFlash AttentionKey techniques such as segmented strategies. They don't apply to ordinary people without attention structures.matrix multiplicationOr a contractual operation."
+description: "适用于注意力(attention)机制类算子的优化指南。当算子的核心计算是 Transformer 风格的注意力运算时应选择此指南，典型算子包括：self_attention, cross_attention, multi_head_attention, flash_attention, scaled_dot_product_attention, causal_attention, masked_attention 等。涵盖 QKV 矩阵乘分块、在线 softmax、因果 mask 处理、Flash Attention 分块策略等关键技巧。不适用于不含注意力结构的普通矩阵乘法或归约运算。"
 category: guide
 version: "1.0.0"
 metadata:
@@ -10,79 +10,79 @@ metadata:
   operator_type: "attention"
 ---
 
-# Attention operator Optimization
+# Attention 算子优化
 
-## Standard Attention Calculating Process
+## 标准 Attention 计算流程
 
-Standard Scaled Dot-Product Attention:
+标准的 Scaled Dot-Product Attention:
 
 ```
 Attention(Q, K, V) = softmax(Q @ K^T / sqrt(d_k)) @ V
 ```
 
-### Three phases
+### 三个阶段
 
-1. **QK^TCalculate**: `scores = Q @ K^T / sqrt(d_k)`, calculate the attention score
-2. **Softmax Normalization**: `attn_weights = softmax(scores)`, ensuring weight and 1
-3. **Weighted sum**: `output = attn_weights @ V`, final output
+1. **QK^T 计算**: `scores = Q @ K^T / sqrt(d_k)`，计算注意力分数
+2. **Softmax 归一化**: `attn_weights = softmax(scores)`，确保权重和为1
+3. **加权求和**: `output = attn_weights @ V`，得到最终输出
 
-### Achieving standards
+### 标准实现的问题
 
 ```python
-# Accomplishment in a simple manner (highly spent on memory)
+# 朴素实现（内存开销大）
 scores = (Q @ K.T) / sqrt(d_k)  # (seq_len, seq_len)
-attn_weights = softmax(scores)   # Need to store a complete attention matrix
+attn_weights = softmax(scores)   # 需要存储完整注意力矩阵
 output = attn_weights @ V
 ```
 
-**Question**
-- Attention matrix to store `(seq_len, seq_len)`
-- Memory occupation: O(seq_len²)
-- For long sequences (seq_len = 4096), memory occupancy is huge
+**问题**: 
+- 需要存储 `(seq_len, seq_len)` 的注意力矩阵
+- 内存占用: O(seq_len²)
+- 对于长序列（seq_len = 4096），内存占用巨大
 
-## Flash Attention Optimizing Policy
+## Flash Attention 优化策略
 
-Flash Attention avoids the storage of a complete attention matrix through segment calculations and online Softmax.
+Flash Attention 通过分块计算和在线 Softmax 避免存储完整注意力矩阵。
 
-### Core thinking
+### 核心思想
 
-1. **Branch calculation**: large arrays processed in blocks to reduce memory occupancy
-2. **Softmax**online: using incremental softmax algorithms, block calculations, maintenance of global maximum values and aggregating factors
-3. **Avoided storage**: No complete attention matrix stored
+1. **分块计算**: 将大矩阵分块处理，减少内存占用
+2. **在线 Softmax**: 使用增量式 softmax 算法，分块计算，维护全局最大值和归一化因子
+3. **避免存储**: 不存储完整注意力矩阵
 
-### Online Softmax algorithm
+### 在线 Softmax 算法
 
-The key is to maintain global statistics and update them on a block-by-block basis:
+关键是维护全局统计量，逐块更新：
 
 ```python
-# Initialize global statistics
-m_i = -float("inf")  # Maximum global value
-l_i = 0.0           # Global exp and
-acc = 0.0           # Output Thruster
+# 初始化全局统计量
+m_i = -float("inf")  # 全局最大值
+l_i = 0.0           # 全局 exp 和
+acc = 0.0           # 输出累加器
 
-# Part processing
+# 分块处理
 for start_n in range(0, seq_len, BLOCK_SIZE):
-    # Loading the fractions of the current block
+    # 1. 加载当前块的分数
     scores = tl.load(scores_ptr + start_n, mask=load_mask, other=-float("inf"))
-
-    # 2. Update global max
+    
+    # 2. 更新全局最大值
     m_ij = tl.maximum(m_i, tl.max(scores, 0))
-
-    # 3. Calculates the exp value of the current block (value stabilization)
+    
+    # 3. 计算当前块的 exp 值（数值稳定化）
     scores = scores - m_ij
     p = tl.math.exp2(scores * 1.44269504)  # log2(e)
-
-    # Update global exp and
+    
+    # 4. 更新全局 exp 和
     l_ij = tl.sum(p, 0)
     alpha = tl.math.exp2((m_i - m_ij) * 1.44269504)
     l_i = l_i * alpha + l_ij
-
-    # 5. Update output compressor
+    
+    # 5. 更新输出累加器
     acc = acc * alpha + p
-
-    # 6. Update global max
+    
+    # 6. 更新全局最大值
     m_i = m_ij
 
-# And eventually, it's a homogeneity.
+# 最终归一化
 acc = acc / l_i
 ```

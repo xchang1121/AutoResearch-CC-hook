@@ -1,6 +1,6 @@
 ---
 name: triton-ascend-grid-config
-description: "Grid/Block Configuration Policy, including Numeric Number Selection, Parallel Moderation, Double Slit and Large Shape operator Processing Scheme. This applies to kernel start-up parameters that need to be defined, polynuclear parallel efficiency optimized, or kernel code generation scenarios that process mega-data"
+description: "Grid/Block 配置策略，包括核数选择、并行度调优、二次切分和大 shape 算子处理方案。适用于需要确定 kernel 启动参数、优化多核并行效率、或处理超大规模数据的内核代码生成场景"
 category: fundamental
 version: "1.0.0"
 metadata:
@@ -9,16 +9,16 @@ metadata:
   hardware: "Atlas A2, Atlas A3"
 ---
 
-# Grid Configuration Policy
+# Grid 配置策略
 
-## Grid Limit
-- Grid must be tuple, up to 3D: `(x,)`, `(x, y)`, `(x, y, z)`
-- No more than 65535 by dimensions
-- BLONK_SIZE must be less than 65536
+## Grid 限制
+- Grid 必须是 tuple，最多 3 维：`(x,)`, `(x, y)`, `(x, y, z)`
+- 各维度乘积不超过 65535
+- BLOCK_SIZE 必须小于 65536
 
-## Recommended scenario: stagger cycle (fixed Grid as core)
+## 推荐方案：交错循环（固定 Grid 为核心数）
 
-operator (Element-wise, Reduce, Normalization, etc.) applied independently by line/block.
+适用于按行/按块独立处理的算子（Element-wise、Reduce、Normalization 等）。
 
 ```python
 @triton.jit
@@ -29,7 +29,7 @@ def kernel(
     CORE_NUM: tl.constexpr,
 ):
     pid = tl.program_id(0)
-    # Staggering: Pid=0 Processing 0, CORE_NUM, 2*CORE_NUM, line...
+    # 交错处理：pid=0 处理第 0, CORE_NUM, 2*CORE_NUM, ... 行
     for row_idx in range(pid, M, CORE_NUM):
         row_ptr = input_ptr + row_idx * stride_m
         out_ptr = output_ptr + row_idx * stride_m
@@ -41,9 +41,9 @@ def kernel(
             tl.store(out_ptr + offs * stride_n, result, mask=mask)
 ```
 
-## Dynamic access core number
+## 动态获取核心数
 
-**Must be obtained in `__init__`**, which is prohibited from calling in forward (trigger device sync).
+**必须在 `__init__` 中获取**，禁止在 forward 中调用（触发设备同步）。
 
 ```python
 import torch
@@ -70,16 +70,16 @@ class ModelNew(torch.nn.Module):
         return out
 ```
 
-### Core Number Selection
-- **vector operator**(election-wise, softmax, unified): Use `VEC_CORE_NUM`
-- **Matrix operator**(matmul, attent): Use `CUBE_CORE_NUM`
+### 核心数选择
+- **向量算子**（element-wise、softmax、归一化）：使用 `VEC_CORE_NUM`
+- **矩阵算子**（matmul、attention）：使用 `CUBE_CORE_NUM`
 
-## Multiple splitting strategies
+## 多次切分策略
 
-If BLONK_SIZE over-limits or single-slice ultra-hardware caches, the loops can be embedded for multi-layered splits:
+若 BLOCK_SIZE 超限或单次切分超硬件缓存，可嵌套循环做多层切分：
 
 ```python
 for m_start in range(pid_m * BLOCK_M, min((pid_m + 1) * BLOCK_M, M), SUB_BLOCK_M):
     for n_start in range(pid_n * BLOCK_N, min((pid_n + 1) * BLOCK_N, N), SUB_BLOCK_N):
-        # Block to process SUB_BLONK size
+        # 处理 SUB_BLOCK 大小的子块
 ```

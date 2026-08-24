@@ -1,160 +1,160 @@
-# Data Comparison Method
+# 数据对比法
 
-## Overview
+## 概述
 
-The data comparison method is the method of locating the accuracy problem by systematically constructing test case, comparing the output results under different conditions.
+数据对比法是通过系统地构造测试用例，对比不同条件下的输出结果来定位精度问题的方法。
 
-## Minimum Recoverable Test
+## 最小可复现测试
 
-### Test order principle
+### 测试顺序原则
 
 ```
-Prioritization:
-1. 32Byte Alignment + FP32  → Exclude AlignmentaccuracyProblem
-2. Non-matching test          → Check for alignment
-3. FP16 accuracyTest      → Authentication FP16 accuracy
+优先级顺序：
+1. 32字节对齐 + FP32  → 排除对齐和精度问题
+2. 非对齐测试          → 检查对齐处理
+3. FP16 精度测试      → 验证 FP16 精度
 ```
 
-### Why is that order?
+### 为什么这个顺序？
 
-| Test Type | Purpose | Adoption of the note |
+| 测试类型 | 目的 | 通过说明 |
 |---------|------|---------|
-| Alignment +FP32 | Exclude alignment and accuracy issues | The algorithm is correct. |
-| Inconsistent | Check for alignment | Need to process incoherent input |
-| FP16 | Authentication FP16 accuracy | FP16 accuracy Sufficient |
+| 对齐 + FP32 | 排除对齐和精度问题 | 算法逻辑正确 |
+| 非对齐 | 检查对齐处理 | 需要处理非对齐输入 |
+| FP16 | 验证 FP16 精度 | FP16 精度是否足够 |
 
-### test case construction
+### 测试用例构造
 
-#### 1. Minimum Alignment Test (Priority)
+#### 1. 最小对齐测试（优先）
 
 ```python
 import numpy as np
 
-# 32 byte alignment + FP32 (exclude alignment and accuracy issues)
-# FP32: 32 bytes = 8 elements
-test_input_fp32 = np.random.rand(8, 8, 8).astype(np.float32)  # Endaxis8=8*4Bytes=32Byte Alignment
+# 32字节对齐 + FP32（排除对齐和精度问题）
+# FP32: 32字节 = 8个元素
+test_input_fp32 = np.random.rand(8, 8, 8).astype(np.float32)  # 尾轴8=8*4字节=32字节对齐
 
-# Use simple values to facilitate authentication
+# 或使用简单值便于验证
 test_input_fp32 = np.ones((8, 8, 8), dtype=np.float32)
 
-# Validate output using known input
+# 或使用已知输入验证输出
 test_input_fp32 = np.zeros((8, 8, 8), dtype=np.float32)
-test_input_fp32[0, 0, 0] = 1.0  # Single non-zero value
+test_input_fp32[0, 0, 0] = 1.0  # 单个非零值
 ```
 
-#### 2. Non-matching test
+#### 2. 非对齐测试
 
 ```python
-# Non-matched input, need for special handling for testing
-test_input_unaligned = np.random.rand(8, 8, 9).astype(np.float32)  # Endaxis9non32Byte Alignment
+# 非对齐输入，测试是否需要特殊处理
+test_input_unaligned = np.random.rand(8, 8, 9).astype(np.float32)  # 尾轴9，非32字节对齐
 
-# or
-test_input_unaligned = np.random.rand(8, 8, 17).astype(np.float32)  # Endaxis17
+# 或
+test_input_unaligned = np.random.rand(8, 8, 17).astype(np.float32)  # 尾轴17
 ```
 
-#### 3. FP16 accuracy Test
+#### 3. FP16 精度测试
 
 ```python
-# FP16 Test (Almost aligned)
-# FP16: 32 bytes = 16 elements
-test_input_fp16 = np.random.rand(8, 8, 16).astype(np.float16)  # Endaxis16=16*2Bytes=32Byte Alignment
+# FP16 测试（保持对齐）
+# FP16: 32字节 = 16个元素
+test_input_fp16 = np.random.rand(8, 8, 16).astype(np.float16)  # 尾轴16=16*2字节=32字节对齐
 
-# Comparison of FP16 and FP32 results
+# 对比 FP16 和 FP32 结果
 result_fp32 = run_operator(test_input_fp32.astype(np.float32))
 result_fp16 = run_operator(test_input_fp16.astype(np.float16))
 
-# Analysis of accuracy variances
+# 分析精度差异
 error = np.abs(result_fp32 - result_fp16)
 print(f"FP16 vs FP32: max error = {error.max():.2e}")
 ```
 
-## Reference for alignment calculations
+## 对齐计算参考
 
-### 32 byte alignment rule
+### 32字节对齐规则
 
-| data type | Bytes per Element | 32 byte alignment of elements | Example: shape |
+| 数据类型 | 每元素字节数 | 32字节对齐元素数 | 示例形状 |
 |---------|-------------|----------------|---------|
-| FP16 | 2 bytes | 16 elements | (..., 16), (..., 32), (..., 48) |
-| FP32 | 4 bytes | 8 elements | (..., 8), (..., 16), (..., 24) |
-| INT8 | 1 byte | 32 elements | (..., 32), (..., 64), (..., 96) |
+| FP16 | 2 字节 | 16 个元素 | (..., 16), (..., 32), (..., 48) |
+| FP32 | 4 字节 | 8 个元素 | (..., 8), (..., 16), (..., 24) |
+| INT8 | 1 字节 | 32 个元素 | (..., 32), (..., 64), (..., 96) |
 
-### Check for alignment
+### 检查是否对齐
 
 ```python
 def is_32byte_aligned(shape, dtype):
-    """InspectionshapeWhether the tail axis or not32Byte Alignment"""
+    """检查形状尾轴是否32字节对齐"""
     element_size = np.dtype(dtype).itemsize
     last_dim = shape[-1]
     return (last_dim * element_size) % 32 == 0
 
-# Example:
-print(is_32byte_aligned((8, 16), np.float16))  # True: 16*2=32Bytes
-print(is_32byte_aligned((8, 8), np.float32))   # True: 8*4=32Bytes
-print(is_32byte_aligned((8, 17), np.float16))  # False: 17*2=34Bytes
+# 示例
+print(is_32byte_aligned((8, 16), np.float16))  # True: 16*2=32字节
+print(is_32byte_aligned((8, 8), np.float32))   # True: 8*4=32字节
+print(is_32byte_aligned((8, 17), np.float16))  # False: 17*2=34字节
 ```
 
-### Generate alignment test data
+### 生成对齐测试数据
 
 ```python
 def generate_aligned_test(shape, dtype):
-    """Generate32Byte Alignment Test Data"""
+    """生成32字节对齐的测试数据"""
     element_size = np.dtype(dtype).itemsize
     aligned_size = 32 // element_size
 
-    # Resize tail axis to multiple of alignment size
+    # 调整尾轴为对齐大小的倍数
     adjusted_shape = list(shape)
     adjusted_shape[-1] = ((shape[-1] + aligned_size - 1) // aligned_size) * aligned_size
 
     return np.random.rand(*adjusted_shape).astype(dtype)
 
-# Example:
-test_data = generate_aligned_test((8, 10), np.float32)  # Resize the tail axis to16(8Number of times)
+# 示例
+test_data = generate_aligned_test((8, 10), np.float32)  # 尾轴调整为16（8的倍数）
 print(f"Adjusted shape: {test_data.shape}")  # (8, 16)
 ```
 
-## Boundary Value Test
+## 边界值测试
 
-### Standard boundary values set
+### 标准边界值集合
 
 ```python
 boundary_cases = {
-    "zero value": 0.0,
-    "Very small": 1e-10,
-    "Small value": 1e-6,
-    "Normal value": 1.0,
-    "Great value": 1e6,
-    "Extreme value": 1e10,
-    "Negative value": -1.0,
-    "FP16Saturation": 65504.0,     # FP16 Maximum value
-    "FP16Negative saturation": -65504.0,  # FP16 Min
+    "零值": 0.0,
+    "极小值": 1e-10,
+    "小值": 1e-6,
+    "正常值": 1.0,
+    "大值": 1e6,
+    "极大值": 1e10,
+    "负值": -1.0,
+    "FP16饱和": 65504.0,     # FP16 最大值
+    "FP16负饱和": -65504.0,  # FP16 最小值
 }
 
-# Generate border test data
+# 生成边界测试数据
 for name, value in boundary_cases.items():
     test_input = np.full((8, 8), value, dtype=np.float32)
     result = run_operator(test_input)
     print(f"{name}: input={value}, output={result[0, 0]}")
 ```
 
-### Special Value Test
+### 特殊值测试
 
 ```python
-# Special Float Value
+# 特殊浮点值
 special_values = {
-    "It's perfect.": np.inf,
-    "Negative.": -np.inf,
+    "正无穷": np.inf,
+    "负无穷": -np.inf,
     "NaN": np.nan,
 }
 
-# Note: Ascend C may not support Inf/NAN, needing special treatment
+# 注意：Ascend C 可能不支持 Inf/NaN，需要特殊处理
 ```
 
-## Comparison of intermediate results
+## 中间结果对比
 
-### Step-by-step approach
+### 逐步对比方法
 
 ```python
-# Assume that operator is divided into multiple steps
+# 假设算子分为多个步骤
 def step1_exp(x):
     return np.exp(x)
 
@@ -164,7 +164,7 @@ def step2_minus(exp_x, exp_neg_x):
 def step3_divide(numerator):
     return numerator / 2.0
 
-# Individual validation of each step
+# 每个步骤单独验证
 x = 1.5
 exp_x = step1_exp(x)
 exp_neg_x = step1_exp(-x)
@@ -177,38 +177,38 @@ print(f"Step 2 - {exp_x} - {exp_neg_x} = {numerator}")
 print(f"Step 3 - {numerator} / 2 = {result}")
 ```
 
-### CPU vs NPU comparison
+### CPU vs NPU 对比
 
 ```python
-# CPU Reference (using NumPy)
+# CPU 参考（使用 NumPy）
 def softmax_cpu(x):
     exp_x = np.exp(x - np.max(x))
     return exp_x / np.sum(exp_x)
 
-# NPU Results (from operator)
+# NPU 结果（从算子获取）
 npu_output = run_operator_on_npu(input_data)
 
-# Contrast
+# 对比
 cpu_output = softmax_cpu(input_data)
 error = np.abs(npu_output - cpu_output)
 
 print(f"Max error: {error.max():.2e}")
 print(f"Mean error: {error.mean():.2e}")
 
-# Find maximum error position
+# 找出最大误差位置
 max_error_idx = error.argmax()
 print(f"Worst case @ {max_error_idx}:")
 print(f"  CPU: {cpu_output.flatten()[max_error_idx]}")
 print(f"  NPU: {npu_output.flatten()[max_error_idx]}")
 ```
 
-## Type Conversion Test
+## 类型转换测试
 
-### Decline step by step accuracy test
+### 逐级降精度测试
 
 ```python
-# Gradual reduction of accuracy to FP16 from FP32
-input_data = np.random.rand(8, 16).astype(np.float64)  # Highestaccuracy
+# 从 FP32 开始，逐步降精度到 FP16
+input_data = np.random.rand(8, 16).astype(np.float64)  # 最高精度
 expected = softmax_cpu(input_data)
 
 for dtype in [np.float32, np.float16]:
@@ -220,36 +220,36 @@ for dtype in [np.float32, np.float16]:
     print(f"  Mean error: {error.mean():.2e}")
 ```
 
-### Mixed accuracy test
+### 混合精度测试
 
 ```python
-# Test the effects of different intermediate accuracys
-# operator code needs to be modified to support different loaders accuracy
+# 测试不同中间精度的效果
+# 需要修改算子代码以支持不同的累加器精度
 
-# Test 1: All FP16
+# 测试1：全 FP16
 result_all_fp16 = run_operator_all_fp16(input_data)
 
-# Test 2: Composer FP32
+# 测试2：累加器 FP32
 result_fp32_accum = run_operator_fp32_accum(input_data)
 
-# Contrast
+# 对比
 print(f"All FP16: max error = {np.abs(result_all_fp16 - expected).max():.2e}")
 print(f"FP32 Accum: max error = {np.abs(result_fp32_accum - expected).max():.2e}")
 ```
 
-## Scale Test
+## 规模测试
 
-### Tests at different scales
+### 不同规模测试
 
 ```python
-# Test accuracy at different scales
+# 测试不同规模下的精度
 test_shapes = [
-    (8, 8),      # Small
-    (16, 16),    # Small- and medium-sized
-    (32, 32),    # Medium size
-    (64, 64),    # Large and medium scale
-    (128, 128),  # Large
-    (256, 256),  # It's huge.
+    (8, 8),      # 小规模
+    (16, 16),    # 中小规模
+    (32, 32),    # 中等规模
+    (64, 64),    # 中大规模
+    (128, 128),  # 大规模
+    (256, 256),  # 超大规模
 ]
 
 for shape in test_shapes:
@@ -261,10 +261,10 @@ for shape in test_shapes:
     print(f"Shape {shape}: max error = {error.max():.2e}")
 ```
 
-### Hardware bound boundary testing
+### 硬件约束边界测试
 
 ```python
-# Test the minimum element limit for reduce operations
+# 测试 Reduce 操作的最小元素数约束
 reduce_sizes = [1, 2, 4, 8, 16, 32, 64]
 
 for size in reduce_sizes:
@@ -277,13 +277,13 @@ for size in reduce_sizes:
     print(f"Reduce size {size}: {status}, max error = {error.max():.2e}")
 ```
 
-## Test Script Template
+## 测试脚本模板
 
 ```python
 import numpy as np
 
 def compare_results(output, expected, rtol=1e-5, atol=1e-6):
-    """Compare results and print detailserrorInformation"""
+    """对比结果并打印详细误差信息"""
     abs_error = np.abs(output - expected)
     rel_error = abs_error / (np.abs(expected) + atol)
 
@@ -292,17 +292,17 @@ def compare_results(output, expected, rtol=1e-5, atol=1e-6):
     print(f"Max rel error: {rel_error.max():.2e}")
     print(f"Mean rel error: {rel_error.mean():.2e}")
 
-    # Pass rate
+    # 通过率
     pass_mask = np.logical_or(abs_error < atol, rel_error < rtol)
     pass_rate = pass_mask.sum() / pass_mask.size * 100
     print(f"Pass rate: {pass_rate:.2f}%")
 
-    # The worst sample.
+    # 最差样本
     worst_idx = abs_error.argmax()
     print(f"Worst case @ {np.unravel_index(worst_idx, output.shape)}:")
     print(f"  Output: {output.flatten()[worst_idx]:.6f}")
     print(f"  Expected: {expected.flatten()[worst_idx]:.6f}")
     print(f"  Abs error: {abs_error.flatten()[worst_idx]:.2e}")
 
-    return pass_rate > 99.0  # 99% By qualifying
+    return pass_rate > 99.0  # 99% 通过为合格
 ```

@@ -1,6 +1,6 @@
 ---
 name: tilelang-ascend-example-softmax
-description: "An example of a TileLang Ascend Devloper model for Online Softmax is achieved. Veteran core programming: T.alloc_ub UB distribution, T.reduce_max/T.reduce_sum contract, T.tile.* vector command, T.tile.broadcast radio, lower accuracy to higher accuracy computation, pass_configs autosynchronizes. This example can be used when creating softmax/ subclass operator."
+description: "Online Softmax 的 TileLang Ascend Developer 模式实现示例。展示 Vector 核编程：T.alloc_ub UB 分配、T.reduce_max/T.reduce_sum 归约、T.tile.* 向量指令、T.tile.broadcast 广播、低精度转高精度计算、pass_configs 自动同步。当生成 softmax / 归一化类算子时可参考此示例。"
 category: example
 version: "1.0.0"
 metadata:
@@ -10,18 +10,18 @@ metadata:
   operator_type: "reduction"
 ---
 
-# Online Softmax - TileLang Ascend (Developer mode)
+# Online Softmax — TileLang Ascend 实现示例（Developer 模式）
 
-**Programming mode**: Devloper (AutoSync + AutoMemorization)
+**编程模式**：Developer（自动同步 + 自动内存规划）
 
-**Key technical points**:
-- `T.alloc_ub` UB Visible Distribution
-- `T.reduce_max` / `T.reduce_sum` Conclude Operation
-- `T.tile.broadcast` scalar → vector.
-- `T.tile.cast` low accuracy → high accuracy type conversion
-- `pass_configs`, open `AUTO_SYNC` + `MEMORY_PLANNING`
-- Online Softmax algorithm: two scans (max+sum → normalize)
-- `VEC_NUM = 2` Double Nuclear Parallel, `sub_block_M = block_M // VEC_NUM`
+**关键技术点**：
+- `T.alloc_ub` UB 显式分配
+- `T.reduce_max` / `T.reduce_sum` 归约操作
+- `T.tile.broadcast` 标量→向量广播
+- `T.tile.cast` 低精度→高精度类型转换
+- `pass_configs` 开启 `AUTO_SYNC` + `MEMORY_PLANNING`
+- Online Softmax 算法：两遍扫描（max+sum → normalize）
+- `VEC_NUM = 2` 双核并行，`sub_block_M = block_M // VEC_NUM`
 
 ```python
 import tilelang
@@ -114,7 +114,7 @@ def online_softmax(M, N, block_M, block_N, dtype="float"):
     return main
 ```
 
-**Called**:
+**调用方式**：
 
 ```python
 func = online_softmax(M, N, block_M, block_N, dtype="float16")

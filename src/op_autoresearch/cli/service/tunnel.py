@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Huawei Technologies Co., Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Local ssh -L tunnel + port-owner detection for ``op-autoresearch worker``.
 
 This layer only deals with local-side processes (tunnel ssh forks + local
@@ -162,10 +176,10 @@ def tunnel_start(ssh_alias: str, port: int) -> int:
     (STATE_DIR / "tunnels").mkdir(parents=True, exist_ok=True)
     tunnel_stop_silent(port, ssh_alias)
 
-    # The old ssh takes SIGTERM and actually releases socket with a small window (OS gotime_WAIT)
-    # It's probably a few hundred more ms. Right away, who_holds_port will treat the ssh just killed as outside occupation.
-    # --start falsely reports port occupied returning 0. Poll up to ~2s etc. empty; if point is reached
-    # And the occupants, that's the real external process, the blundering of the imperator.
+    # 旧 ssh 拿到 SIGTERM 后到真正释放 socket 有一小段窗口（OS 走 TIME_WAIT
+    # 也可能多几百 ms）。立刻 who_holds_port 会把刚被杀的 ssh 当外部占用，
+    # --start 误报"端口被占"返回 0。Poll 最多 ~2s 等端口空出来；如果到点
+    # 还有占用方，那才算真外部进程，给 operator 报错。
     holder = who_holds_port(port)
     for _ in range(20):
         if holder is None:
@@ -174,9 +188,9 @@ def tunnel_start(ssh_alias: str, port: int) -> int:
         holder = who_holds_port(port)
     if holder:
         print(
-            f"[op-autoresearch] :{port} By PID={holder['pid']} Hold on.\n"
+            f"[op-autoresearch] :{port} 被 PID={holder['pid']} 占着\n"
             f"  cmdline: {holder['cmdline'][:160]}\n"
-            f"  → `{kill_pid_hint(holder['pid'])}` Later. --start",
+            f"  → `{kill_pid_hint(holder['pid'])}` 后再 --start",
             file=sys.stderr,
         )
         return 0

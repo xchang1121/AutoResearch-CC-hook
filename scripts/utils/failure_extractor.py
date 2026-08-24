@@ -1,3 +1,17 @@
+# Copyright 2026 Huawei Technologies Co., Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Parse verify/profile subprocess logs into structured failure signals.
 
 The eval subprocesses return multi-KB logs containing MLIR errors, Python
@@ -566,7 +580,8 @@ PATTERNS: list[tuple[str, re.Pattern, Callable[[re.Match], dict], str]] = [
         re.compile(
             r"AssertionError:\s*.*?"
             r"(?:outlier=(\d+)\s*/\s*cap=(\d+)|"
-            r"(?:(\d+)\s+elements?[^\n\r]*?hard_fail|hard_fail)).*?"
+            r"(?:\u5b58\u5728\s*)?(\d+)\s*"
+            r"(?:(?:\u4e2a\u5143\u7d20|elements?)[^\n\r]*?hard_fail|hard_fail)).*?"
             r"rtol=([\d.eE+-]+)\s*atol=([\d.eE+-]+).*?"
             r"mere=([\d.eE+-]+)\s*mare=([\d.eE+-]+)",
             re.DOTALL,
@@ -589,7 +604,7 @@ PATTERNS: list[tuple[str, re.Pattern, Callable[[re.Match], dict], str]] = [
     (
         "precision_fail_location",
         re.compile(
-            r"Location\s*\[[^\]]+\]:\s*"
+            r"(?:\u4f4d\u7f6e|位置|浣嶇疆)\[[^\]]+\]:\s*"
             r"ref=([\d.eE+-]+)\s*impl=([\d.eE+-]+)\s*"
             r"abs_diff=([\d.eE+-]+)\s*"
             r"(strict|relaxed)_tol=([\d.eE+-]+)",

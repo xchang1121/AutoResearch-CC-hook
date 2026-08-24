@@ -1,64 +1,64 @@
-# High accuracy Convention: FP32 When the compressor is insufficient
+# 高精度归约：FP32 累加器不够用时
 
-> [common-traps.md] (common-traps.md)'s trap 4 (Reduce accuracy's loss).
-> The conclusion is "with a FP32 cumulator." This paper says that**FP32 cumulator is not enough**scenes and tools.
+> 承接 [common-traps.md](common-traps.md) 陷阱4（Reduce 精度损失）。
+> 那里的结论是"用 FP32 累加器"。本文讲**FP32 累加器仍不够**的场景与手段。
 
-## When do you need this?
+## 何时需要本文
 
-FP32 Accumulator (approximately 6-7 bits) will still fail in three cases:
+FP32 累加器（约 6-7 位有效）在下面三种情况仍会失手：
 
-1. **Fp64 Ref: evaluation based on MERE/MARE vs. fp64 golden, small range/resistance position requirements
-   NPU error ≤ 2×CPU-fp32 error (or even error 0). fp32 add differently from CPU**in order,
-   Close to zero is different.
-2. **Large K Convention**: K≈1e3 ~1e4, single fp32 loaders add up so many items ~1e-3
-   (Not related to input bit width, is the rounding of the loader itself).
-3. **Catastrophe offsets**: large items have shrunk to nearly zero and absolute error has been magnified to a large relative error.
+1. **严格对标 fp64 参考**：评测按 MERE/MARE 对 fp64 golden，小值域/相消位置要求
+   NPU 误差 ≤ 2×CPU-fp32 误差（甚至恰好 0 错）。fp32 累加与 CPU 累加**顺序不同**，
+   近零点落位不同就挂。
+2. **大 K 归约**：K≈1e3~1e4 时，单个 fp32 累加器把这么多项加起来会丢 ~1e-3
+   （与输入位宽无关，是累加器本身的舍入）。
+3. **灾难性抵消**：大项相消到近零，绝对误差被放大成巨大相对误差。
 
-Order of decision: Make sure it's not enough to compress the loader (to downsize K/ replace fp64 reference comparison) and then move on.
+判断顺序：先确认是不是累加器不够（把 K 调小/换 fp64 参考对比），再上手段。
 
 ---
 
-## Method 1: Compensation sum (Kahan → Neumaier → guarded)
+## 手段1：补偿求和（Kahan → Neumaier → guarded）
 
-Compensation and recovery of lost lows per step plus with an `comp` variable to pull fp32 to ~fp64.
+补偿求和用一个 `comp` 变量追回每步加法丢失的低位，把 fp32 累加拉到 ~fp64。
 
-**Don't use nudity Kahan**: `t - acc` to produce `inf - inf = NaN` at inf that poisons the whole chain.
-Using**Neumaier**(subsidiary by operational size)**and**plus finite guard**— non-limited step over compensation,
-Just add inf/nan to the correct semantics.
+**别用裸 Kahan**：`t - acc` 在 inf 处产生 `inf - inf = NaN`，会毒化整条链。
+用 **Neumaier**（按操作数大小分支），并**加 finite 守卫**——非有限步跳过补偿，
+纯加把 inf/nan 按正确语义带过去。
 
 ```cpp
-// Guarded-Neumaier scalar cum: acc + comp for ~fp64 and
+// guarded-Neumaier 标量累加：acc + comp 表示 ~fp64 的和
 float acc = 0.0f, comp = 0.0f;
 for (int i = 0; i < n; ++i) {
-    float v = ToFloat(x[i]);          // Item by Item
+    float v = ToFloat(x[i]);          // 逐项
     float t = acc + v;
-    // Missing low: press|acc| and |v|Who's the big branch?
+    // 丢失的低位：按 |acc| 与 |v| 谁大分支
     float lo = (Abs(acc) >= Abs(v)) ? (acc - t) + v : (v - t) + acc;
-    if (IsFinite(lo)) comp += lo;     // Guard:inf/nan I'm not gonna make it up to you. I'm gonna take it with me.
+    if (IsFinite(lo)) comp += lo;     // 守卫：inf/nan 步不补偿，靠纯加带过去
     acc = t;
 }
 float result = acc + comp;
 ```
 
-- Remedial sequence losses only,**without repairing the volume of individual items/casts error**(means 2).
-- Host side Aten Group Contract: `where(isfinite(lo), lo, 0)` as guard, by element tensor version.
+- 只修累加顺序损失，**不修单项的积/casts 误差**（那是手段2）。
+- Host 侧 ATen 组合同理：`where(isfinite(lo), lo, 0)` 做守卫，逐元素张量版本。
 
-## Method 2: TwoProduc - Accurate (no FMA)
+## 手段2：TwoProduct —— 让积也精确（无需 FMA）
 
-When**Accumulation**per se exceeds the end number of fp32 (24 bit), the claim for compensation cannot be saved because the loss occurred in a multiplication:
+当**积**本身超出 fp32 尾数（24 bit）时，补偿求和救不了，因为丢失发生在乘法：
 
-| scene | Accumulated active bits | Is it necessary? |
+| 场景 | 积的有效位 | 是否需要 |
 |---|---|---|
-| fp16 × int8 | ≤19 | No (fp32 accurate) |
-| fp16 × fp16 | ≤22 | Yes |
-| fp16 × fp32 (full) | Toda ~29 | **Yes** |
-| Large value fp32 × fp32 | Toda ~46 | **Yes** |
+| fp16 × int8 | ≤19 | 否（fp32 精确） |
+| fp16 × fp16 | ≤22 | 否 |
+| fp16 × fp32(满) | 可达 ~29 | **是** |
+| 大值 fp32 × fp32 | 可达 ~46 | **是** |
 
-Veltkamp split (separation factor `4097 = 2^12+1`, fp32 special,**not dependent on FMA**) for each volume
-Disassembly to `p + e`, `p+e` equals exact volume, `e` is the lost low, fed to `comp`:
+Veltkamp 拆分（分裂因子 `4097 = 2^12+1`，fp32 专用，**不依赖 FMA**）把每个积
+拆成 `p + e`，`p+e` 等于精确积，`e` 是丢失的低位，喂进 `comp`：
 
 ```cpp
-// TwoProduct(a, b) - (p, e), p+e = a*b
+// TwoProduct(a,b) -> (p, e)，p+e == a*b 精确
 inline void TwoProduct(float a, float b, float& p, float& e) {
     const float S = 4097.0f;          // 2^12 + 1
     p = a * b;
@@ -68,14 +68,14 @@ inline void TwoProduct(float a, float b, float& p, float& e) {
 }
 ```
 
-## Method 3: Small Return = TwoProduct + guarded-Neumaier → fp64-exact
+## 手段3：小归约 = TwoProduct + guarded-Neumaier → fp64-exact
 
-**Minor return**(conv single point 9 ~ 125 tap, RoPE 2 item, small stencil): Each buildup
-& Useguarded-Neumaier,`comp`It's also a low-level accumulation.`e`And plus low places.`lo`:
+**小归约**（conv 单点 9~125 tap、RoPE 2 项点积、小 stencil）：每个积用 TwoProduct，
+和用 guarded-Neumaier，`comp` 里同时收积的低位 `e` 和加的低位 `lo`：
 
 ```cpp
 float acc = bias, comp = 0.0f;
-for (Every one tap) {
+for (每个 tap) {
     float p, e; TwoProduct(x_tap, w_tap, p, e);
     float t = acc + p;
     float lo = (Abs(acc) >= Abs(p)) ? (acc - t) + p : (p - t) + acc;
@@ -83,24 +83,24 @@ for (Every one tap) {
     if (IsFinite(delta)) comp += delta;
     acc = t;
 }
-return acc + comp;                     // ~fp64Close to zero, too. golden
+return acc + comp;                     // ~fp64，近零点也能对齐 golden
 ```
 
-Actual: fp32 depthwise conv close to zero-sum case (large weight domain) from system outlier
-Pressed to MERE ~1e-14; RoPE fp32 to equalize value.
+实测：fp32 depthwise conv 的近零相消 case（大 weight 值域）由此从系统性 outlier
+压到 MERE ~1e-14；RoPE fp32 大值相消同法过关。
 
-## Method 4: Major return (matmul / conv-backward, K~1e3-1e4)
+## 手段4：大归约（matmul / conv-backward，K~1e3-1e4）
 
-Unable to complete materialize ([M,K,N] RAM implosion), renumber**Part + Inter-part compensation**:
+积无法全部 materialize（[M,K,N] 内存爆），改**分块 + 块间补偿**：
 
 ```
-Take it. K Cut CHUNK=256 (a) Blocks;
-I'll do it once in a piece. matmul(In block) fp32 (b) Added, with small losses);
-between blocks Neumaier Compensating part of the uniting.
+把 K 切成 CHUNK=256 的块；
+每块做一次子 matmul（子块内 fp32 累加，项少损失小）；
+块间用 Neumaier 补偿合并块的部分和。
 ```
 
 ```cpp
-// pseudocode: chunked-K + Neumaier
+// 伪代码：chunked-K + Neumaier（Host ATen 组合，device 亦可）
 acc = matmul(A[:, 0:CH], B[0:CH, :]); comp = zeros_like(acc);
 for (k0 = CH; k0 < K; k0 += CH) {
     p = matmul(A[:, k0:k0+CH], B[k0:k0+CH, :]);
@@ -111,47 +111,47 @@ for (k0 = CH; k0 < K; k0 += CH) {
 y = acc + comp;
 ```
 
-- There are still fp32 rounded in the block, so this is**approaching**is not accurate; it can press ~1e-3 for large K to close the threshold,
-  Raise the average, but the deepest dichotomy may still fall short (see ceiling).
-- If the accumulation is also greater than 24 bit (e.g. weights vs. quantification fp32), stacking means 2 to right.
+- 块内仍有 fp32 舍入，故这是**逼近**不是精确；能把大 K 的 ~1e-3 压到接近阈值、
+  抬高均值，但最深相消点仍可能差一线（见"天花板"）。
+- 若积也超 24 bit（如权重反量化 fp32），叠手段2 拆右操作数。
 
-## HF32 trap: fp32 matmul/conv default not full accuracy
+## HF32 陷阱：fp32 matmul/conv 默认不是全精度
 
-Ascend Cube against**fp32 matmul defaulted to HF32**- multiplies the input end number to ~11 bits.
-**Conv's HF32 default is open.**For fp64 reference, turn off:
+Ascend Cube 对 **fp32 matmul 默认走 HF32**——把输入尾数舍到 ~11 位再乘，
+比真 fp32 差一个量级。**conv 的 HF32 默认也是开的**。对标 fp64 参考时先关掉：
 
 ```python
 import torch, torch_npu
-torch.npu.matmul.allow_hf32 = False    # Allaccuracy fp32 matmul
-# Toch.npu.conv.allow_hf32 =False #conv
+torch.npu.matmul.allow_hf32 = False    # 全精度 fp32 matmul
+# torch.npu.conv.allow_hf32 = False    # conv 同理（视版本）
 ```
 
-- Off HF32 is**accuracy mode switch**, not kernel, not circumventing anti-fiction.
-- HF32 Impact only**Input round**does not affect the fp32 loader itself (for integer results that can be accurately expressed)
-  It's precise - so when the HF32 is off, the problem is in the loader (Return 3/4).
+- 关 HF32 是**精度模式开关**，不是换 kernel，不算绕过反作弊。
+- HF32 只影响**输入舍入**，不影响 fp32 累加器本身（累加器对可精确表示的整数结果
+  是精确的）——所以关了 HF32 还不够时，问题在累加器（回手段3/4）。
 
-## Ceiling: When should we stop?
+## 天花板：什么时候该停
 
-**Expressed +fp16/bf16 output rounded to**group,**fp64 cumulative**— 910B hardware not available.
-Symptoms: Output is close to zero of the difference between two large items, and ULP of fp16/bf16 is very small in this mass, rounded correctly
-Must count to > 24 bit.
+**深相消 + fp16/bf16 输出舍入**的组合，需要真 **fp64 累加**——910B 硬件没有。
+现象：输出是两个大项之差的近零值，fp16/bf16 的 ULP 在该量级极小，要正确舍入
+必须把和算到 >24 bit。
 
-The path of false "thinks you can pass" (to save you from retrying):
-- **Ozaki/error-free matmul**(indexed pair of slices and unrounded): controlled integer test,
-  But true case alignment and close to 2⁄24, more matmul is more frequent at the border, and the average value is not up or down.
-- **A simple reduction of chunk / slices**: non-uniform, bottom round to knife-edge twitch without constriction.
+已证伪的"以为能过"的路（省得重试）：
+- **Ozaki / error-free matmul**（指数对齐切片使块和无舍入）：受控整数测例 error-free，
+  但真 case 的对齐部分和逼近 2^24、多 matmul 反而更频繁踩边界，均值不升反降。
+- **单纯减小 chunk / 加切片**：非单调，最深点随舍入 knife-edge 抖，不收敛。
 
-Conclusion: small return can stabilize fp64-exact; large return can significantly improve but most apart
-**fp32 Hardware + a narrow output rounded up the physical ceiling**with software to compensate for approaching but not securing the line. This is the case.
-Just stop. Don't try indefinitely on the Fp32.
+结论：小归约能做到 fp64-exact 稳过；大归约能显著改善但最深相消 case 是
+**fp32 硬件 + 窄输出舍入的物理天花板**，靠软件补偿逼近但不保证过线。判断出是这类，
+就停手，别在 fp32 路上无限试。
 
-## Reuse Decision Tree
+## 复用决策树
 
 ```
-ReturnaccuracyUncompliant (relationship) fp64/Strict MERE-MARE)
-├─ Let's make sure the compressor's not a bottleneck. K / Yeah. fp64 Reference)
-├─ matmul/conv and fp32 Enter?→ Turn it off first. HF32(allow_hf32=False)
-├─ Small Convention of Return≤~125 What's going on?→ TwoProduct + guarded-Neumaier → fp64-exact  Can pass
-├─ Grand Convention of ReturnK~1e3-1e4)?→ chunked-K + Neumaier(+Scratch) → Approaching, lift the average.
-└─ It's over. + Thin Output(fp16/bf16)?→ Yes. fp64 Plus, no hardware. → Judge the ceiling. Stop it.
+归约精度不达标（对标 fp64/严格 MERE-MARE）
+├─ 先确认累加器是不是瓶颈（调小 K / 对 fp64 参考）
+├─ matmul/conv 且 fp32 输入？→ 先关 HF32（allow_hf32=False）
+├─ 小归约（≤~125 项）？→ TwoProduct + guarded-Neumaier → fp64-exact（能过）
+├─ 大归约（K~1e3-1e4）？→ chunked-K + Neumaier(+积拆分) → 逼近，抬均值
+└─ 深相消 + 窄输出(fp16/bf16)？→ 需 fp64 累加，硬件无 → 判定天花板，停手
 ```

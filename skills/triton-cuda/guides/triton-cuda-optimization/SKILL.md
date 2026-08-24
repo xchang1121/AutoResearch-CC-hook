@@ -1,6 +1,6 @@
 ---
 name: triton-cuda-optimization
-description: "Triton CUDA Performance Optimizing Universal Policy, API Limit Description and Debugging Skills Summary. This applies to the generation and optimization of kernel codes that need to be upgraded to the GPU internal nuclei, that need to be checked in case of a compilation/run error, or that need to know the CUDA platform limitations"
+description: "Triton CUDA 性能优化通用策略、API 限制说明和调试技巧汇总。适用于需要提升 GPU 内核性能、遇到编译/运行错误需要排查、或需要了解 CUDA 平台限制的内核代码生成和优化场景"
 category: method
 version: "1.0.0"
 metadata:
@@ -13,29 +13,29 @@ structure:
     - triton-cuda-debugging
 ---
 
-# Triton CUDA Performance Optimization Guide
+# Triton CUDA 性能优化指南
 
-## 1. Performance Optimization Policy
+## 1. 性能优化策略
 
-### 1.1 Block size selection
+### 1.1 块大小选择
 
-- **Principle**: Balancing parallelity and resource occupation
-- **Recommendation**: Use 2 quails (256, 512, 1024)
-- **GPU Consider**: Need enough warp to hide latency
+- **原则**: 平衡并行度与资源占用
+- **建议**: 使用 2 的幂次（256, 512, 1024）
+- **GPU 考量**: 需要足够多的 warp 来隐藏延迟
 
-### 1.2 Warp and Stage Modifier
+### 1.2 Warp 和 Stage 调优
 
-Two important parameters specific to CUDA backend:
+CUDA 后端特有的两个重要参数：
 
-- **num_warps**: number of warps per block (each warp = 32 threads)
-  - Small BLONK_SIZE: less used warp (2-4)
-  - Large BLONK_SIZE: More used warp (4-8)
-  - MatMul: Usually 4-8 warps
+- **num_warps**: 每个 block 的 warp 数量（每个 warp = 32 个线程）
+  - 小 BLOCK_SIZE：使用较少的 warp (2-4)
+  - 大 BLOCK_SIZE：使用较多的 warp (4-8)
+  - MatMul：通常使用 4-8 个 warp
 
-- **num_stages**: Software pipeline Class Number
-  - More stage to better hide memory latency
-  - But it'll take more shared memory.
-  - Usually choose between 2 and 5
+- **num_stages**: 软件流水线级数
+  - 更多的 stage 可以更好地隐藏内存延迟
+  - 但会占用更多共享内存
+  - 通常 2-5 之间选择
 
 ```python
 @triton.autotune(
@@ -44,102 +44,102 @@ Two important parameters specific to CUDA backend:
         triton.Config({'BLOCK_SIZE': 512}, num_warps=2, num_stages=4),
     ],
     key=['n_elements'],
-    restore_value=['output_ptr'],  # Must: list all output pointer parameter names
+    restore_value=['output_ptr'],  # 必须：列出所有输出指针参数名
 )
 ```
 
-### 1.3 Memory access optimization
+### 1.3 内存访问优化
 
-- **Merge access**: threads within the same warp should access the continuous memory address
-- **2D data**: Prefer `tl.make_block_ptr` to `boundary_check`
-- **step design**: careful design of stride parameters, error setting will seriously affect performance
-- **Data layout**: continuity and locality of memory access maintained
+- **合并访问 (Coalesced Access)**: 同一 warp 内的线程应访问连续内存地址
+- **2D数据**: 优先使用 `tl.make_block_ptr` 配合 `boundary_check`
+- **步幅设计**: 仔细设计 stride 参数，错误设置会严重影响性能
+- **数据布局**: 保持内存访问的连续性和局部性
 
-### 1.4 operator splitting policy
+### 1.4 算子拆分策略
 
-- **Complex operator**: Split into simple kernels to avoid individual kernels being too complicated
-- **Integration strategy**: Moderate integration to reduce global memory reading and writing (e.g. used integration)
-- **Balance**: CUDA backend integration is usually more effective than NPU, but still requires attention
+- **复杂算子**: 拆分为多个简单 kernel，避免单个 kernel 过于复杂
+- **融合策略**: 适度融合以减少全局内存读写（如 fused attention）
+- **平衡**: CUDA 后端融合通常比 NPU 更有效，但仍需注意 register pressure
 
-### 1.5 Occupancy Optimization
+### 1.5 Occupancy 优化
 
-GPU utilization is a key indicator of performance:
+GPU 利用率（Occupancy）是性能的关键指标：
 
-- **Repositor used**: Reduced usage of register per thread, increased number of blocks distributed
-- **shared memory**: Rational use of shared memory, not exceeding hardware limitations
-- **Block Size**: Select the block size that will remove the maximum number of SM threads
+- **寄存器使用**: 减少每个线程的寄存器使用量，增加并发 block 数
+- **共享内存**: 合理使用共享内存，不超过硬件限制
+- **Block 大小**: 选择能整除 SM 最大线程数的 block 大小
 
-## 2. Numerical stability
+## 2. 数值稳定性
 
-### 2.1 Spill-proofing
+### 2.1 防溢出处理
 
-**Softmax numerical stabilization**:
+**Softmax 数值稳定化**:
 ```python
-# Minus maximum value to prevent exp spill
+# 减去最大值防止 exp 溢出
 max_val = tl.max(scores, axis=0)
 scores = scores - max_val
-p = tl.exp(scores)  # CUDA backendDirect Use tl.exp
+p = tl.exp(scores)  # CUDA 后端直接使用 tl.exp
 ```
 
-### 2.2 At the beginning of the defence value
+### 2.2 防负值开方
 
 ```python
-# Ensure non-negative before variance is calculated
+# 方差计算前确保非负
 variance = tl.maximum(variance, 0.0)
 std = tl.sqrt(variance + eps)
 ```
 
-### 2.3 accuracy Upgrade
+### 2.3 精度提升
 
-- **excrete with float32**: even if input is float16/bflota16
-- **Final re-conversion**: returns target accuracy after calculation is completed
-- **TF32**: Ampere+GPU available on TF32 Accelerating MatMul
+- **使用 float32 进行累加**: 即使输入是 float16/bfloat16
+- **最后再转换**: 计算完成后再转回目标精度
+- **TF32**: Ampere+ GPU 上可使用 TF32 加速 MatMul
 
 ```python
 accumulator = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
-# Aggregated calculation...
+# ... 累加计算 ...
 result = tl.cast(accumulator, output_dtype)
 ```
 
-## 3. API Usage Limit
+## 3. API 使用限制
 
-### 3.1 Use of the use of grammar
+### 3.1 禁止使用的语法
 
-**Ban on use**: `return`, `break`, `continue`, `lambda`
+**禁止使用**: `return`, `break`, `continue`, `lambda`
 
-The Triton kernel is a one-time complete logic that does not support early return or jumpovers.
+Triton 内核是一次性执行完整逻辑，不支持提前返回或跳转语句。
 
 ```python
-# Error: use return
+# 错误：使用 return
 @triton.jit
 def kernel(ptr, n, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
     if pid >= n:
-        return  # Compiler error!
+        return  # 编译错误！
 
-# Correct: use mask
+# 正确：使用 mask
 @triton.jit
 def kernel(ptr, n, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
     offsets = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offsets < n
     data = tl.load(ptr + offsets, mask=mask, other=0.0)
-    # All codes are executed at the same level.
+    # ... 所有代码都在同一层级执行
 ```
 
-### 3.2 tl.constexpr Correct use
+### 3.2 tl.constexpr 正确用法
 
-- **For kernel parameters only**: `BLOCK_SIZE: tl.constexpr`
-- **Not available on host side**: tl.constexpr not available in startup function
+- **仅在内核参数中使用**: `BLOCK_SIZE: tl.constexpr`
+- **不可在 host 侧使用**: 启动函数中不可用 tl.constexpr
 
-### 3.3 Output tensor Creation Code
+### 3.3 输出张量创建规范
 
-- Correct: Use `torch.empty` or `torch.empty_like`
-- Error: Avoid `torch.zeros` or `torch.ones` (avoid unnecessary initialization costs)
+- 正确：使用 `torch.empty` 或 `torch.empty_like`
+- 错误：避免 `torch.zeros` 或 `torch.ones`（避免不必要的初始化开销）
 
-### 3.4 Attention to the preparation of the Conv volume operator
+### 3.4 Conv 类卷积算子编写注意
 
-The volume operator generation in the Torch Modeule will contain a random weight weight right ahead, which needs to be generated in the host side code to ensure that the results are consistent:
+torch module 中的卷积算子生成会包含一个随机权重 weight，为保证 triton 实现的结果一致，需要在 host 侧代码中生成对应的 weight：
 
 ```python
 import torch
@@ -156,35 +156,35 @@ def triton_host():
     weight = nn.Conv2d(**args).weight.to(device)
 ```
 
-The specific parameter and module called in `nn` are to be aligned with the torch, setting Device to `"cuda"`. The same random torrent will be fixed before calling Triton, just create examples of the class correctly and export weights.
+具体的参数和 `nn` 中调用的 module 要与 torch 保持一致，device 设置为 `"cuda"`。调用 triton 之前会固定相同的随机种子，只需正确创建类的实例并导出权重。
 
-## 4. Performance Checklist
+## 4. 性能检查清单
 
-### Memory Access
-- [ ] Do memory access merge (codesced)?
-- [ ] Did you use 2D block_ptr to optimize multi-dimensional data access?
-- [ ] Do continuity of memory visits are ensured?
+### 内存访问
+- [ ] 内存访问是否合并（coalesced）？
+- [ ] 是否使用了 2D block_ptr 优化多维数据访问？
+- [ ] 是否保证了内存访问的连续性？
 
-### Parallel Configuration
-- [ ] BLONK_SIZE is a 2-year-old?
-- [ ] Are the num_warps reasonable (2-8)?
-- [ ] Are num_stages reasonable (2-5)?
+### 并行度配置
+- [ ] BLOCK_SIZE 是否为 2 的幂？
+- [ ] num_warps 是否合理（2-8）？
+- [ ] num_stages 是否合理（2-5）？
 
-### Design operator
-- [ ] Do you need to split the complex operator?
-- [ ] Is it reasonable to use operator integration?
-- [ ] Did you use autotune?
+### 算子设计
+- [ ] 复杂算子是否需要拆分？
+- [ ] 是否合理使用了算子融合？
+- [ ] 是否使用了 autotune？
 
-### Numerical stability
-- [ ] Does the Reduce operation have spill protection?
-- [ ] Do you want to use float32 for intermediate accumulation?
-- [ ] Have border situations, such as zero, negative-numbered openings, been addressed?
+### 数值稳定性
+- [ ] Reduce 操作是否有防溢出处理？
+- [ ] 是否使用 float32 进行中间累加？
+- [ ] 是否处理了除零、负数开方等边界情况？
 
-## Summary of best practice
+## 最佳实践总结
 
-1. **Autotune**: best search using autotune BLONK_SIZE, num_warps, num_stages
-2. **RAM Merge**: Ensure access to a continuous address by the same warp inner-space
-3. **Tensor Core**: MatMul Class operator enabled all_tf32
-4. **pipeline**: Hide Memory latency by Num_stages
-5. **Value stable**: use float32 cumulative, minus maximum spill protection
-6. **Occupancy**: Balance repository and shared memory use
+1. **Autotune**: 使用 autotune 搜索最优 BLOCK_SIZE、num_warps、num_stages
+2. **内存合并**: 确保同一 warp 内线程访问连续地址
+3. **Tensor Core**: MatMul 类算子启用 allow_tf32
+4. **流水线**: 通过 num_stages 隐藏内存延迟
+5. **数值稳定**: 使用 float32 累加，减去最大值防溢出
+6. **Occupancy**: 平衡寄存器和共享内存使用

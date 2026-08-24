@@ -1,31 +1,31 @@
-# VEC Bound Optimizing Policy
+# VEC Bound 优化策略
 
-The VEC base is the most common bottleneck for the Elementwise, Activity, Reduction type operator. Victor ' s computing unit is time-consuming and the MTE2/MTE3 moving unit is relatively idle.
+VEC bound 是 elementwise、activation、reduction 类算子最常见的瓶颈。Vector 计算单元成为耗时主导，MTE2/MTE3 搬运单元相对空闲。
 
 ---
 
-## Conditions for determination
+## 判定条件
 
-- Veter unit is highly utilized, `aiv_vec_ratio` is time-consuming
-- Victor command takes the lead time.
-- The MTE2 and Cube units are relatively idle
+- Vector 单元利用率高，`aiv_vec_ratio` 是耗时主导
+- Vector 指令占据主要执行时间
+- MTE2 和 Cube 单元相对空闲
 
-**Severation of severity of bottlenecks**:
+**瓶颈严重程度分级**：
 
-| VEC % | Level | Optimizing direction |
+| VEC 占比 | 等级 | 优化方向 |
 |----------|------|---------|
-| 50–65% | Light | DoubleBuffer + UB has a lot to gain from integration. |
-| 65–80% | Medium | Reduce Cast or Integration Commands |
-| >80% | Depth | VEC itself is nearing the theoretical limit and optimizing space is limited |
+| 50–65% | 轻度 | DoubleBuffer + UB 融合有较大收益 |
+| 65–80% | 中度 | 减少 Cast 或融合指令 |
+| >80% | 深度 | VEC 本身已接近理论极限，优化空间有限 |
 
 ---
 
-## Elements of a simulation map analysis
+## 仿真图分析要点
 
-- Identification of Victor command concentration area
-- Check data dependency between Victor's commands and find opportunities for parallel implementation
+- 识别 Vector 指令密集区
+- 检查 Vector 指令间的数据依赖性，寻找可并行执行的机会
 
-**VEC base track feature**:
+**VEC bound trace 特征**：
 
 ```
 Time: 0 ---------------------------------------- 100ms
@@ -33,66 +33,66 @@ Time: 0 ---------------------------------------- 100ms
 SCALAR     |##............................| 5%
 SCALARLDST |##............................| 4%
 MTE2       |.##....##....##....##.........|15%
-VECTOR     |..############################|65%  <- Lead
+VECTOR     |..############################|65%  <- 主导
 MTE3       |..........................####.|10%
 ```
 
-VECTOR lines continue to be active, MTE2 has a clear free wait, indicating that the speed of removal is faster than the rate of calculation.
+VECTOR 行持续活跃，MTE2 有明显空闲等待，说明搬运速度快于计算速度。
 
 ---
 
-## VEC Internal Command Analysis
+## VEC 内部指令分析
 
-Extract pid=5 (VECTOR) events from Chrome Trace JSON, by `name` classification:
+从 Chrome Trace JSON 提取 pid=5 (VECTOR) 事件，按 `name` 分类统计：
 
-| Command Type | Typical command | Meaning |
+| 指令类型 | 典型指令 | 含义 |
 |---------|---------|------|
-| Numerical type | `vec_add`, `vec_mul`, `vec_sub` | Basic calculation, low latency |
-| Beyond the Function Class | `vec_exp`, `vec_log`, `vec_rec`, `vec_rsqrt` | High latency command, no hardware acceleration |
-| Type Conversion Class | `vcvt_f2f`, `vcvt_f2s`, `vcvt_s2f` | Cast Cost |
-| Affiliation | `vec_reduce_sum`, `vec_reduce_max` | Reduction expenses |
+| 算术类 | `vec_add`, `vec_mul`, `vec_sub` | 基本计算，低延迟 |
+| 超越函数类 | `vec_exp`, `vec_log`, `vec_rec`, `vec_rsqrt` | 高延迟指令，无硬件加速 |
+| 类型转换类 | `vcvt_f2f`, `vcvt_f2s`, `vcvt_s2f` | Cast 开销 |
+| 归约类 | `vec_reduce_sum`, `vec_reduce_max` | reduction 开销 |
 
-**Rules of judgement**:
-- Cast > 20% → type conversion intensive scenes optimize Cast high returns
-- Exceed function ratio > 30% → Depth VEC base, optimising space limited
+**判断规则**：
+- Cast 占比 >20% → 类型转换密集场景，优化 Cast 有高收益
+- 超越函数占比 >30% → 深度 VEC bound，优化空间有限
 
-> **RVEC**Modules: RVECEX (execution), RVECLD (loading), RVECST (storage), RVECSU (set-up)
-
----
-
-## Policy 1: UB Integration
-
-Multiple successive Vector operations are done directly in UB, and the intermediate results are not written back to GM, eliminating unnecessary MTE2/MTE3 round-trip.
-
-```
-Not integrated: GM → UB → Compute1 → GM → UB → Compute2 → GM    // 6 Numbers GM Visits
-Integrating: GM → UB → Compute1 → Compute2 → UB → GM          // 2 Numbers GM Visits
-```
-
-**Check method**: Watch whether MTE3 (repeated)+MTE2 (read) has been inserted between two VECTOR active sections in the track. If yes, indicate that the intermediate result has passed GM and is not integrated.
-
-| Operation | Annotations |
-|------|------|
-| Recognize integrated adjacent Vector operations | Elimination of intermediate moves and suspense |
-| Chain Victor Operations Merge | Mul+Add → MulAdd, multiple active function chain processing |
-| Reduce intermediate result writing back to UB | Convergence complete transmission in the repository |
+> ascend950 regbase 范式使用 **RVEC** 单元：RVECEX（执行）、RVECLD（加载）、RVECST（存储）、RVECSU（设置）。
 
 ---
 
-## Policy 2: Reduce type conversion
+## 策略 1：UB 融合
 
-Cast (type conversion) is the most common hidden expense in the VEC base. Typical mode: `fp16 → Cast fp32 → calculates → Cast fp16 '. When calculating itself only 1 –2 Directives, Cast may account for 50% of the total VEC time of 30 –.
+多个连续的 Vector 操作直接在 UB 中完成，不将中间结果写回 GM，消除不必要的 MTE2/MTE3 往返。
 
-| Operation | Annotations |
+```
+未融合: GM → UB → Compute1 → GM → UB → Compute2 → GM    // 6 次 GM 访问
+已融合: GM → UB → Compute1 → Compute2 → UB → GM          // 2 次 GM 访问
+```
+
+**检查方法**：在 trace 中观察两个 VECTOR 活跃段之间是否插入了 MTE3（写回）+ MTE2（读入）。如果有，说明中间结果经过了 GM，未融合。
+
+| 操作 | 说明 |
 |------|------|
-| Batch | Merges a multiple Cast into a large particle size operation |
-| Avoid unnecessary, Cast. | Check if accuracy must be converted |
-| Select the appropriate calculation accuracy | Full link fp16 or full link fp32, avoid round-trip conversion |
+| 识别可融合的相邻 Vector 操作 | 消除中间搬移和暂存 |
+| 链式 Vector 操作合并 | Mul+Add → MulAdd, 多个激活函数链式处理 |
+| 减少中间结果写回 UB | 融合后在寄存器内完成传递 |
 
-Common modifications:
+---
+
+## 策略 2：减少类型转换
+
+Cast（类型转换）是 VEC bound 中最常见的隐性开销。典型模式：`fp16 → Cast fp32 → 计算 → Cast fp16`。当计算本身只有 1–2 条指令时，Cast 可能占总 VEC 时间的 30–50%。
+
+| 操作 | 说明 |
+|------|------|
+| 批量 Cast | 将多次 Cast 合并为一次大粒度操作 |
+| 避免不必要的 Cast | 检查计算精度是否必须转换 |
+| 选择合适的计算精度 | 全链路 fp16 或全链路 fp32，避免往返转换 |
+
+常见修法：
 
 ```cpp
-// Difference: float input also goes through the Cast/identity copy.
+// 差：float 输入也走一遍 Cast/identity copy。
 if constexpr (std::is_same_v<T, float>) {
   Adds(xf, xLocal, 0.0f, count);
 } else {
@@ -100,7 +100,7 @@ if constexpr (std::is_same_v<T, float>) {
 }
 ComputeFp32(xf, count);
 
-// Good: float is a direct calculation source, not float before fp32 scratch.
+// 好：float 直接作为计算源，非 float 才进 fp32 scratch。
 if constexpr (std::is_same_v<T, float>) {
   ComputeFp32(xLocal, count);
 } else {
@@ -109,11 +109,11 @@ if constexpr (std::is_same_v<T, float>) {
 }
 ```
 
-If fp16/bf16 native error meets reference requirements, you can keep separate native path for half-accuracy:
+如果 fp16/bf16 native 误差满足参考要求，可以为半精度单独保留 native 路径：
 
 ```cpp
 if constexpr (std::is_same_v<T, half>) {
-  Sigmoid(yLocal, xLocal, count);  // Avoid Cast to fp32 Again. Cast Come back. half
+  Sigmoid(yLocal, xLocal, count);  // 避免 Cast 到 fp32 再 Cast 回 half
 } else {
   Cast(xf, xLocal, RoundMode::CAST_NONE, count);
   Sigmoid(yf, xf, count);
@@ -123,28 +123,28 @@ if constexpr (std::is_same_v<T, half>) {
 
 ---
 
-## Policy 3: Integration Directives
+## 策略 3：融合指令
 
-Use integration command to reduce VEC commands:
+使用融合指令减少 VEC 指令数：
 
-| Command | Equivalent Operations | Annotations |
+| 指令 | 等价操作 | 说明 |
 |------|---------|------|
-| VMULA | VMUL + VADD | Multiplier Integration |
-| VMULS | VMUL + VSUB | Multiplier/minus integration |
-| VMADD | Aggregated Mode | Single Instructions Plus |
+| VMULA | VMUL + VADD | 乘加融合 |
+| VMULS | VMUL + VSUB | 乘减融合 |
+| VMADD | 累加模式 | 单指令累加 |
 
-Typical replacement:
+典型替换：
 
 ```cpp
-// Discrepancies: two vector pass.
+// 差：两个 vector pass。
 Muls(tmp, x, scale, count);
 Adds(y, tmp, bias, count);
 
-// Good: When supporting, use integration times plus, or put bias/scale into a previous phase.
+// 好：支持时用融合乘加，或把 bias/scale 折进上一阶段。
 Mad(y, x, scaleLocal, biasLocal, count);
 ```
 
-For the activation chain, pre-empt the middle buffer to the minimum:
+对于 activation 链，优先把中间 buffer 压到最少：
 
 ```cpp
 // softplus-like: log(1 + exp(-abs(x))) + max(x, 0)
@@ -157,15 +157,15 @@ Max(tmp1, x, zero, count);
 Add(y, tmp0, tmp1, count);
 ```
 
-Do not open a new float buffer for the phase that can be covered in situ; draw live-range, then decide the number of calcBuf segments.
+能原地覆盖的阶段不要另开一个 float buffer；先画 live-range，再决定 calcBuf 段数。
 
 ---
 
-## Policy 4: Return to low latency
+## 策略 4：低延迟归约
 
-For reduction operations, preference is given to reduceSum / ReduceMax / ReduceMin, avoiding manual for circular element-to-element returns.
+对于 reduction 操作，优先使用硬件树形归约指令（ReduceSum / ReduceMax / ReduceMin），避免手动 for 循环逐元素归约。
 
-Exceptions: When reduce dim is small (e.g. 2, 4, 8, 16, 32) and a barrier is done once in every line, the cost of synchronizing hardware may exceed the scalar cycle. You can press the D-discretion:
+例外：当 reduce dim 很小（例如 2、4、8、16、32）且每行都要做一次 barrier 时，硬件规约同步成本可能超过标量循环。此时可以按 D 分桶：
 
 ```cpp
 if (D <= 32) {
@@ -184,30 +184,30 @@ if (D <= 32) {
 
 ---
 
-## Policy 5: RegBase Access
+## 策略 5：RegBase 访存
 
-| Operation | Annotations |
+| 操作 | 说明 |
 |------|------|
-| Adjust Data Layout to RegBase Friendly | Repeated reading, alignment access |
-| Use RegBase loading command | Reduce address calculation costs |
-| Decrease number of vload/vstore | RegBase, big particle transfer advantage. |
+| 数据布局调整为 RegBase 友好 | 连续读取、对齐访问 |
+| 使用 RegBase 加载指令 | 减少地址计算开销 |
+| 减少 vload/vstore 次数 | RegBase 大粒度搬移优势 |
 
 ---
 
-## DoubleBuffer Check
+## DoubleBuffer 检查
 
-Watching MTE2 and VECTOR rows over time in Chrome Trace:
+在 Chrome Trace 中观察 MTE2 和 VECTOR 行的时间重叠：
 
-| Mode | Features | Meaning |
+| 模式 | 特征 | 含义 |
 |------|------|------|
-| **DB Entry into force** | MTE2 and VECTOR appear alternately | Move in and calculate over and over and over and over and over again. |
-| **DB Not in force** | MTE2 is all ahead, VECTOR is all behind | Serial execution, to open or repair DoubleBuffer |
+| **DB 生效** | MTE2 和 VECTOR 交替出现 | 搬入与计算重叠，流水健康 |
+| **DB 未生效** | MTE2 全在前，VECTOR 全在后 | 串行执行，需开启或修复 DoubleBuffer |
 
 ---
 
-## Tiling Amendments
+## Tiling 修正建议
 
-- Adjust UB layout to support more efficient RegBase access mode
-- Adjusts the tile particle size match for the Vector integration window
-- Increases the size of the tile to reduce the number of cycles and the cost of streaming water outages (UB capacity: 192KB / 910B2, 248KB / 950)
-- When enabling DoubleBuffer, the actual available UB needs to be divided by 2
+- 调整 UB 布局以支持更高效的 RegBase 访问模式
+- 调整 tile 粒度匹配 Vector 融合窗口
+- 增大 tile 尺寸减少循环次数，降低流水启停开销（UB 容量：192KB / 910B2，248KB / 950）
+- 使能 DoubleBuffer 时，实际可用 UB 需除以 2

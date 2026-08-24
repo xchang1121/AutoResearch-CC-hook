@@ -1,6 +1,6 @@
 ---
 name: triton-ascend-example-layernorm
-description: "The full Triton Ascend achievement example for LayerNom is about operator. Shows the two-stage integration mode (statistical calculation of → integration output), scalar cumulator, block-crossing techniques, etc. You can refer to the code structure of this example when generating the reduce/normalize class operator."
+description: "LayerNorm 归约算子的完整 Triton Ascend 实现示例。展示两阶段归约模式（统计量计算 → 归一化输出）、标量累加器、分块遍历等技巧。当生成 reduce/normalize 类算子时可参考此示例的代码结构。"
 category: example
 version: "1.0.0"
 metadata:
@@ -11,7 +11,7 @@ metadata:
   framework: torch
 ---
 
-# LayerNom - Triton Ascend
+# LayerNorm — Triton Ascend 实现示例
 
 ```python
 import torch

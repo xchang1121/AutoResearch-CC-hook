@@ -1,6 +1,6 @@
 ---
 name: triton-ascend-example-matmul-vector
-description: "A5(Ascend950) Full Triton-Ascend achieves the full integration of MatMul + Vector. It contains two complete operational cases: (1) MatMul + ReLU(fp16) Single Kernel CV integration; (2) Vision MLP + GELUward - one fusted-cv Kernel + three plain matmul Kernel + two pure-vector Kernel mixed with the file."
+description: "A5（Ascend950）MatMul + Vector 后处理融合的完整 Triton-Ascend 实现示例集合。包含两个完整可运行案例：(1) MatMul + ReLU（fp16）单 kernel CV 融合；(2) Vision MLP + GELU backward —— 一个 fused-cv kernel + 三个 plain matmul kernel + 两个 pure-vector kernel 同文件混合形态。"
 category: example
 version: "1.0.0"
 metadata:
@@ -11,14 +11,14 @@ metadata:
   requires_affinity: true
 ---
 
-# A5 MatMul + Vector Co-programming - Full code example
+# A5 MatMul + Vector 协同编程 — 完整代码示例
 
-## 1. MatMul+ReLU(fp16) - Single Kernel CV Integration
+## 1. MatMul + ReLU（fp16）— 单 kernel CV 融合
 ```python
 
 @triton.jit
 def matmul_relu_kernel(A_ptr, B_ptr, C_ptr, ...):
-    """Parameters:M/N/K + NUM_BLOCKS / NUM_BLOCKS_N / CORE_NUM """
+    """参数：M/N/K + NUM_BLOCKS / NUM_BLOCKS_N / CORE_NUM """
     pid = tl.program_id(0)
     K_LOOP: tl.constexpr = (K + BLOCK_K - 1) // BLOCK_K
     c_ub = bl.alloc(tl.float32, (BLOCK_M // 2, BLOCK_N), al.ascend_address_space.UB)
@@ -55,11 +55,11 @@ def matmul_relu_kernel(A_ptr, B_ptr, C_ptr, ...):
             al.sync_block_set("vector", "cube", 1, al.PIPE.PIPE_V, al.PIPE.PIPE_FIX)
 ```
 
-Element: This example uses `(BM/2, BN)` UB Buffer + `ROW_SPLIT` + `sub_vec_id`, full of double-vectors; fp16 output requires visible `.to(tl.float16)`; host call must be passed to `disable_auto_inject_block_sync=True`.
+要点：本例采用 `(BM/2, BN)` UB buffer + `ROW_SPLIT` + `sub_vec_id`，吃满双 sub-vector；fp16 输出需显式 `.to(tl.float16)`；host 调用必须传 `disable_auto_inject_block_sync=True`。
 
 ---
 
-## 2. Vision MLP + GELU backward - mixed form (used-cv + plain matmul + pure vector)
+## 2. Vision MLP + GELU backward —— 混合形态（fused-cv + plain matmul + pure vector）
 
 ```python
 grad_fc2_bias    = grad_output.sum(dim=0)
@@ -72,33 +72,33 @@ grad_fc1_weight  = grad_fc1_output.t().mm(hidden_state)
 grad_hidden_state = grad_fc1_output.mm(fc1_weight)
 ```
 
-How 7 operations are assigned to Kernel -- this is the integration operator selection strategy for CV integration of operator:
+7 个操作如何分配到 kernel —— 这是CV融合算子的融合算子选择策略：
 
-| Operation | Kernel type | Correspond to realization |
+| 操作 | kernel 类型 | 对应实现 |
 |---|---|---|
-| `grad_gelu_output = grad_output @ fc2_weight` close to `grad_fc1_output = grad_gelu_output * GELU'(fc1_output)` | **used-cv**(one Kernel) | K1:cube counts GEMM, fixpipe to UB;vector read UB + read `fc1_output` calculates GELU'+ Multiplication + Write `grad_fc1_output` out of GM.**Saves tensor `grad_gelu_output` in the middle (S, I) completely on GM + read.** |
-| `grad_fc2_weight = grad_output.T @ gelu_output` | **plain matmul** | K2-1: Native Triton GEMM, host with `grad_output.t().contiguous()` |
-| `grad_fc1_weight = grad_fc1_output.T @ hidden_state` | **plain matmul** | K2-2: Native Triton GEMM, host with `grad_fc1_output.t().contiguous()` object |
-| `grad_hidden_state = grad_fc1_output @ fc1_weight` | **plain matmul** | K2-3: Native Triton GEMM |
-| `grad_fc2_bias = sum(grad_output, dim=0)` | **pure vector** | K3: pure vector reduce |
-| `grad_fc1_bias = sum(grad_fc1_output, dim=0)` | **pure vector** | K3: pure vector reduce |
+| `grad_gelu_output = grad_output @ fc2_weight` 紧接 `grad_fc1_output = grad_gelu_output * GELU'(fc1_output)` | **fused-cv**（合一个 kernel） | K1：cube 算 GEMM，fixpipe 到 UB；vector 端读 UB + 读 `fc1_output` 计算 GELU' + 乘法 + 写 `grad_fc1_output` 出 GM。**省掉一个 (S, I) 的中间张量 `grad_gelu_output` 完整地在 GM 上的写+读。** |
+| `grad_fc2_weight = grad_output.T @ gelu_output` | **plain matmul** | K2-1：原生 Triton GEMM，host 用 `grad_output.t().contiguous()` 物化 transpose |
+| `grad_fc1_weight = grad_fc1_output.T @ hidden_state` | **plain matmul** | K2-2：原生 Triton GEMM，host 用 `grad_fc1_output.t().contiguous()` 物化 transpose |
+| `grad_hidden_state = grad_fc1_output @ fc1_weight` | **plain matmul** | K2-3：原生 Triton GEMM |
+| `grad_fc2_bias = sum(grad_output, dim=0)` | **pure vector** | K3：纯 vector reduce |
+| `grad_fc1_bias = sum(grad_fc1_output, dim=0)` | **pure vector** | K3：纯 vector reduce |
 
-> Integration selection principle:**There is one worthy of being kissed and**- `GEMM-2' closely following the GM of the `GelU' multiplication (S, I) of the border. Other GEMMs are non-reprocessed, using native Triton.
+> 融合选择原则：**有一处值得做亲和** —— `GEMM-2 紧跟 GELU' 乘法` 这条边界省下 (S, I) 的 GM 中转。其他 GEMM 都是无后处理的，用原生 Triton。
 
 ```python
 
 @triton.jit
 def _gelu_grad(x):
-    """GELU'(x) tanh-approx:tanh_out = tl.math.tanh(SQRT_2_OVER_PI*(x+GELU_C*x^3));
+    """GELU'(x) tanh-approx：tanh_out = tl.math.tanh(SQRT_2_OVER_PI*(x+GELU_C*x^3));
     return 0.5*(1+tanh_out) + 0.5*x*(1-tanh_out^2)*SQRT_2_OVER_PI*(1+3*GELU_C*x^2)"""
     ...
 
 # K1: fused (grad_output @ fc2_weight) + (* GELU'(fc1_output)) -> grad_fc1_output
-# Cube + Victor adhesive, middle result grad_gelu_output does not move into GM.
+# Cube + Vector 亲和写法，中间结果 grad_gelu_output 不搬进 GM。
 @triton.jit
 def _k1_fused_gemm_gelu_kernel(GO_ptr, W_ptr, X1_ptr, GFO_ptr, S, H, I_DIM, ...):
-    """Parameters:ptr (grad_output / fc2_weight / fc1_output / grad_fc1_output) + stride
-    + BLOCK constexpr + K_LOOP / NUM_BLOCKS / NUM_BLOCKS_N / CORE_NUM."""
+    """参数：ptr (grad_output / fc2_weight / fc1_output / grad_fc1_output) + stride
+    + BLOCK constexpr + K_LOOP / NUM_BLOCKS / NUM_BLOCKS_N / CORE_NUM。"""
     pid = tl.program_id(0)
     fused_ub = bl.alloc(tl.float32, (BLOCK_M, BLOCK_N), al.ascend_address_space.UB)
 
@@ -132,13 +132,13 @@ def _k1_fused_gemm_gelu_kernel(GO_ptr, W_ptr, X1_ptr, GFO_ptr, S, H, I_DIM, ...)
 
             al.sync_block_set("vector", "cube", 1, al.PIPE.PIPE_V, al.PIPE.PIPE_FIX)
 
-# K2: Three no reprocessing GEMM - native Triton. Ban al.scope / al.fixpipe /bl.alloc.
+# K2: 三个无后处理 GEMM —— 原生 Triton。禁止 al.scope / al.fixpipe / bl.alloc。
 @triton.jit
 def _matmul_kernel(A_ptr, B_ptr, C_ptr, M, N, K, ...):
     """Native Triton GEMM"""
     ...
 
-# K3: Pure vector.
+# K3: 纯 vector。
 @triton.jit
 def _bias_reduce_kernel(X_ptr, Y_ptr, M, N, stride_xm, stride_xn, ...):
     pid = tl.program_id(0)
@@ -160,7 +160,7 @@ class ModelNew(nn.Module):
 
     def forward(self, grad_output, hidden_state, fc1_weight, fc1_bias,
                       fc2_weight, fc2_bias, fc1_output, gelu_output):
-        # K1: tail rows must be zeros.
+        # K1: tail rows 必须 zeros（K2/K3 后续会读这些被跳过的行）
         grad_fc1_output = torch.zeros((S, I), device=device, dtype=torch.float32)
         _k1_fused_gemm_gelu_kernel[(num_cores,)](
             grad_output, fc2_weight, fc1_output, grad_fc1_output, S, H, I, ...,
@@ -172,16 +172,16 @@ class ModelNew(nn.Module):
         # K2-1: grad_fc2_weight   (H, I) = grad_output_T  @ gelu_output
         # K2-2: grad_fc1_weight   (I, H) = grad_fc1_out_T @ hidden_state
         # K2-3: grad_hidden_state (S, H) = grad_fc1_output @ fc1_weight
-        # All three calls are made in _matmul_kernel; no call is sent to debug/disable_auto_inject_block_sync.
+        # 三次调用都用 _matmul_kernel；不传 debug / disable_auto_inject_block_sync。
 
         # K3:
         # _bias_reduce_kernel(grad_output,      grad_fc2_bias, S, H, ...)  -> (H,)
         # _bias_reduce_kernel(grad_fc1_output,  grad_fc1_bias, S, I, ...)  -> (I,)
-        # Both times, debug=True, disable_auto_inject_block_sync=True
+        # 两次都传 debug=True, disable_auto_inject_block_sync=True（vector scope 属于亲和写法）
 
         return grad_hidden_state, grad_fc1_weight, grad_fc1_bias, grad_fc2_weight, grad_fc2_bias
 ```
 
-### 2.2 Sources of performance gains
+### 2.2 性能收益的来源
 
-K1 connects the `GEMM-2 + GELU' multiplication `on the film (UB) ',**eliminates (S, I) the GM writing + reading of (S, I) tensor `grad_gelu_output`**— this is the source of all the proceeds of this operator adhesion and writing. K2/K3 moves along the best path, not related to kinship; forceing K2 to become a relative and form, not only without gain, but also to introduce the accuracy question.
+K1 把 `GEMM-2 + GELU' 乘法` 在片上 (UB) 直接接起来，**消除 (S, I) 中间张量 `grad_gelu_output` 的 GM 写+读**——这就是这个算子上亲和写法的全部收益来源。K2/K3 走各自最优路径，与亲和无关；强行把 K2 改成亲和形式不仅没有收益、还会引入精度问题。

@@ -1,6 +1,6 @@
 ---
 name: triton-ascend-case-index-histogram
-description: "Histogram statistics (histogram) optimisation: pre-sorting + binary search for reduced algorithm complexity (O (n ×m) → O (n log n + m log n), performance increased 19 times, conversion to float32 calling for accelerated sorting of Vec Core hardware for large-scale statistical class operations (500,000 + elements)"
+description: "直方图统计（histogram）优化：预排序+二分查找降低算法复杂度（O(n×m)→O(n log n + m log n)，性能提升19倍），转换为float32调用Vec Core硬件加速排序，适用于大规模统计类操作（50万+元素）"
 category: case
 version: "1.0.0"
 metadata:
@@ -9,41 +9,41 @@ metadata:
   hardware: "Atlas A2, Atlas A3"
 ---
 
-# Histogram Histogram Statistical Optimization Case
+# Histogram 直方图统计优化案例
 
-## Task characteristics
-- **Operating type**: histogram statistics, counting the number of times each expert ID appears
-- **Data size**: index entry (65536, 8), number of experts 365
-- **Characteristics**: need to optimize algorithm complexity from O (n×m) to O (n log n + m log n)
+## 任务特征
+- **操作类型**：直方图统计，统计每个专家ID出现的次数
+- **数据尺寸**：输入索引(65536, 8)，专家数量365
+- **特点**：需要优化算法复杂度，从O(n×m)降至O(n log n + m log n)
 
-## Optimize 1: Pre-sorting + Double Search
+## 优化 1：预排序 + 二分查找
 
-### Error: Simple way: Count all over O (n×m)
+### 错误：简单方式：遍历统计 O(n×m)
 
 ```python
 count = 0
-for i in range(total_elements):  # 524288Secondary
+for i in range(total_elements):  # 524288次迭代
     val = tl.load(indices_ptr + i)
     if val == expert_idx:
         count += 1
 ```
 
-**Question**: Complexity O (n×m) = 524288 × 365 ≈ 190 million operations
+**问题**：复杂度O(n×m) = 524288 × 365 ≈ 1.9亿次操作
 
-### Correct: Optimized way: pre-sorting + binary search O (n log n + m log n)
+### 正确：优化方式：预排序+二分查找 O(n log n + m log n)
 
 ```python
-# Pre- sorting: O(n log n)
+# 预排序：O(n log n)
 indices_flat = indices.flatten().to(torch.float32)
 sorted_indices, _ = torch.sort(indices_flat)
 
-# Triton Kernel inside binary search: execute O(log n) per extrat
+# Triton kernel内二分查找：每个expert执行O(log n)
 @triton.jit
 def histogram_kernel(sorted_indices_ptr, splits_ptr, total_elements):
     expert_idx = tl.program_id(0)
     expert_id = expert_idx.to(tl.float32)
-
-    # Two-point search for lower bounds (O(log n), approximately 19 iteratives)
+    
+    # 二分查找下界（O(log n)，约19次迭代）
     left, right = 0, total_elements - 1
     start_pos = total_elements
     while left <= right:
@@ -55,42 +55,42 @@ def histogram_kernel(sorted_indices_ptr, splits_ptr, total_elements):
             if mid_val == expert_id:
                 start_pos = tl.minimum(start_pos, mid)
             right = mid - 1
-
-    # Two-point search for upper bounds (similar logic)
+    
+    # 二分查找上界（类似逻辑）
     # ...
     count = end_pos - start_pos + 1
 ```
 
-**Performance comparison**:
-- Statistics: 190 million operations
-- Pre-sorting + Half Search: about 10 million operations
-- **performance improvement: about 19 times**
+**性能对比**：
+- 遍历统计：1.9亿次操作
+- 预排序+二分查找：约1000万次操作
+- **性能提升：约19倍**
 
-## Optimizing 2: Float32 type conversion (Vec Core acceleration)
+## 优化 2：Float32 类型转换（Vec Core加速）
 
-### Error: Simple way: directly using int32
+### 错误：简单方式：直接使用 int32
 
 ```python
 indices_flat = indices.flatten()  # int32
-sorted_indices, _ = torch.sort(indices_flat)  # Possible CallAI CPU
+sorted_indices, _ = torch.sort(indices_flat)  # 可能调用AI CPU
 ```
 
-**Question**: Possible retreat to AI CPU ranking, poor performance
+**问题**：可能回退到AI CPU排序，性能较差
 
-### Correct: Optimized: converted to float32
+### 正确：优化方式：转换为 float32
 
 ```python
-indices_flat = indices.flatten().to(torch.float32)  # Convert tofloat32
-sorted_indices, _ = torch.sort(indices_flat)  # CallVec CoreSort
+indices_flat = indices.flatten().to(torch.float32)  # 转换为float32
+sorted_indices, _ = torch.sort(indices_flat)  # 调用Vec Core排序
 ```
 
-### Optimizing content
-- Ascend chip includes AI Core, Vec Core, AI CPU
-- Vec Core specifically optimized the sorting of float32, supporting SIMD parallels
-- Int32 sorting could go back to AI CPU. It's a poor performance.
-- Index value range is much smaller thanfloat32accuracyScope2^23) No loss for conversionaccuracy
+### 优化内容
+- Ascend芯片包含AI Core、Vec Core、AI CPU
+- Vec Core对float32类型的排序操作有专门优化，支持SIMD并行
+- int32排序可能回退到AI CPU，性能较差
+- 索引值范围远小于float32精度范围（2^23），转换不会损失精度
 
-### Summary
-1. **[Archive optimization]**For statistical class operations, priority should be given to pre-ordering + binary search, reducing O(n×m) complexity to O(n log n + m log n)
-2. **[Uternal interface optimized]**On the Ascend platform, for large-scale sorting, the type float32 should be used to call Vec Core hardware acceleration
-3. Two-point search by 365 experts could be carried out in parallel, with one specialist per thread being processed independently
+### 总结
+1. **[算法优化]** 对于统计类操作，应优先考虑预排序+二分查找，将O(n×m)复杂度降至O(n log n + m log n)
+2. **[底层接口优化]** 在Ascend平台上，对于大规模排序，应使用float32类型调用Vec Core硬件加速
+3. 365个专家的二分查找可以并行执行，每个线程块独立处理一个专家

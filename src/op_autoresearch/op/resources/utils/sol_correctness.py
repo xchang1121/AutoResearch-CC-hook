@@ -4,7 +4,7 @@ import torch
 
 class ToleranceSpec:
     def __init__(self, max_atol=1e-2, max_rtol=1e-2, required_matched_ratio=0.99, max_error_cap=None, allow_negative_inf=False, required_match_ratio=None):
-        # Compatible with two names: SOL official definition with required_metched_ratio, but L2 data use_metch_ratio
+        # 兼容两种命名：SOL 官方定义用 required_matched_ratio，但 L2 数据使用 required_match_ratio
         if required_match_ratio is not None:
             required_matched_ratio = required_match_ratio
         self.max_atol = max_atol

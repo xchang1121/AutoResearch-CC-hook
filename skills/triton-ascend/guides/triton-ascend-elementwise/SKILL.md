@@ -1,6 +1,6 @@
 ---
 name: triton-ascend-elementwise
-description: "For Pure Element-by-Element(element-wise)Categoryoperator. WhenoperatorThe core calculation is right.tensorThis guide should be selected for each element to perform the same operation independently and without inter-element dependence, typicallyoperatorIncluding:relu, sigmoid, tanh, gelu, selu, leaky_relu, elu, swish, softplus, hardsigmoid, hardtanh, softsign, exp, log, sqrt, pow, add, mul, sub, div, abs, neg, clamp, cast(Type Conversion), where, fill, copyAnd so on. It's also relevant.scalarRadio(broadcast). This does not apply to cross-elements.(Likesum/mean/max)ormatrix multiplicationofoperator. IfoperatorComprises both element-by-component calculation and global attribution (e.g. loss function)MSELoss,HuberLoss,HingeLoss), should chooseelementwise-reduce-fusedGuide."
+description: "适用于纯逐元素(element-wise)类算子的优化指南。当算子的核心计算是对张量每个元素独立执行相同操作、无跨元素依赖时应选择此指南，典型算子包括：relu, sigmoid, tanh, gelu, selu, leaky_relu, elu, swish, softplus, hardsigmoid, hardtanh, softsign, exp, log, sqrt, pow, add, mul, sub, div, abs, neg, clamp, cast(类型转换), where, fill, copy 等。也适用于涉及标量广播(broadcast)的运算。不适用于需要跨元素归约(如 sum/mean/max)或矩阵乘法的算子。如果算子同时包含逐元素计算和全局归约（如损失函数 MSELoss、HuberLoss、HingeLoss），应选择 elementwise-reduce-fused 指南。"
 category: guide
 version: "1.0.0"
 metadata:
@@ -10,14 +10,14 @@ metadata:
   operator_type: "elementwise"
 ---
 
-# Guidance for the preparation of Element-wise operator
+# Element-wise 算子编写指南
 
-## Preparation Mode
+## 编写模式
 
-Core features of Element-wise operator: Each output element relies only on input elements at the corresponding location and is non-intersectional.
-Common writing is the display of tensor as 1D, with a staggered cycle, press block through all elements.
+Element-wise 算子的核心特征：每个输出元素仅依赖对应位置的输入元素，无跨元素依赖。
+通用写法是将张量展平为 1D，用交错循环按 block 遍历全部元素。
 
-### Standardized
+### 标准写法
 
 ```python
 @triton.jit
@@ -31,7 +31,7 @@ def elementwise_kernel(
         offsets = block_id * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
         mask = offsets < n_elements
         x = tl.load(input_ptr + offsets, mask=mask, other=0.0)
-        y = compute(x)  # Replace with Specific Calculations
+        y = compute(x)  # 替换为具体计算
         tl.store(output_ptr + offsets, y, mask=mask)
 
 class ModelNew(torch.nn.Module):
@@ -56,48 +56,48 @@ class ModelNew(torch.nn.Module):
         return y
 ```
 
-**Element**
-- `.contiguous()` ensures continuous access to a one-dimensional pointer and avoids stide calculation
-- `torch.empty_like` creation output (no zeros, save initial cost)
-- The parameter signature and quantity of `forward` must match the original `Model.forward`
+**要点**：
+- `.contiguous()` 保证一维指针连续访问，避免 stride 计算
+- `torch.empty_like` 创建输出（不用 zeros，省初始化开销）
+- `forward` 的参数签名和数量必须与原始 `Model.forward` 一致
 
-## Optimizing skills
+## 优化技巧
 
-### 1. Continuous memory access
+### 1. 连续内存访问
 
-A 1-dimensional, continuous offset access, with the highest rate of cache hits:
-- tensor First `.contiguous()`
-- Acquiring the total number of elements with `x.numel()`, ignoring the original shape
+展平为一维后用连续偏移访问，缓存命中率最高：
+- 非连续张量先 `.contiguous()`
+- 用 `x.numel()` 获取总元素数，忽略原始 shape
 
-### 2. BLONK_SIZE Selection
+### 2. BLOCK_SIZE 选择
 
-- Recommended 1024-2048, Balancing flow efficiency and UB occupancy
-- The amount of data can be reduced to 256-512 in a very long time.
-- BLONK_SIZE does not need to be increased when the amount of data is large. The stagger cycle is automatically balanced.
+- 推荐 1024-2048，平衡流水效率和 UB 占用
+- 数据量很小时可降到 256-512
+- 数据量很大时不需要增大 BLOCK_SIZE，交错循环自动均衡
 
-### 3. Numerical stability
+### 3. 数值稳定性
 
-- Maximum excretion pre-exceeding `exp`
-- Ensure non-negative before `sqrt`: `tl.maximum(x, 0.0)` or `tl.maximum(x, eps)`
-- Intermediate calculation with float32 cum and final return to target accuracy
+- `exp` 前减最大值防溢出
+- `sqrt` 前确保非负：`tl.maximum(x, 0.0)` 或 `tl.maximum(x, eps)`
+- 中间计算用 float32 累加，最后转回目标精度
 
-### 4. Combining multistep calculations
+### 4. 融合多步计算
 
-Continuous elementwise operations should be integrated into the same kernel to avoid multiple GM readings and writing:
+连续的 elementwise 操作应融合在同一个 kernel 内，避免多次 GM 读写：
 
 ```python
-# I'm going to take a look at this.
+# 融合 x -> relu -> scale -> add_bias
 y = tl.maximum(x, 0.0)  # relu
 y = y * scale            # scale
 y = y + bias             # add_bias
 ```
 
-### 5. Broadcast processing
+### 5. 广播处理
 
-When an input is scalar or needs to be broadcast, load with constants in the Kernel external processing or in the Kernel:
+当一个输入是标量或需要广播时，在 kernel 外部处理或在 kernel 中用常量加载：
 
 ```python
-# scalar imported as kernel parameter
+# 标量作为 kernel 参数传入
 @triton.jit
 def scale_kernel(x_ptr, out_ptr, scale_val, n, BLOCK_SIZE: tl.constexpr, CORE_NUM: tl.constexpr):
     ...

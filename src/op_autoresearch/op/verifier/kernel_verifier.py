@@ -1,3 +1,17 @@
+# Copyright 2025 Huawei Technologies Co., Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import os
 import re
 import shutil
@@ -45,7 +59,7 @@ import tarfile
 import io
 import ast
 
-# Template Path
+# 模板路径
 TEMPLATE_PATH = os.path.join(get_project_root(), "op", "resources", "templates",
                              "kernel_verify_template_refactored.j2")
 PROFILE_BASE_TEMPLATE_PATH = os.path.join(get_project_root(), "op", "resources",
@@ -54,9 +68,9 @@ PROFILE_GENERATION_TEMPLATE_PATH = os.path.join(
     get_project_root(), "op", "resources", "templates", "prof_generation_template_refactored.j2")
 PROFILE_SINGLE_TASK_TEMPLATE_PATH = os.path.join(
     get_project_root(), "op", "resources", "templates", "prof_single_task_template.j2")
-# Path to generating CMakeLists.txt and running scripts
+# 生成CMakeLists.txt和运行脚本的路径
 
-# Type definition
+# 类型定义
 FrameworkType = Literal["torch", "mindspore", "numpy"]
 ImplType = Literal["triton_cuda", "triton_ascend", "triton-russia", "swft",
                    "cuda_c", "cpp", "tilelang_npuir", "tilelang_cuda", "ascendc",
@@ -82,13 +96,13 @@ def _get_framework_sync_code(framework: FrameworkType,
 
 def sync_artifacts_to_directory(artifacts: Dict[str, str], target_dir: str, task_id: str = "0") -> None:
     """
-    Synchronises the artifices to the destination directory.
+    将 artifacts 同步到目标目录。
 
     Args:
-        Artiffacts: returns an artiffacts dictionary from Worker in {relative_path: file_content}
-                   For example: \"autotune_info_case_0.json,\" \"subdir/result.jsonl\": \"...\"
-        target_dir: destination directory path (usually verify_dir)
-        task_id: task ID (for log)
+        artifacts: 从 Worker 返回的 artifacts 字典，格式为 {relative_path: file_content}
+                   例如: {"autotune_info_case_0.json": "{...}", "subdir/result.jsonl": "..."}
+        target_dir: 目标目录路径（通常是 verify_dir）
+        task_id: 任务ID（用于日志）
     """
     if not artifacts:
         return
@@ -112,7 +126,7 @@ def sync_artifacts_to_directory(artifacts: Dict[str, str], target_dir: str, task
                 f"{rel_path!r}")
             continue
 
-        # Make sure the directory exists.
+        # 确保目录存在
         dir_path = os.path.dirname(full_path)
         if dir_path and not os.path.exists(dir_path):
             os.makedirs(dir_path, exist_ok=True)
@@ -140,30 +154,30 @@ class KernelVerifier:
                  worker: Optional[WorkerInterface] = None,
                  bench_type: Literal["kernelbench", "sol", "cann"] = "kernelbench"):
         """
-        InitializeKernelverifier.
+        初始化Kernel验证器。
 
         Args:
-            op_name (str): operatorName
-            framework_code (str): frameworkAchieve code(s)PyTorch,MindSporeorNumPy)
-            log_dir (str): Debug Info Directory
-            task_id (str, optional): TasksID, to generate a unique directory name
-            framework (FrameworkType): In-depth learningframework, the optional value includes "torch", "mindspore", "numpy"
-            dsl (ImplType): Type of achievement, optional values include "triton_cuda", "triton_ascend", "triton-russia", "swft"
-            backend (BackendType): Calculatedevicebackend, the optional value includes "cuda", "ascend"
-            arch (ArchType): Hardware architecture, by backend-specific Validation level determination
-            impl_func_name (str, optional): Fulfilling function name, default toop_name_dsl_framework
-            worker (WorkerInterface, optional): WorkerExample for validation missions
+            op_name (str): 算子名称
+            framework_code (str): 框架实现代码（PyTorch、MindSpore或NumPy）
+            log_dir (str): 调试信息目录
+            task_id (str, optional): 任务ID，用于生成唯一目录名
+            framework (FrameworkType): 深度学习框架，可选值包括 "torch", "mindspore", "numpy"
+            dsl (ImplType): 实现类型，可选值包括 "triton_cuda", "triton_ascend", "triton-russia", "swft"
+            backend (BackendType): 计算设备后端，可选值包括 "cuda", "ascend"
+            arch (ArchType): 硬件架构，由 backend-specific 校验层判定
+            impl_func_name (str, optional): 实现函数名，默认为op_name_dsl_framework
+            worker (WorkerInterface, optional): Worker实例，用于执行验证任务
         """
         self.op_name = op_name
         self.framework_code = framework_code
         self.framework = framework
-        # Normalize DSL (automatic conversion of Triton to Triton_cuda or Triton_ascend)
+        # 规范化DSL（自动转换triton为triton_cuda或triton_ascend）
         self.dsl = normalize_dsl(dsl, backend)
         self.backend = backend.lower()
         self.arch = arch.lower()
         self.task_id = task_id
         self.bench_type = bench_type
-        # Can not get message: %s %s
+        # 从config中获取log_dir
         if config:
             self.config = config
             self.log_dir = config.get("log_dir")
@@ -185,13 +199,13 @@ class KernelVerifier:
         factory_names = self.config.get("framework_factory_names") or {}
         if not isinstance(aux_files, dict):
             raise TypeError(
-                "It must be Dict [str, str. bytes], "
-                f"Actually... {type(aux_files).__name__}",
+                "config['framework_aux_files'] 必须是 Dict[str, str | bytes], "
+                f"实际是 {type(aux_files).__name__}",
             )
         if not isinstance(factory_names, dict):
             raise TypeError(
-                "It must be Dict [str, Any],"
-                f"Actually... {type(factory_names).__name__}",
+                "config['framework_factory_names'] 必须是 Dict[str, Any]，"
+                f"实际是 {type(factory_names).__name__}",
             )
         self.framework_aux_files: Dict[str, Union[str, bytes]] = aux_files
         self.framework_factory_names: Dict[str, Any] = factory_names
@@ -211,12 +225,12 @@ class KernelVerifier:
             op_name=op_name, dsl=dsl, framework=framework,
         )
 
-        # Validate backend /arch combination - single source config_utils.check_backend_arch.
-        # There was a second hard-coded list of new cards that were easily omitted.
+        # 验证 backend / arch 组合 —— 单一来源 config_utils.check_backend_arch。
+        # 之前这里有第二份 hard-coded 列表，扩新卡时容易遗漏。
         from op_autoresearch.op.utils.config_utils import check_backend_arch
         check_backend_arch(self.backend, self.arch)
 
-        # Save the example of the worker (available in runtime Dynamic Settings)
+        # 保存Worker实例（可以在运行时动态设置）
         self.worker = worker
 
     def _materialize_framework_bundle(self, target_dir: str,
@@ -241,10 +255,10 @@ class KernelVerifier:
         try:
             with open(py_path, "w", encoding="utf-8") as f:
                 f.write(framework_code)
-            logger.debug(f"[{self.op_name}] framework File written: {py_path}")
+            logger.debug(f"[{self.op_name}] framework 文件已写入: {py_path}")
         except Exception as e:
-            logger.error(f"[{self.op_name}] framework File writing failed: "
-                         f"{py_path}, Error: {e}")
+            logger.error(f"[{self.op_name}] framework 文件写入失败: "
+                         f"{py_path}, 错误: {e}")
             raise
 
         if not self.framework_aux_files:
@@ -258,7 +272,7 @@ class KernelVerifier:
                 or ".." in rel_name.split("/")
             ):
                 logger.warning(
-                    f"[{self.op_name}] Skip Illegal sidecar Path: {rel_name!r}"
+                    f"[{self.op_name}] 跳过非法 sidecar 路径: {rel_name!r}"
                 )
                 continue
             aux_path = os.path.join(target_dir, rel_name)
@@ -271,11 +285,11 @@ class KernelVerifier:
                     with open(aux_path, "w", encoding="utf-8") as f:
                         f.write(content)
                 logger.debug(
-                    f"[{self.op_name}] sidecar File written: {aux_path}"
+                    f"[{self.op_name}] sidecar 文件已写入: {aux_path}"
                 )
             except Exception as e:
                 logger.error(
-                    f"[{self.op_name}] sidecar File writing failed: {aux_path}, Error: {e}"
+                    f"[{self.op_name}] sidecar 文件写入失败: {aux_path}, 错误: {e}"
                 )
                 raise
 
@@ -283,13 +297,13 @@ class KernelVerifier:
 
     def check_task_desc_static(self, code: str) -> Tuple[bool, str]:
         """
-        Static check whether the tag_desc code is in line with the code
+        静态检查 task_desc 代码是否符合规范
 
         Args:
-            code: tag_dec code string
+            code: task_desc 代码字符串
 
         Returns:
-            Tuple [bool, st]: (Whether passed, error message)
+            Tuple[bool, str]: (是否通过, 错误信息)
         """
         try:
             tree = ast.parse(code)
@@ -327,16 +341,16 @@ class KernelVerifier:
 
     async def check_task_desc_runtime(self, task_desc: str, timeout: int = 60) -> Tuple[bool, str]:
         """
-        runtime Checks whether the task_desc code is correctly executed
+        运行时检查 task_desc 代码是否能正确执行
 
         Args:
-            name_dec: name_dec
-            Timeout: Timeout
+            task_desc: task_desc 代码字符串
+            timeout: 超时时间
 
         Returns:
-            Tuple [bool, st]: (Whether passed, error message)
+            Tuple[bool, str]: (是否通过, 错误信息)
         """
-        # 1. Creation of a provisional certification directory
+        # 1. 创建临时验证目录
         check_dir = os.path.join(os.path.expanduser(self.log_dir), f"{self.op_name}_check_desc_{self.task_id}")
         os.makedirs(check_dir, exist_ok=True)
 
@@ -348,11 +362,11 @@ class KernelVerifier:
                 if isinstance(self.worker, LocalWorker) and self.worker.device_pool:
                     device_id = self.worker.device_pool.device_list[0]
 
-            # Writing task_dec to REF_FILE_DFAULT+Sync sidecar
+            # 2. 写入 task_desc 到 REF_FILE_DEFAULT + 同步 sidecar
             ref_file = self._materialize_framework_bundle(
                 check_dir, task_desc, target_filename=REF_FILE_DEFAULT)
 
-            # 3.Generate authentication scriptsverify_{op_name}.py
+            # 3. 生成验证脚本 verify_{op_name}.py
             if self.framework == "mindspore":
                 verify_script_content = f"""
 import mindspore as ms
@@ -438,9 +452,9 @@ def run_check():
         except ImportError as e:
             print(f"Import failed: {{e}}")
             return False
-
+            
         print("Successfully imported Model and helper functions.")
-
+        
         device = "cpu"
         if torch.cuda.is_available():
             device = "cuda"
@@ -450,7 +464,7 @@ def run_check():
             torch.npu.set_device({device_id})
 
         print(f"Using device: {{device}}:{device_id}")
-
+        
         try:
             init_inputs = get_init_inputs()
             model = Model(*init_inputs)
@@ -460,7 +474,7 @@ def run_check():
         except Exception as e:
             print(f"Model instantiation failed: {{e}}")
             return False
-
+            
         if device != "cpu":
             torch.set_default_device(device)
         try:
@@ -473,14 +487,14 @@ def run_check():
         finally:
             if device != "cpu":
                 torch.set_default_device("cpu")
-
+            
         try:
             output = model(*inputs)
             print("Forward pass successful.")
         except Exception as e:
             print(f"Forward pass failed: {{e}}")
             return False
-
+            
         return True
 
     except Exception as e:
@@ -502,16 +516,16 @@ if __name__ == "__main__":
             with open(verify_file, "w", encoding="utf-8") as f:
                 f.write(verify_script_content)
 
-            # Packing catalogues
+            # 4. 打包目录
             package_data = self._pack_directory(check_dir)
 
-            # 5. Use Worker for execution
+            # 5. 使用 Worker 执行
             if not self.worker:
                 raise RuntimeError("Worker not set for runtime check")
 
-            # Note: We don't need to be visible here because reference check usually does a simple forward pass
-            # In the case of remote worker, it is automatically distributed; in the case of local worker, it usually does not require a specific device lock (unless OOM)
-            # But for safety's sake, the caller should have taken care of it.
+            # 注意：这里我们不需要显式管理 device，因为 reference check 通常只做一个简单的 forward pass
+            # 如果是 remote worker，它会自动分发；如果是 local worker，它通常不需要特定的 device lock (除非 OOM)
+            # 但为了安全起见，调用方应该已经处理了 resource locking
 
             success, log, _ = await self.worker.verify(package_data, f"{self.task_id}_check", self.op_name, timeout)
 
@@ -523,7 +537,7 @@ if __name__ == "__main__":
         except Exception as e:
             return False, f"Runtime check exception: {str(e)}"
         finally:
-            # Clear Temporary Directory
+            # 清理临时目录
             shutil.rmtree(check_dir, ignore_errors=True)
 
     async def generate_reference_data(
@@ -534,34 +548,34 @@ if __name__ == "__main__":
         device_id: Optional[int] = None,
     ) -> Tuple[bool, str, bytes]:
         """
-        Execute task_dec and generate reference data on GPU
+        在 GPU 上执行 task_desc 并生成参考数据
 
-        For the CUDA-to-Asend conversion scenario: execute the Triton-CUDA code on the GPU Worker.
-        Saves the output as reference data for NPU Worker to verify the correctness of the converted code.
+        用于 CUDA-to-Ascend 转换场景：在 GPU Worker 上执行 Triton-CUDA 代码，
+        保存输出作为参考数据，供 NPU Worker 验证转换后的代码正确性。
 
         Args:
-            task_dec: tag_dec code string (Triton-CUDA code)
-            Timeout: Timeout
-            Save_inputs: Whether to save both inputs and init_inputs to reference data.
-                         When True, the authentication end is completely de-dependent from the source platform (not requiring the effect vehicle work code).
-            Data_id: Specifies the device ID (optional) that will be used to execute the reference data generation.
+            task_desc: task_desc 代码字符串（Triton-CUDA 代码）
+            timeout: 超时时间
+            save_inputs: 是否同时保存 inputs 和 init_inputs 到参考数据中。
+                         当 True 时，验证端可完全脱离源平台依赖（不需要 import framework 代码）。
+            device_id: 指定执行参考数据生成时使用的设备 ID（可选）。
 
         Returns:
-            Tuple [bol, st, bytes]: (successful, log, reference databytes)
-            - When successful bytes is.pt file content
-            Bytes is empty when it fails, b''
+            Tuple[bool, str, bytes]: (是否成功, 日志, 参考数据bytes)
+            - 成功时 bytes 为 .pt 文件内容
+            - 失败时 bytes 为空 b''
         """
         timeout = resolve_reference_timeout(timeout)
-        # 1. Creation of temporary directories
+        # 1. 创建临时目录
         ref_dir = os.path.join(os.path.expanduser(self.log_dir), f"{self.op_name}_gen_ref_{self.task_id}")
         os.makedirs(ref_dir, exist_ok=True)
 
         try:
-            # Writing task_dec to REF_FILE_DFAULT+Sync sidecar
+            # 2. 写入 task_desc 到 REF_FILE_DEFAULT + 同步 sidecar
             ref_file = self._materialize_framework_bundle(
                 ref_dir, task_desc, target_filename=REF_FILE_DEFAULT)
 
-            # 3. Generate reference data scripts
+            # 3. 生成参考数据脚本
             save_inputs_flag = "True" if save_inputs else "False"
             backend_name = self.backend
             target_device_id = 0 if device_id is None or device_id < 0 else int(device_id)
@@ -611,9 +625,9 @@ def generate_reference():
         except ImportError as e:
             print(f"Import failed: {{e}}")
             return False
-
+        
         print("Successfully imported Model and helper functions.")
-
+        
         backend = "{backend_name}"
         device_id = {target_device_id}
         device = "cpu"
@@ -643,10 +657,10 @@ def generate_reference():
             return False
 
         print(f"Using device: {{device}}")
-
+        
         torch.manual_seed(0)
         print("[INFO] Random seed: 0")
-
+        
         try:
             init_inputs = get_init_inputs()
             model = Model(*init_inputs)
@@ -656,10 +670,10 @@ def generate_reference():
         except Exception as e:
             print(f"Model instantiation failed: {{e}}")
             return False
-
+        
         if device != "cpu":
             torch.set_default_device(device)
-
+        
         torch.manual_seed(0)
         try:
             inputs = get_inputs()
@@ -671,11 +685,11 @@ def generate_reference():
         finally:
             if device != "cpu":
                 torch.set_default_device("cpu")
-
+        
         inputs_snapshot = None
         if save_inputs:
             inputs_snapshot = _deep_clone(inputs)
-
+        
         try:
             with torch.no_grad():
                 outputs = model(*inputs)
@@ -683,12 +697,12 @@ def generate_reference():
         except Exception as e:
             print(f"Forward pass failed: {{e}}")
             return False
-
+        
         if not isinstance(outputs, (list, tuple)):
             outputs = [outputs]
-
+        
         outputs_cpu = _deep_cpu(outputs)
-
+        
         ref_data = {{
             'op_name': '{self.op_name}',
             'seed': 0,
@@ -696,7 +710,7 @@ def generate_reference():
             'output_shapes': [x.shape if isinstance(x, torch.Tensor) else None for x in outputs_cpu],
             'output_dtypes': [str(x.dtype) if isinstance(x, torch.Tensor) else None for x in outputs_cpu],
         }}
-
+        
         if save_inputs:
             inputs_cpu = _deep_cpu(inputs_snapshot)
             ref_data['save_inputs'] = True
@@ -705,7 +719,7 @@ def generate_reference():
             ref_data['input_dtypes'] = [str(x.dtype) if isinstance(x, torch.Tensor) else None for x in inputs_cpu]
             ref_data['init_inputs'] = init_inputs
             print(f"[INFO] save_inputs=True, saving inputs ({{len(inputs_cpu)}}) and init_inputs ({{len(init_inputs)}})")
-
+        
         ref_file = os.path.join(os.getcwd(), "{self.op_name}_reference.pt")
         torch.save(ref_data, ref_file)
         print(f"[INFO] Reference data saved to: {{ref_file}}")
@@ -713,9 +727,9 @@ def generate_reference():
         for i, out in enumerate(outputs_cpu):
             if isinstance(out, torch.Tensor):
                 print(f"  Output[{{i}}]: shape={{out.shape}}, dtype={{out.dtype}}")
-
+        
         return True
-
+    
     except Exception as e:
         print(f"Unexpected error: {{e}}")
         import traceback
@@ -735,15 +749,15 @@ if __name__ == "__main__":
             with open(script_file, "w", encoding="utf-8") as f:
                 f.write(gen_ref_script)
 
-            # Packing catalogues
+            # 4. 打包目录
             package_data = self._pack_directory(ref_dir)
 
-            # 5. Use Worker.generate_reference for execution
+            # 5. 使用 Worker.generate_reference 执行
             if not self.worker:
                 raise RuntimeError("Worker not set for reference generation")
 
-            # Directly call the starter'sgenerate_reference method
-            # This method will execute scripts and return bytes of.pt files
+            # 直接调用 Worker 的 generate_reference 方法
+            # 该方法会执行脚本并返回 .pt 文件的 bytes
             success, log, ref_bytes = await self.worker.generate_reference(
                 package_data, f"{self.task_id}_gen_ref", self.op_name, timeout
             )
@@ -756,7 +770,7 @@ if __name__ == "__main__":
         except Exception as e:
             return False, f"Reference generation exception: {str(e)}", b''
         finally:
-            # Clear Temporary Directory
+            # 清理临时目录
             shutil.rmtree(ref_dir, ignore_errors=True)
 
     async def profile_single_task(self, task_desc: str,
@@ -765,42 +779,42 @@ if __name__ == "__main__":
                                   timeout: Optional[int] = None,
                                   device_id: int = 0) -> Dict[str, Any]:
         """
-        Performance test for performing a single task (measuring only the performance of the task_desc without comparison of base vs generation)
+        执行单个任务的性能测试（只测量 task_desc 的性能，不进行 base vs generation 对比）
 
-        This function is used to measure the performance of a certain section of the code (which contains the Model class) separately, creating a directory and producing a profile script on a temporary basis.
+        此功能用于单独测量某段代码（包含 Model 类）的执行性能，会临时创建目录并生成 profile 脚本。
 
         Args:
-            name_dec: code string containing Model, get_inputs, get_init_inputs
-            Warmup_times: number of preheats
-            Run_times: Number of times actually running
-            Timeout: Timeout
-            Device_id: deviceID
+            task_desc: 包含 Model, get_inputs, get_init_inputs 的代码字符串
+            warmup_times: 预热次数
+            run_times: 实际运行次数
+            timeout: 超时时间
+            device_id: 设备ID
 
         Returns:
-            Dict[str, Any]: Paragraph containing time_us, access, log
+            Dict[str, Any]: 包含 time_us, success, log 等字段
         """
         warmup_times = resolve_warmup_times(warmup_times)
         run_times = resolve_run_times(run_times)
         timeout = resolve_eval_timeout(timeout)
-        # 1. Creation of temporary directories
+        # 1. 创建临时目录
         profile_dir = os.path.join(os.path.expanduser(self.log_dir),
                                    f"{self.op_name}_profile_single_{self.task_id}")
         os.makedirs(profile_dir, exist_ok=True)
 
         try:
-            # Drop code +sidecar to drop the disc (buddle internal decision. py name +
-            # Sidecar changed name with stem.
+            # framework code + sidecar 一起落盘（bundle 内部决定 .py 名 +
+            # sidecar 跟 stem 改名）。
             framework_file = self._materialize_framework_bundle(
                 profile_dir, task_desc)
 
-            # 3. Testing scripts using templates to generate performance
+            # 3. 使用模板生成性能测试脚本
             script_file = os.path.join(profile_dir, f"profile_single_{self.op_name}.py")
             self.gen_profile_single_task_file(script_file, device_id, warmup_times, run_times)
 
-            # Packing catalogues
+            # 4. 打包目录
             package_data = self._pack_directory(profile_dir)
 
-            # 5. Execute using Worker.profile_single_task
+            # 5. 使用 Worker.profile_single_task 执行
             if not self.worker:
                 raise RuntimeError("Worker not set for profile_single_task")
 
@@ -820,39 +834,39 @@ if __name__ == "__main__":
             logger.error(f"[{self.op_name}] profile_single_task exception: {e}", exc_info=True)
             return {'time_us': float('inf'), 'success': False, 'log': f"Profile single task exception: {str(e)}"}
         finally:
-            # Clear Temporary Directory
+            # 清理临时目录
             shutil.rmtree(profile_dir, ignore_errors=True)
 
     def gen_profile_single_task_file(self, profile_file: str, device_id: int,
                                      warmup_times: int, run_times: int):
-        """Use templates to generate single task performance to test scripts"""
-        logger.info(f"[{self.op_name}] Start generating single task performance test files")
+        """使用模板生成单任务性能测试脚本"""
+        logger.info(f"[{self.op_name}] 开始生成单任务性能测试文件")
 
-        # Load Template From File
+        # 从文件加载模板
         try:
             with open(PROFILE_SINGLE_TASK_TEMPLATE_PATH, "r", encoding="utf-8") as f:
                 template = Template(f.read())
-            logger.debug(f"[{self.op_name}] Loaded single task performance test template successfully")
+            logger.debug(f"[{self.op_name}] 单任务性能测试模板加载成功")
         except Exception as e:
-            logger.error(f"[{self.op_name}] Template loading failed: {e}")
+            logger.error(f"[{self.op_name}] 模板加载失败: {e}")
             raise
 
-        # Test for dynamic Shape
+        # 检测是否为动态shape
         is_dynamic_shape = self._detect_dynamic_shape()
 
-        # Getadaps
+        # 获取adapters
         try:
             framework_adapter = get_framework_adapter(self.framework)
             backend_adapter = get_backend_adapter(self.backend)
         except Exception as e:
-            logger.error(f"[{self.op_name}] AdaptersInitialization failed: {e}")
+            logger.error(f"[{self.op_name}] Adapters初始化失败: {e}")
             raise
 
-        # Generate Snippets with an adapter
+        # 使用adapter生成代码片段
         try:
             framework_imports = framework_adapter.get_import_statements()
 
-            # ``get_inputs`` / ``get_inputs_dyn_list`` will automatically use ``import ... as ...``
+            # ``get_inputs`` / ``get_inputs_dyn_list`` 时，会自动使用 ``import ... as ...``
             framework_model_import = framework_adapter.get_framework_import(
                 self.op_name,
                 is_dynamic_shape,
@@ -860,31 +874,31 @@ if __name__ == "__main__":
                 module_name=self.framework_module_name,
             )
             logger.debug(
-                f"[{self.op_name}] Framework model import Generate successfully "
-                f"(Length: {len(framework_model_import)})"
+                f"[{self.op_name}] Framework model import 生成成功 "
+                f"(长度: {len(framework_model_import)})"
             )
 
-            # Generate device settings code
+            # 生成设备设置代码
             backend_adapter.setup_environment(device_id, self.arch)
             device_setup_code = framework_adapter.get_device_setup_code(self.backend, self.arch, device_id)
 
-            # Generate input processing code
+            # 生成输入处理代码
             process_input_code = framework_adapter.get_process_input_code(self.backend, self.dsl)
 
-            # Generate set_seed code
+            # 生成set_seed代码
             set_seed_code = framework_adapter.get_set_seed_code(self.backend)
 
-            # Fetch TensorType Name
+            # 获取TensorType名称
             tensor_type_name = framework_adapter.get_tensor_type_name()
 
-            # Generate benchmark code (measuring performance of famework_model using base mode)
+            # 生成benchmark代码（使用base模式，测量framework_model的性能）
             benchmark_code = self._generate_base_benchmark_code(framework_adapter, None,
                                                                 warmup_times, run_times)
         except Exception as e:
-            logger.error(f"[{self.op_name}] Snippet generation failed: {e}", exc_info=True)
+            logger.error(f"[{self.op_name}] 代码片段生成失败: {e}", exc_info=True)
             raise
 
-        # Render Template
+        # 渲染模板
         try:
             rendered_code = template.render(
                 op_name=self.op_name,
@@ -903,18 +917,18 @@ if __name__ == "__main__":
                 tensor_type_name=tensor_type_name,
                 benchmark_code=self._prepare_code_lines(benchmark_code),
             )
-            logger.info(f"[{self.op_name}] Template rendering succeeded")
+            logger.info(f"[{self.op_name}] 模板渲染成功")
         except Exception as e:
-            logger.error(f"[{self.op_name}] Template render failed: {e}", exc_info=True)
+            logger.error(f"[{self.op_name}] 模板渲染失败: {e}", exc_info=True)
             raise
 
-        # Writing files
+        # 写入文件
         try:
             with open(profile_file, "w", encoding="utf-8") as f:
                 f.write(rendered_code)
-            logger.info(f"[{self.op_name}] Script for single task performance test written: {profile_file}")
+            logger.info(f"[{self.op_name}] 单任务性能测试脚本已写入: {profile_file}")
         except Exception as e:
-            logger.error(f"[{self.op_name}] Script writing failed: {e}")
+            logger.error(f"[{self.op_name}] 脚本写入失败: {e}")
             raise
 
     def _verify_impl_artifacts_ready(self, verify_dir: str) -> bool:
@@ -938,7 +952,7 @@ if __name__ == "__main__":
         return all(os.path.isfile(p) for p in artifacts)
 
     def _create_verify_dir(self, step_counter) -> str:
-        """Create authentication directory and return directory path"""
+        """创建验证目录并返回目录路径"""
         expanded_log_dir = os.path.expanduser(self.log_dir)
         unique_dir = f"Iteration{self.task_id}_Step{step_counter}_verify"
 
@@ -985,7 +999,7 @@ if __name__ == "__main__":
 
     @staticmethod
     def _prepare_code_lines(code_snippet: Any) -> List[str]:
-        """Regularizes multi-line Snippets into a line-by-line list to control indentation when templates are rendered."""
+        """将多行代码片段规范化为按行列表，方便模板渲染时控制缩进。"""
         if not code_snippet:
             return []
         if isinstance(code_snippet, (list, tuple)):
@@ -1023,13 +1037,13 @@ if __name__ == "__main__":
                 cann_problem_dir = self.config.get("cann_problem_dir")
                 if not cann_problem_dir:
                     logger.info(
-                        f"[{self.op_name}] config['cann_problem_dir'] Unconfigured, Skip CANN baseline cache"
+                        f"[{self.op_name}] config['cann_problem_dir'] 未配置，跳过 CANN baseline cache"
                     )
                     return None
                 return cann_problem_dir
             except Exception as exc:
                 logger.info(
-                    f"[{self.op_name}] CANN baseline cache key Build failed, Skip: {exc}"
+                    f"[{self.op_name}] CANN baseline cache key 构建失败，跳过: {exc}"
                 )
                 return None
         if self.bench_type != "sol":
@@ -1038,13 +1052,13 @@ if __name__ == "__main__":
             sol_problem_dir = self.config.get("sol_problem_dir")
             if not sol_problem_dir:
                 logger.info(
-                    f"[{self.op_name}] config['sol_problem_dir'] Unconfigured, Skip SOL baseline cache"
+                    f"[{self.op_name}] config['sol_problem_dir'] 未配置，跳过 SOL baseline cache"
                 )
                 return None
             return build_sol_problem_cache_identity(sol_problem_dir)
         except Exception as exc:
             logger.info(
-                f"[{self.op_name}] SOL baseline cache key Build failed, Skip baseline cache: {exc}"
+                f"[{self.op_name}] SOL baseline cache key 构建失败，跳过 baseline cache: {exc}"
             )
             return None
 
@@ -1073,17 +1087,17 @@ if __name__ == "__main__":
         except TypeError as exc:
             if "weights_only" in str(exc):
                 logger.warning(
-                    f"[{self.op_name}] Current PyTorch Not supported weights_only=True,"
-                    "Disable this reference data case to avoid unsafe backsequencing"
+                    f"[{self.op_name}] 当前 PyTorch 不支持 weights_only=True，"
+                    "禁用该 reference data cache 以避免不安全反序列化"
                 )
             else:
                 logger.warning(
-                    f"[{self.op_name}] Verifier Data Cache reference data Unable to parse, ready to regenerate.: {exc}"
+                    f"[{self.op_name}] Verifier Data Cache reference data 无法解析，准备重新生成: {exc}"
                 )
             return None
         except Exception as exc:
             logger.warning(
-                f"[{self.op_name}] Verifier Data Cache reference data Unable to parse, ready to regenerate.: {exc}"
+                f"[{self.op_name}] Verifier Data Cache reference data 无法解析，准备重新生成: {exc}"
             )
             return None
 
@@ -1097,14 +1111,14 @@ if __name__ == "__main__":
             return False
 
         if not isinstance(payload, dict):
-            logger.warning(f"[{self.op_name}] Verifier Data Cache reference data Invalid format, ready for regeneration")
+            logger.warning(f"[{self.op_name}] Verifier Data Cache reference data 格式无效，准备重新生成")
             return False
         if "outputs" not in payload:
-            logger.warning(f"[{self.op_name}] Verifier Data Cache reference data Missing outputsReady to regenerate.")
+            logger.warning(f"[{self.op_name}] Verifier Data Cache reference data 缺少 outputs，准备重新生成")
             return False
         if not payload.get("save_inputs") or payload.get("inputs") is None:
             logger.warning(
-                f"[{self.op_name}] Verifier Data Cache reference data Missing Reusable inputsReady to regenerate."
+                f"[{self.op_name}] Verifier Data Cache reference data 缺少可复用 inputs，准备重新生成"
             )
             return False
         return True
@@ -1117,16 +1131,16 @@ if __name__ == "__main__":
         self.config.pop("use_reference_inputs", None)
         self.config.pop("_data_cache_reference_key", None)
         if reason:
-            logger.info(f"[{self.op_name}] Clear Local Data Cache Injecting. reference data: {reason}")
+            logger.info(f"[{self.op_name}] 清理本地 Data Cache 注入的 reference data: {reason}")
 
     async def _prepare_cached_reference_data(self, device_id: int) -> Optional[bytes]:
         if self.bench_type != "kernelbench":
-            self._clear_managed_reference_data("Bench_ type does not support current reference data size")
+            self._clear_managed_reference_data("当前 bench_type 不支持 reference data cache")
             return None
 
         if self._detect_dynamic_shape():
-            self._clear_managed_reference_data("Dynamic Shape Do not repeat static reference data")
-            logger.info(f"[{self.op_name}] Dynamics detected shapeSkip reference data cache")
+            self._clear_managed_reference_data("动态 shape 不复用静态 reference data")
+            logger.info(f"[{self.op_name}] 检测到动态 shape，跳过 reference data cache")
             return None
 
         cache_cfg = self._get_data_cache_config()
@@ -1141,15 +1155,15 @@ if __name__ == "__main__":
             managed_key = self.config.get("_data_cache_reference_key")
             if managed_key:
                 if not cache_cfg.enabled or not cache_cfg.cache_reference_data:
-                    self._clear_managed_reference_data("Data_cache Closed")
+                    self._clear_managed_reference_data("data_cache 已关闭")
                 elif managed_key == cache_key:
-                    logger.info(f"[{self.op_name}] Reuse Current verifier Injected reference data")
+                    logger.info(f"[{self.op_name}] 复用当前 verifier 已注入的 reference data")
                     return None
                 else:
-                    self._clear_managed_reference_data("Cache key changed")
+                    self._clear_managed_reference_data("cache key 已变化")
             else:
                 logger.info(
-                    f"[{self.op_name}] By Caller reference_dataSkip Local Data Cache Question"
+                    f"[{self.op_name}] 使用调用方提供的 reference_data，跳过本地 Data Cache 查询"
                 )
                 return None
 
@@ -1177,27 +1191,27 @@ if __name__ == "__main__":
                         )
                     else:
                         logger.info(
-                            f"[{self.op_name}] Verifier Data Cache Hit:reference data, "
+                            f"[{self.op_name}] Verifier Data Cache 命中：reference data, "
                             f"cache_file={cache_file}, cache_key={cache_key}"
                         )
                         return cached_reference
 
                 if cached_reference:
                     logger.info(
-                        f"[{self.op_name}] Verifier Data Cache reference data Expired, regenerated: "
+                        f"[{self.op_name}] Verifier Data Cache reference data 已失效，重新生成: "
                         f"cache_file={cache_file}, cache_key={cache_key}"
                     )
                 else:
                     logger.info(
-                        f"[{self.op_name}] Verifier Data Cache Uncut:reference data, "
+                        f"[{self.op_name}] Verifier Data Cache 未命中：reference data, "
                         f"cache_file={cache_file}, cache_key={cache_key}"
                     )
 
                 if not self.worker:
-                    logger.info(f"[{self.op_name}] Current None workerSkip reference data Backfill")
+                    logger.info(f"[{self.op_name}] 当前无 worker，跳过 reference data 回填")
                     return None
 
-                logger.info(f"[{self.op_name}] Start Generating reference data")
+                logger.info(f"[{self.op_name}] 开始生成 reference data")
                 reference_timeout = resolve_reference_timeout(
                     self.config.get("reference_data_timeout",
                                     self.config.get("verify_timeout"))
@@ -1210,12 +1224,12 @@ if __name__ == "__main__":
                         device_id=device_id,
                     )
                 except Exception as exc:
-                    logger.warning(f"[{self.op_name}] Generate reference data Failed, back to real-time validation: {exc}")
+                    logger.warning(f"[{self.op_name}] 生成 reference data 失败，回退到实时验证: {exc}")
                     return None
 
                 if not success or not reference_bytes:
                     logger.warning(
-                        f"[{self.op_name}] reference data Generate failed, back to real-time validation: {(log or '')[:500]}"
+                        f"[{self.op_name}] reference data 生成失败，回退到实时验证: {(log or '')[:500]}"
                     )
                     return None
 
@@ -1236,14 +1250,14 @@ if __name__ == "__main__":
                 )
                 if written_path:
                     logger.info(
-                        f"[{self.op_name}] reference data Written Verifier Data Cache: "
+                        f"[{self.op_name}] reference data 已写入 Verifier Data Cache: "
                         f"cache_file={written_path}, cache_key={cache_key}, "
                         f"cache_dir={cache_cfg.cache_dir}"
                     )
                 return reference_bytes
         except TimeoutError as exc:
             logger.warning(
-                f"[{self.op_name}] Access Verifier Data Cache reference lock Timeout, back to real time validation.: {exc}"
+                f"[{self.op_name}] 获取 Verifier Data Cache reference lock 超时，回退到实时验证: {exc}"
             )
             return None
 
@@ -1279,12 +1293,12 @@ if __name__ == "__main__":
         baseline_time_us = extract_baseline_time_us(cache_entry)
         if baseline_time_us is not None:
             logger.info(
-                f"[{self.op_name}] Verifier Data Cache Hit:baseline={baseline_time_us:.2f} us, "
+                f"[{self.op_name}] Verifier Data Cache 命中：baseline={baseline_time_us:.2f} us, "
                 f"cache_file={cache_file}, cache_key={cache_key}"
             )
         elif cache_entry:
             logger.warning(
-                f"[{self.op_name}] Verifier Data Cache baseline Failed to delete old cache: "
+                f"[{self.op_name}] Verifier Data Cache baseline 结果无效，删除旧缓存: "
                 f"cache_file={cache_file}, cache_key={cache_key}"
             )
             delete_baseline_result_from_cache(
@@ -1349,13 +1363,13 @@ if __name__ == "__main__":
         )
         if written_path:
             logger.info(
-                f"[{self.op_name}] baseline Results written Verifier Data Cache: "
+                f"[{self.op_name}] baseline 结果已写入 Verifier Data Cache: "
                 f"cache_file={written_path}, cache_key={cache_key}, "
                 f"cache_dir={cache_cfg.cache_dir}"
             )
 
     def gen_verify_project(self, impl_code: str, verify_dir: str, device_id: int = 0):
-        """Generate authentication project files to a specified directory"""
+        """生成验证项目文件到指定目录"""
         if self.bench_type == "sol":
             from op_autoresearch.op.verifier.sol_verifier import generate_sol_verify_project
             return generate_sol_verify_project(self, impl_code, verify_dir, device_id)
@@ -1363,48 +1377,48 @@ if __name__ == "__main__":
             from op_autoresearch.op.cann_correctness import generate_cann_verify_project
             return generate_cann_verify_project(self, impl_code, verify_dir, device_id)
 
-        logger.info(f"[{self.op_name}] Start generating validation items, directories: {verify_dir}, device_id={device_id}")
+        logger.info(f"[{self.op_name}] 开始生成验证项目，目录: {verify_dir}, device_id={device_id}")
 
-        # ==========Processingreference dataMode==========
+        # ========== 处理参考数据模式 ==========
         use_reference_data = self.config.get('use_reference_data', False)
         reference_file = None
 
         if use_reference_data:
             reference_data_bytes = self.config.get('reference_data')
             if reference_data_bytes:
-                # Write reference data to the authentication directory
-                # Note: Use relative path (file name only) in RemoteWorker
-                # When scripts are packaged and sent to a remote server, you can find the reference data file correctly from the current working directory
+                # 将参考数据写入验证目录
+                # 注意：使用相对路径（只有文件名），这样在 RemoteWorker 场景下
+                # 脚本被打包发送到远程服务器后，可以正确从当前工作目录找到参考数据文件
                 reference_file_name = f"{self.op_name}_reference.pt"
                 reference_file_abs = os.path.join(verify_dir, reference_file_name)
                 try:
                     with open(reference_file_abs, 'wb') as f:
                         f.write(reference_data_bytes)
                     logger.info(
-                        f"[{self.op_name}] reference dataWritten: "
+                        f"[{self.op_name}] 参考数据已写入: "
                         f"{reference_file_abs} ({len(reference_data_bytes)} bytes)"
                     )
-                    # A relative path (file name only) is passed to the template, and the script is searched from cwd when executing
+                    # 传给模板的是相对路径（只有文件名），脚本执行时从 cwd 查找
                     reference_file = reference_file_name
                 except Exception as e:
-                    logger.error(f"[{self.op_name}] reference dataWriting Failed: {e}")
+                    logger.error(f"[{self.op_name}] 参考数据写入失败: {e}")
                     use_reference_data = False
                     reference_file = None
             else:
-                logger.warning(f"[{self.op_name}] use_reference_data=True But he didn't. reference_data")
+                logger.warning(f"[{self.op_name}] use_reference_data=True 但未找到 reference_data")
                 use_reference_data = False
 
-        # Use_reference_inputs relies on use_reference_data and requests.pt to include inputs
+        # use_reference_inputs 依赖 use_reference_data，且要求 .pt 中包含 inputs
         use_reference_inputs = self.config.get('use_reference_inputs', False) and use_reference_data
 
-        # framework code +sidecar sets the disc together (bundle internal decision. py name +
-        # Sidecar changed name with stem.
+        # 框架代码 + sidecar 一起落盘（bundle 内部决定 .py 名 +
+        # sidecar 跟 stem 改名）。
         framework_file = self._materialize_framework_bundle(
             verify_dir, self.framework_code)
 
-        # Write realization file: each DSL's own adapter decides schema (default)
-        # ``<op>_<dsl>_impl.py``, catlass write kernel.py + Torture catlass_op tree,
-        # Ascendc render CMakeLists + Write Tiling/kernel/pybind11 three cpps.
+        # 写实现文件：每个 DSL 自己的 adapter 决定 schema（默认
+        # ``<op>_<dsl>_impl.py``，catlass 写 kernel.py + 拷 catlass_op 树，
+        # ascendc 渲染 CMakeLists + 写 tiling/kernel/pybind11 三个 cpp）。
         self.dsl_adapter.materialize_impl(
             impl_code=impl_code,
             verify_dir=verify_dir,
@@ -1421,39 +1435,39 @@ if __name__ == "__main__":
             from op_autoresearch.op.cann_correctness import CORE_PY_PATH
             shutil.copy2(CORE_PY_PATH, os.path.join(verify_dir, "cann_correctness.py"))
 
-        # Generate authentication scripts
+        # 生成验证脚本
         verify_file = os.path.join(verify_dir, f"verify_{self.op_name}.py")
 
-        # Load Template From File
-        logger.info(f"[{self.op_name}] Start generating validation items, using templates: {os.path.basename(TEMPLATE_PATH)}")
+        # 从文件加载模板
+        logger.info(f"[{self.op_name}] 开始生成验证项目，使用模板: {os.path.basename(TEMPLATE_PATH)}")
         try:
             with open(TEMPLATE_PATH, "r", encoding="utf-8") as f:
                 template = Template(f.read())
-            logger.debug(f"[{self.op_name}] Template file loaded successfully: {TEMPLATE_PATH}")
+            logger.debug(f"[{self.op_name}] 模板文件加载成功: {TEMPLATE_PATH}")
         except Exception as e:
-            logger.error(f"[{self.op_name}] Failed to load template file: {TEMPLATE_PATH}, Error: {e}")
+            logger.error(f"[{self.op_name}] 模板文件加载失败: {TEMPLATE_PATH}, 错误: {e}")
             raise
 
-        # Test for dynamic Shape
+        # 检测是否为动态shape
         is_dynamic_shape = self._detect_dynamic_shape()
-        logger.info(f"[{self.op_name}] DetectedshapeType: {'Dynamics' if is_dynamic_shape else 'Static'}")
+        logger.info(f"[{self.op_name}] 检测到shape类型: {'动态' if is_dynamic_shape else '静态'}")
 
-        # Getadaps
-        logger.debug(f"[{self.op_name}] Initializeadapters: framework={self.framework}, dsl={self.dsl}, backend={self.backend}")
+        # 获取adapters
+        logger.debug(f"[{self.op_name}] 初始化adapters: framework={self.framework}, dsl={self.dsl}, backend={self.backend}")
         try:
             framework_adapter = get_framework_adapter(self.framework)
             dsl_adapter = get_dsl_adapter(self.dsl)
             backend_adapter = get_backend_adapter(self.backend)
-            logger.debug(f"[{self.op_name}] AdaptersInitialization succeeded")
+            logger.debug(f"[{self.op_name}] Adapters初始化成功")
         except Exception as e:
-            logger.error(f"[{self.op_name}] AdaptersInitialization failed: {e}")
+            logger.error(f"[{self.op_name}] Adapters初始化失败: {e}")
             raise
 
-        # Generate a code string using an adapter
-        logger.debug(f"[{self.op_name}] Start generating Snippets...")
+        # 使用adapter生成代码字符串
+        logger.debug(f"[{self.op_name}] 开始生成代码片段...")
         try:
             framework_imports = framework_adapter.get_import_statements()
-            logger.debug(f"[{self.op_name}] Framework importsGenerate successfully (Length: {len(framework_imports)})")
+            logger.debug(f"[{self.op_name}] Framework imports生成成功 (长度: {len(framework_imports)})")
 
             framework_model_import = framework_adapter.get_framework_import(
                 self.op_name,
@@ -1461,10 +1475,10 @@ if __name__ == "__main__":
                 inputs_factory_name=self._resolve_dyn_factory(),
                 module_name=self.framework_module_name,
             )
-            logger.debug(f"[{self.op_name}] Framework model importGenerate successfully (Length: {len(framework_model_import)})")
+            logger.debug(f"[{self.op_name}] Framework model import生成成功 (长度: {len(framework_model_import)})")
 
             dsl_imports = dsl_adapter.get_import_statements(self.framework)
-            logger.debug(f"[{self.op_name}] DSL importsGenerate successfully (Length: {len(dsl_imports)})")
+            logger.debug(f"[{self.op_name}] DSL imports生成成功 (长度: {len(dsl_imports)})")
             # get_runtime_env_override_code defaults to "" on the ABC;
             # only the pypto adapter emits a non-empty body. No dsl check.
             dsl_imports += dsl_adapter.get_runtime_env_override_code(
@@ -1473,54 +1487,54 @@ if __name__ == "__main__":
             )
 
             dsl_impl_import = dsl_adapter.get_impl_import(self.op_name, self.impl_func_name)
-            logger.debug(f"[{self.op_name}] DSL impl importGenerate successfully (Length: {len(dsl_impl_import)})")
+            logger.debug(f"[{self.op_name}] DSL impl import生成成功 (长度: {len(dsl_impl_import)})")
 
             dsl_adapter.prepare_config(self.config, task_info=None)
             special_setup_code = dsl_adapter.get_special_setup_code(framework=self.framework)
-            logger.debug(f"[{self.op_name}] Special setup codeGenerate successfully (Length: {len(special_setup_code)})")
+            logger.debug(f"[{self.op_name}] Special setup code生成成功 (长度: {len(special_setup_code)})")
 
-            # Generate device settings code
+            # 生成设备设置代码
             backend_adapter.setup_environment(device_id, self.arch)
-            logger.debug(f"[{self.op_name}] BackendEnvironment Settings Completed: device_id={device_id}, arch={self.arch}")
+            logger.debug(f"[{self.op_name}] Backend环境设置完成: device_id={device_id}, arch={self.arch}")
 
             device_setup_code = framework_adapter.get_device_setup_code(self.backend, self.arch, device_id)
-            logger.debug(f"[{self.op_name}] Device setup codeGenerate successfully (Length: {len(device_setup_code)})")
+            logger.debug(f"[{self.op_name}] Device setup code生成成功 (长度: {len(device_setup_code)})")
 
-            # Generate input processing code
+            # 生成输入处理代码
             process_input_code = framework_adapter.get_process_input_code(self.backend, self.dsl)
-            logger.debug(f"[{self.op_name}] Process input codeGenerate successfully (Length: {len(process_input_code)})")
+            logger.debug(f"[{self.op_name}] Process input code生成成功 (长度: {len(process_input_code)})")
 
-            # Generate code for creating impl_mode (DSL for ModelNew-type format)
+            # 生成创建 impl_model 的代码（用于 ModelNew 类格式的 DSL）
             create_impl_code = dsl_adapter.create_impl_module(self.framework, framework_adapter)
-            logger.debug(f"[{self.op_name}] Create impl module codeGenerate successfully (Length: {len(create_impl_code)})")
+            logger.debug(f"[{self.op_name}] Create impl module code生成成功 (长度: {len(create_impl_code)})")
 
-            # Generate call realization code
+            # 生成调用实现代码
             call_impl_code = dsl_adapter.call_impl(
                 self.impl_func_name, "inputs_for_impl", device_id,
                 framework_adapter, self.op_name, "data_dir", "framework_output"
             )
-            logger.debug(f"[{self.op_name}] Call impl codeGenerate successfully (Length: {len(call_impl_code)})")
+            logger.debug(f"[{self.op_name}] Call impl code生成成功 (长度: {len(call_impl_code)})")
 
-            # Generate set_seed code
+            # 生成set_seed代码
             set_seed_code = framework_adapter.get_set_seed_code(self.backend)
-            logger.debug(f"[{self.op_name}] Set seed codeGenerate successfully (Length: {len(set_seed_code)})")
+            logger.debug(f"[{self.op_name}] Set seed code生成成功 (长度: {len(set_seed_code)})")
 
-            # Generate binary I/O functions (if required)
+            # 生成binary I/O函数（如果需要）
             binary_io_functions = ""
             needs_binary_io = dsl_adapter.needs_binary_io
             if needs_binary_io:
                 binary_io_functions = framework_adapter.get_binary_io_functions(self.op_name)
-                logger.info(f"[{self.op_name}] Binary I/OFunction Generation Success (Length: {len(binary_io_functions)})")
+                logger.info(f"[{self.op_name}] Binary I/O函数生成成功 (长度: {len(binary_io_functions)})")
             else:
-                logger.debug(f"[{self.op_name}] I don't need it.Binary I/OFunctions")
+                logger.debug(f"[{self.op_name}] 不需要Binary I/O函数")
 
-            # Fetch TensorType Name (full path)
+            # 获取TensorType名称（完整路径）
             tensor_type_name = framework_adapter.get_tensor_type_name()
-            logger.debug(f"[{self.op_name}] TensorTypeName: {tensor_type_name}")
+            logger.debug(f"[{self.op_name}] TensorType名称: {tensor_type_name}")
 
-            # Generate compare function code (generated by FrameworkAdapter, using framework primary)
+            # 生成 compare 函数代码（由 FrameworkAdapter 生成，使用框架原生操作）
             compare_code = framework_adapter.get_compare_code()
-            logger.debug(f"[{self.op_name}] Compare codeGenerate successfully (Length: {len(compare_code)})")
+            logger.debug(f"[{self.op_name}] Compare code生成成功 (长度: {len(compare_code)})")
 
             # cannbench precision path (uses_cannbench_precision boolean): pull the
             # reference-call + compare snippets from the cann_correctness package.
@@ -1533,16 +1547,16 @@ if __name__ == "__main__":
             else:
                 reference_call_code = "framework_output = framework_model(*inputs_for_framework)"
                 compare_outputs_code = framework_adapter.get_compare_outputs_code()
-            logger.debug(f"[{self.op_name}] Compare outputs codeGenerate successfully (Length: {len(compare_outputs_code)})")
+            logger.debug(f"[{self.op_name}] Compare outputs code生成成功 (长度: {len(compare_outputs_code)})")
 
             reference_sync_code = _get_framework_sync_code(
                 self.framework, self.backend)
         except Exception as e:
-            logger.error(f"[{self.op_name}] Snippet generation failed: {e}", exc_info=True)
+            logger.error(f"[{self.op_name}] 代码片段生成失败: {e}", exc_info=True)
             raise
 
-        # Use template variables
-        logger.debug(f"[{self.op_name}] Start rendering templates...")
+        # 使用模板变量
+        logger.debug(f"[{self.op_name}] 开始渲染模板...")
         try:
             rendered_code = template.render(
                 op_name=self.op_name,
@@ -1554,11 +1568,11 @@ if __name__ == "__main__":
                 arch=self.arch,
                 is_dynamic_shape=is_dynamic_shape,
                 timeout=resolve_eval_timeout(self.config.get('verify_timeout')),
-                # reference data mode (for conversion across backend)
+                # 参考数据模式（用于跨后端转换场景）
                 use_reference_data=use_reference_data,
                 use_reference_inputs=use_reference_inputs,
                 reference_file=reference_file,
-                # Codes generated by Adapter
+                # Adapter生成的代码
                 framework_imports=self._prepare_code_lines(framework_imports),
                 framework_model_import=self._prepare_code_lines(framework_model_import),
                 dsl_imports=self._prepare_code_lines(dsl_imports),
@@ -1577,22 +1591,22 @@ if __name__ == "__main__":
                 compare_outputs_code=self._prepare_code_lines(compare_outputs_code),
                 reference_call_code=self._prepare_code_lines(reference_call_code),
             )
-            logger.info(f"[{self.op_name}] Template rendering successful, code length after rendering: {len(rendered_code)} Character")
+            logger.info(f"[{self.op_name}] 模板渲染成功，渲染后代码长度: {len(rendered_code)} 字符")
         except Exception as e:
-            logger.error(f"[{self.op_name}] Template render failed: {e}", exc_info=True)
+            logger.error(f"[{self.op_name}] 模板渲染失败: {e}", exc_info=True)
             raise
 
-        # Writing files
+        # 写入文件
         try:
             with open(verify_file, "w", encoding="utf-8") as f:
                 f.write(rendered_code)
-            logger.info(f"[{self.op_name}] Authentication script written: {verify_file}")
+            logger.info(f"[{self.op_name}] 验证脚本已写入: {verify_file}")
         except Exception as e:
-            logger.error(f"[{self.op_name}] Authentication of script writing failed: {verify_file}, Error: {e}")
+            logger.error(f"[{self.op_name}] 验证脚本写入失败: {verify_file}, 错误: {e}")
             raise
 
     def _pack_directory(self, dir_path: str) -> bytes:
-        """Pack directory as tar bytes"""
+        """将目录打包为tar字节流"""
         tar_buffer = io.BytesIO()
         with tarfile.open(fileobj=tar_buffer, mode='w') as tar_file:
             for root, dirs, files in os.walk(dir_path):
@@ -1606,40 +1620,40 @@ if __name__ == "__main__":
                          timeout: Optional[int] = None,
                          device_id: int = 0):
         """
-        Run validation scripts
+        运行验证脚本
 
-        Note: device management (acquire/release) is the responsibility of the caller (verifier.run())
-        This method is only responsible for implementing the scripts that have been produced.
+        注意：device 的管理（acquire/release）由调用方（verifier.run()）负责
+        这个方法只负责执行已经生成好的脚本
 
         Args:
-            Verify_dir: Authentication Directory
-            Timeout: Timeout (seconds), default 5 minutes (transmit to template for each calculation)
-            Data_id: deviceID (for logs and compatibility only, actual device is set in scripts)
+            verify_dir: 验证目录
+            timeout: 超时时间（秒），默认5分钟（传递给模板用于每次计算）
+            device_id: 设备ID（仅用于日志和兼容性，实际设备已在脚本中设置）
         """
         timeout = resolve_eval_timeout(timeout)
         verify_script = os.path.join(verify_dir, f"verify_{self.op_name}.py")
-        logger.info(f"[{self.op_name}] Prepare to run validation scripts: {verify_script}, timeout={timeout}sec")
+        logger.info(f"[{self.op_name}] 准备运行验证脚本: {verify_script}, timeout={timeout}秒")
 
         try:
-            # Call Worker for authentication
+            # 调用Worker执行验证
             if not self.worker:
-                # Check if device_id is -1 (means RemoteWorker, device managed by remote server)
+                # 检查 device_id 是否为 -1（表示 RemoteWorker，设备由远程服务器管理）
                 if device_id == -1:
                     raise RuntimeError(
                         f"[{self.op_name}] Worker not set and device_id=-1 (RemoteWorker mode). "
                         "Worker must be provided by Task or WorkerManager for RemoteWorker."
                     )
-                # If there is no workingr, create Localworker (for testing scenario) based on device_id
+                # 如果没有worker，根据device_id创建LocalWorker（用于测试场景）
                 import warnings
                 warnings.warn(
-                    f"⚠️  [DEPRECATED] KernelVerifier Automatically Create LocalWorker It's the old bottom logic, only for testing.\n"
-                    f"Suggested new formulation:\n"
-                    f"  1. Register before calling Worker to WorkerManager(line code):\n"
+                    f"⚠️  [DEPRECATED] KernelVerifier 自动创建 LocalWorker 是旧的兜底逻辑，仅用于测试。\n"
+                    f"推荐的新写法：\n"
+                    f"  1. 在调用前注册 Worker 到 WorkerManager（一行代码）：\n"
                     f"     from op_autoresearch.core.worker.manager import register_local_worker\n"
                     f"     \n"
                     f"     await register_local_worker([{device_id}], backend='{self.backend}', arch='{self.arch}')\n"
-                    f"  2. Task It's automatic from WorkerManager Access worker\n"
-                    f"Example:examples/run_torch_npu_triton_single.py",
+                    f"  2. Task 会自动从 WorkerManager 获取 worker\n"
+                    f"参考示例：examples/run_torch_npu_triton_single.py",
                     DeprecationWarning,
                     stacklevel=2
                 )
@@ -1663,43 +1677,43 @@ if __name__ == "__main__":
                 logger.info(f"[{self.op_name}] Packing verify project")
                 package_data = self._pack_directory(verify_dir)
 
-            # Worker.verefy() just execute scripts without managing data
-            # Device has set it up when it's producing the script.
-            # The timeout we give to the worker needs to be a little bigger because the script has precise timeout controls inside.
-            # The timeout here is to prevent the whole process from being hung by the death lock of the script.
+            # worker.verify() 只是执行脚本，不需要管理 device
+            # device 已经在生成脚本时设置好了
+            # 我们给 worker 传的 timeout 需要稍微大一点，因为脚本内部已经有精确的 timeout 控制
+            # 这里的 timeout 是为了防止脚本死锁导致整个进程挂起
             worker_timeout = timeout + 30
             logger.info(f"[{self.op_name}] Dispatching verify project to worker")
             success, log, artifacts = await self.worker.verify(package_data, self.task_id, self.op_name, worker_timeout)
             logger.info(f"[{self.op_name}] Worker verify returned")
 
-            # Sync Artifacts to Verify_dir (for RemoteWorker)
+            # 同步 artifacts 到 verify_dir（用于 RemoteWorker 场景）
             if artifacts:
                 sync_artifacts_to_directory(artifacts, verify_dir, self.task_id)
 
             if success:
-                logger.info(f"[{self.op_name}] Validate successful execution")
+                logger.info(f"[{self.op_name}] 验证执行成功")
             else:
                 # Full log is returned and written to the fail report; don't dump
                 # it here (CANN toolchain warnings alone can be 100+ noise lines).
-                logger.error(f"[{self.op_name}] Validation of execution failed (full log view) fail report)")
+                logger.error(f"[{self.op_name}] 验证执行失败（完整日志见 fail report）")
             return success, log
 
         except Exception as e:
-            logger.error(f"[{self.op_name}] Validation of performance anomaly: {e}", exc_info=True)
+            logger.error(f"[{self.op_name}] 验证执行异常: {e}", exc_info=True)
             return False, str(e)
 
     def gen_profile_project(self, verify_dir: str, device_id: int = 0,
                             warmup_times: Optional[int] = None,
                             run_times: Optional[int] = None,
                             skip_base: bool = False):
-        """Generate project files to a specified directory
+        """生成profile项目文件到指定目录
 
         Args:
-            Verify_dir: Authentication Directory
-            Device_id: deviceID
-            Warmup_times: number of preheats
-            Run_times: Run number of times
-            sskip_base: Skip base profile (rue under backend)
+            verify_dir: 验证目录
+            device_id: 设备ID
+            warmup_times: 预热次数
+            run_times: 运行次数
+            skip_base: 是否跳过 base profile（跨后端场景下设为 True）
         """
         warmup_times = resolve_warmup_times(warmup_times)
         run_times = resolve_run_times(run_times)
@@ -1717,55 +1731,55 @@ if __name__ == "__main__":
         profile_generation_enabled = getattr(
             self, "_profile_generation_enabled", True)
 
-        # Generate a baseline performance test script (if not skip)
+        # 生成基准性能测试脚本（如果不跳过）
         if not skip_base:
             profile_file = os.path.join(verify_dir, f"profile_{self.op_name}_base.py")
             self.gen_profile_file_from_template(PROFILE_BASE_TEMPLATE_PATH, profile_file,
                                                 device_id, warmup_times, run_times)
         else:
-            logger.info(f"[{self.op_name}] Skip base profile Generate (using caches) baseline Or cross.backendThe scene)")
+            logger.info(f"[{self.op_name}] 跳过 base profile 生成（使用缓存 baseline 或跨后端场景）")
 
-        # Generate performance testing scripts
+        # 生成性能测试脚本
         if profile_generation_enabled:
             profile_file = os.path.join(verify_dir, f"profile_{self.op_name}_generation.py")
             self.gen_profile_file_from_template(PROFILE_GENERATION_TEMPLATE_PATH,
                                                 profile_file, device_id, warmup_times, run_times)
         else:
-            logger.info(f"[{self.op_name}] Skip generation profile Generate (Previous round) verify Not adopted)")
+            logger.info(f"[{self.op_name}] 跳过 generation profile 生成（上一轮 verify 未通过）")
 
     def gen_profile_file_from_template(self, template_path: str, profile_file: str, device_id: int, warmup_times: int, run_times: int):
-        """Generate profile files from templates"""
+        """从模板生成profile文件"""
         template_name = os.path.basename(template_path)
-        logger.info(f"[{self.op_name}] Start generating performance test files, using templates: {template_name}")
+        logger.info(f"[{self.op_name}] 开始生成性能测试文件，使用模板: {template_name}")
 
-        # Load Template From File
+        # 从文件加载模板
         try:
             with open(template_path, "r", encoding="utf-8") as f:
                 template = Template(f.read())
-            logger.debug(f"[{self.op_name}] Capability test template file loaded successfully: {template_path}")
+            logger.debug(f"[{self.op_name}] 性能测试模板文件加载成功: {template_path}")
         except Exception as e:
-            logger.error(f"[{self.op_name}] Failed to load performance test template file: {template_path}, Error: {e}")
+            logger.error(f"[{self.op_name}] 性能测试模板文件加载失败: {template_path}, 错误: {e}")
             raise
 
-        # Test for dynamic Shape
+        # 检测是否为动态shape
         is_dynamic_shape = self._detect_dynamic_shape()
-        logger.debug(f"[{self.op_name}] Performance testshapeType: {'Dynamics' if is_dynamic_shape else 'Static'}")
+        logger.debug(f"[{self.op_name}] 性能测试shape类型: {'动态' if is_dynamic_shape else '静态'}")
 
         is_base_template = "base" in template_path.lower()
-        logger.debug(f"[{self.op_name}] Performance test template type: {'base' if is_base_template else 'generation'}")
+        logger.debug(f"[{self.op_name}] 性能测试模板类型: {'base' if is_base_template else 'generation'}")
 
-        # Getadaps
+        # 获取adapters
         try:
             framework_adapter = get_framework_adapter(self.framework)
             dsl_adapter = get_dsl_adapter(self.dsl)
             backend_adapter = get_backend_adapter(self.backend)
-            logger.debug(f"[{self.op_name}] Performance testAdaptersInitialization succeeded")
+            logger.debug(f"[{self.op_name}] 性能测试Adapters初始化成功")
         except Exception as e:
-            logger.error(f"[{self.op_name}] Performance testAdaptersInitialization failed: {e}")
+            logger.error(f"[{self.op_name}] 性能测试Adapters初始化失败: {e}")
             raise
 
-        # Generate a code string using an adapter
-        logger.debug(f"[{self.op_name}] Start generating performance test Snippets...")
+        # 使用adapter生成代码字符串
+        logger.debug(f"[{self.op_name}] 开始生成性能测试代码片段...")
         try:
             framework_imports = framework_adapter.get_import_statements()
             framework_model_import = framework_adapter.get_framework_import(
@@ -1775,14 +1789,14 @@ if __name__ == "__main__":
                 module_name=self.framework_module_name,
             )
 
-            # Generate device settings code
+            # 生成设备设置代码
             backend_adapter.setup_environment(device_id, self.arch)
             device_setup_code = framework_adapter.get_device_setup_code(self.backend, self.arch, device_id)
 
-            # Generate input processing code
+            # 生成输入处理代码
             process_input_code = framework_adapter.get_process_input_code(self.backend, self.dsl)
 
-            # Generate set_seed code
+            # 生成set_seed代码
             set_seed_code = framework_adapter.get_set_seed_code(self.backend)
 
             # Base profile must stay framework-only. A broken generated DSL
@@ -1794,18 +1808,18 @@ if __name__ == "__main__":
             binary_io_functions = ""
             needs_binary_io = False
 
-            # Fetch TensorType Name (full path)
+            # 获取TensorType名称（完整路径）
             tensor_type_name = framework_adapter.get_tensor_type_name()
 
-            # Generate benchmark code
+            # 生成benchmark代码
             if is_base_template:
-                # Base template: benchmark vehicle model
+                # Base模板：benchmark framework model
                 benchmark_code = self._generate_base_benchmark_code(
                     framework_adapter, dsl_adapter,
                     warmup_times, run_times,
                     clear_l2_cache=dsl_adapter.benchmark_requires_l2_clear,
                 )
-                logger.debug(f"[{self.op_name}] Base benchmarkCode Generation Success (Length: {len(benchmark_code)})")
+                logger.debug(f"[{self.op_name}] Base benchmark代码生成成功 (长度: {len(benchmark_code)})")
             else:
                 dsl_imports = dsl_adapter.get_import_statements(self.framework)
                 # get_runtime_env_override_code defaults to "" on the ABC;
@@ -1820,21 +1834,21 @@ if __name__ == "__main__":
                 special_setup_code = dsl_adapter.get_special_setup_code(
                     framework=self.framework)
 
-                # Generate code for creating impl_mode (DSL for ModelNew-type format)
+                # 生成创建 impl_model 的代码（用于 ModelNew 类格式的 DSL）
                 create_impl_code = dsl_adapter.create_impl_module(
                     self.framework, framework_adapter)
                 logger.debug(
-                    f"[{self.op_name}] Performance testCreate impl module codeGenerate successfully "
-                    f"(Length: {len(create_impl_code)})")
+                    f"[{self.op_name}] 性能测试Create impl module code生成成功 "
+                    f"(长度: {len(create_impl_code)})")
 
-                # Generate binary I/O functions (if required)
+                # 生成binary I/O函数（如果需要）
                 needs_binary_io = dsl_adapter.needs_binary_io
                 if needs_binary_io:
                     binary_io_functions = framework_adapter.get_binary_io_functions(
                         self.op_name)
-                    logger.info(f"[{self.op_name}] Performance testBinary I/OFunction Generation Success")
+                    logger.info(f"[{self.op_name}] 性能测试Binary I/O函数生成成功")
 
-                # General template: benchmark application
+                # Generation模板：benchmark implementation
                 benchmark_code = dsl_adapter.benchmark_impl(
                     self.impl_func_name, "inputs", warmup_times, run_times,
                     self.backend, self.op_name, case_idx=0,
@@ -1843,13 +1857,13 @@ if __name__ == "__main__":
                     device_id=device_id if needs_binary_io else None,
                     framework=self.framework
                 )
-                logger.debug(f"[{self.op_name}] Generation benchmarkCode Generation Success (Length: {len(benchmark_code)})")
+                logger.debug(f"[{self.op_name}] Generation benchmark代码生成成功 (长度: {len(benchmark_code)})")
         except Exception as e:
-            logger.error(f"[{self.op_name}] Performance test code segment generation failed: {e}", exc_info=True)
+            logger.error(f"[{self.op_name}] 性能测试代码片段生成失败: {e}", exc_info=True)
             raise
 
-        # Use template variables
-        logger.debug(f"[{self.op_name}] Start rendering performance test templates...")
+        # 使用模板变量
+        logger.debug(f"[{self.op_name}] 开始渲染性能测试模板...")
         try:
             rendered_code = template.render(
                 op_name=self.op_name,
@@ -1863,7 +1877,7 @@ if __name__ == "__main__":
                 run_times=run_times,
                 total_count=warmup_times + run_times,
                 is_dynamic_shape=is_dynamic_shape,
-                # Codes generated by Adapter
+                # Adapter生成的代码
                 framework_imports=self._prepare_code_lines(framework_imports),
                 framework_model_import=self._prepare_code_lines(framework_model_import),
                 dsl_imports=self._prepare_code_lines(dsl_imports),
@@ -1878,29 +1892,29 @@ if __name__ == "__main__":
                 tensor_type_name=tensor_type_name,
                 benchmark_code=self._prepare_code_lines(benchmark_code),
             )
-            logger.info(f"[{self.op_name}] The performance test template was retrofitted and the code length was retrofitted: {len(rendered_code)} Character")
+            logger.info(f"[{self.op_name}] 性能测试模板渲染成功，渲染后代码长度: {len(rendered_code)} 字符")
         except Exception as e:
-            logger.error(f"[{self.op_name}] Performance test template rendering failed: {e}", exc_info=True)
+            logger.error(f"[{self.op_name}] 性能测试模板渲染失败: {e}", exc_info=True)
             raise
 
-        # Writing files
+        # 写入文件
         try:
             with open(profile_file, "w", encoding="utf-8") as f:
                 f.write(rendered_code)
-            logger.info(f"[{self.op_name}] The performance test script has been written: {profile_file}")
+            logger.info(f"[{self.op_name}] 性能测试脚本已写入: {profile_file}")
         except Exception as e:
-            logger.error(f"[{self.op_name}] Failed to write performance test script: {profile_file}, Error: {e}")
+            logger.error(f"[{self.op_name}] 性能测试脚本写入失败: {profile_file}, 错误: {e}")
             raise
 
     def _generate_base_benchmark_code(self, framework_adapter, dsl_adapter, warmup, runs, clear_l2_cache: bool = True):
-        """Generate base benchmark code (benchmark trade model)
+        """生成base benchmark代码（benchmark framework model）
 
         Args:
-            ramework_adapter: framework adapter
-            dsl_adapter: DSL adapter
-            Warmup: warmup times
-            Runs: Effective run times
-            clear_l2_cache: Whether to clear L2 Cache (default True) before each iterative
+            framework_adapter: 框架适配器
+            dsl_adapter: DSL适配器
+            warmup: warmup次数
+            runs: 有效运行次数
+            clear_l2_cache: 是否在每次迭代前清除 L2 cache（默认 True）
         """
         profiler_dsl = getattr(dsl_adapter, "profiler_dsl", "other")
         sync_code = _get_framework_sync_code(self.framework, self.backend)
@@ -1978,7 +1992,7 @@ if __name__ == "__main__":
         roofline_time: Optional[float] = None,
         roofline_speedup: Optional[float] = None,
     ):
-        """Save Accelerator Ratio result to txt file"""
+        """保存加速比结果到txt文件"""
         try:
             profiling_dir = os.path.join(os.path.expanduser(self.log_dir), self.op_name, "profiling")
             os.makedirs(profiling_dir, exist_ok=True)
@@ -1996,29 +2010,29 @@ if __name__ == "__main__":
                     )
                 f.write("\n")
 
-            logger.debug(f"[{self.task_id}:{self.op_name}] Accelerator ratio result saved")
+            logger.debug(f"[{self.task_id}:{self.op_name}] 加速比结果已保存")
 
         except Exception as e:
-            logger.warning(f"[{self.task_id}:{self.op_name}] Failed to save acceleration ratio result: {str(e)}")
+            logger.warning(f"[{self.task_id}:{self.op_name}] 保存加速比结果失败: {str(e)}")
 
     async def run_profile(self, task_info: Dict[str, Any], current_step: int = 0,
                           device_id: int = -1,
                           profile_settings: Optional[dict] = None) -> dict:
-        """Run profile analysis
+        """运行profile分析
 
-        N. B.: Similar to the run() method, device management is integrated in this method
+        注意：与 run() 方法类似，device 的管理在此方法中统一完成
 
         Args:
-            Device_id: deviceID (Default-1 means automated management, LocalWorker automatically gets it from device_pool)
+            device_id: 设备ID（默认-1表示自动管理，LocalWorker会自动从device_pool获取）
 
         Returns:
-            dict: profiling results, containing the following fields:
-                - gen_time: Generate code execution time (microseconds)
-                - base_time: baseline code implementation time (microseconds)
-                - Speed-up.
-                - Roofline_time: SOlar used roofline time (microseconds, optional)
-                - Roofline_speedup: Roofline_time / g_time (optional)
-                - Autotune_summary: autotune configuration details (triton DSL only)
+            dict: 性能分析结果，包含以下字段：
+                - gen_time: 生成代码执行时间（微秒）
+                - base_time: 基准代码执行时间（微秒）
+                - speedup: 加速比
+                - roofline_time: SOLAR fused roofline 时间（微秒，可选）
+                - roofline_speedup: roofline_time / gen_time（可选）
+                - autotune_summary: autotune配置详情（仅triton DSL）
         """
         acquired_device = None
         acquired_lease = None
@@ -2053,18 +2067,18 @@ if __name__ == "__main__":
                 actual_device_id = acquired_device
                 logger.info(f"[{self.op_name}] Acquired device {actual_device_id} for profile")
             else:
-                # No worker (old process compatible)
+                # 没有 worker（旧流程兼容）
                 actual_device_id = device_id if device_id != -1 else 0
                 logger.info(f"[{self.op_name}] Using device {actual_device_id} (no worker, deprecated flow)")
 
-            # Get Authentication Directory
+            # 获取验证目录
             expanded_log_dir = os.path.expanduser(self.log_dir)
             verify_dir = os.path.join(expanded_log_dir, self.op_name, unique_dir_name)
 
-            # Make sure the directory exists.
+            # 确保目录存在
             os.makedirs(verify_dir, exist_ok=True)
 
-            # Check if you need a husband to be a code file (required when calling independently).
+            # 检查是否需要先生成代码文件（独立调用 profile 时需要）。
             # When the immediately preceding verify failed, profile is only
             # allowed to measure the framework baseline; keep it independent
             # from generated DSL artifacts so a broken seed cannot hide the
@@ -2086,19 +2100,19 @@ if __name__ == "__main__":
                                 f"[{self.op_name}] failed to remove stale "
                                 f"profile artifact: {stale_path}")
             elif not self._verify_impl_artifacts_ready(verify_dir):
-                # The code file doesn't exist, sir.
+                # 代码文件不存在，需要先生成
                 impl_code = task_info.get("coder_code", "")
                 if not impl_code:
-                    raise ValueError(f"[{self.op_name}] task_info Missing coder_codeCould not generate performance test code file")
+                    raise ValueError(f"[{self.op_name}] task_info 中缺少 coder_code，无法生成性能测试代码文件")
 
                 logger.info(f"[{self.op_name}] Generating verify project for profile")
                 self.gen_verify_project(impl_code, verify_dir, actual_device_id)
                 logger.info(f"[{self.op_name}] Verify project for profile generated")
 
-            # Generate program scripts
-            # For RemoteWorker, use 0 as a placeholder for code generation (actual device is managed by a remote server)
-            # For LocalWorker, use existing actual_device_id
-            # Skips only if the result is visible or a valid base line has been provided.
+            # 生成profile脚本
+            # 对于 RemoteWorker，代码生成时使用 0 作为占位符（实际设备由远程服务器管理）
+            # 对于 LocalWorker，使用已经 acquired 的 actual_device_id
+            # 仅在显式跳过或已提供有效 baseline 结果时跳过 base profile。
             skip_base_profile = effective_profile_settings.get('skip_base_profile', False)
             override_base_section = effective_profile_settings.get('override_base_section')
             has_valid_override = (
@@ -2119,29 +2133,29 @@ if __name__ == "__main__":
             finally:
                 self._profile_generation_enabled = old_generation_enabled
 
-            # Pack and send to Worker for execution
+            # 打包并发送给Worker执行
             logger.info(f"[{self.op_name}] Packing profile project")
             package_data = self._pack_directory(verify_dir)
 
             if not self.worker:
-                # Check if device_id is -1 (means automanage)
+                # 检查 device_id 是否为 -1（表示自动管理）
                 if device_id == -1:
                     raise RuntimeError(
                         f"[{self.op_name}] Worker not set and device_id=-1 (RemoteWorker mode). "
                         "Worker must be provided by Task or WorkerManager for RemoteWorker."
                     )
-                # If there is no workingr, create Localworker (for testing scenario) based on device_id
-                # Note: At this time, actual_device_id has been set to device_id (because device_id! = -1)
+                # 如果没有worker，根据device_id创建LocalWorker（用于测试场景）
+                # 注意：此时 actual_device_id 已在上面设置为 device_id（因为 device_id != -1）
                 import warnings
                 warnings.warn(
-                    f"⚠️  [DEPRECATED] KernelVerifier Automatically Create LocalWorker It's the old bottom logic, only for testing.\n"
-                    f"Suggested new formulation:\n"
-                    f"  1. Register before calling Worker to WorkerManager(line code):\n"
+                    f"⚠️  [DEPRECATED] KernelVerifier 自动创建 LocalWorker 是旧的兜底逻辑，仅用于测试。\n"
+                    f"推荐的新写法：\n"
+                    f"  1. 在调用前注册 Worker 到 WorkerManager（一行代码）：\n"
                     f"     from op_autoresearch.core.worker.manager import register_local_worker\n"
                     f"     \n"
                     f"     await register_local_worker([{actual_device_id}], backend='{self.backend}', arch='{self.arch}')\n"
-                    f"  2. Task It's automatic from WorkerManager Access worker\n"
-                    f"Example:examples/run_torch_npu_triton_single.py",
+                    f"  2. Task 会自动从 WorkerManager 获取 worker\n"
+                    f"参考示例：examples/run_torch_npu_triton_single.py",
                     DeprecationWarning,
                     stacklevel=2
                 )
@@ -2153,7 +2167,7 @@ if __name__ == "__main__":
                 device_pool = DevicePool([actual_device_id])
                 self.worker = LocalWorker(device_pool=device_pool, backend=self.backend)
 
-            # Check LocalWorker for access_pol
+            # 检查LocalWorker是否有device_pool
             from op_autoresearch.core.worker.local_worker import LocalWorker
             if isinstance(self.worker, LocalWorker):
                 if not hasattr(self.worker, 'device_pool') or self.worker.device_pool is None:
@@ -2162,7 +2176,7 @@ if __name__ == "__main__":
                         "This should be provided by Task when creating _private_worker."
                     )
 
-            # Send the complete profile_settings to the worker.
+            # 传递完整的 profile_settings 给 Worker
             full_settings = {
                 **effective_profile_settings,
                 'backend': self.backend,
@@ -2182,14 +2196,14 @@ if __name__ == "__main__":
             result = await self.worker.profile(package_data, self.task_id, self.op_name, full_settings)
             logger.info(f"[{self.op_name}] Worker profile returned")
 
-            # Sync Artifacts to Verify_dir (for RemoteWorker)
+            # 同步 artifacts 到 verify_dir（用于 RemoteWorker 场景）
             artifacts = result.get('artifacts', {})
             if artifacts:
                 sync_artifacts_to_directory(artifacts, verify_dir, self.task_id)
 
-            # Worker returns the canonical field: gen_time / base_time is aggregate
-            # scalar, per_shape_gen_us /per_shape_base_us is per-case array.
-            # Base_time across backend scene may be None.
+            # Worker 返回的是 canonical 字段: gen_time / base_time 是 aggregate
+            # 标量, per_shape_gen_us / per_shape_base_us 是 per-case 数组.
+            # 跨后端场景下 base_time 可能为 None (跳过 base profile).
             gen_time = result.get('gen_time')
             base_time = result.get('base_time')
             speedup = result.get('speedup', 0.0)
@@ -2220,7 +2234,7 @@ if __name__ == "__main__":
                     artifacts=artifacts,
                 )
 
-            # Processing None values for log output
+            # 处理 None 值用于日志输出
             gen_time_display = gen_time if gen_time is not None else float('inf')
             base_time_display = base_time if base_time is not None else float('inf')
 
@@ -2243,10 +2257,10 @@ if __name__ == "__main__":
             if roofline_time is not None:
                 logger.info(f"solar roofline performance is {roofline_time:.2f} us")
                 logger.info(f"roofline speedup is {roofline_speedup:.4f}x")
-            logger.info(f"[{self.task_id}:{self.op_name}] profilingCompleted, accelerated ratio (baseline is100%): {speedup_percent:.2f} %")
+            logger.info(f"[{self.task_id}:{self.op_name}] 性能分析完成，加速比（基准为100%）: {speedup_percent:.2f} %")
 
-            # Build return result. per_shape_* / case_decs on caller side (eval_bridge) Direct
-            # Spell metrics dict, sidecar not needed again.
+            # 构建返回结果. per_shape_* / case_descs 在 caller 侧 (eval_bridge) 直接
+            # 拼进 metrics dict, 不需要再去 sidecar 取一次.
             profile_result = empty_profile_result(result.get('error'))
             profile_result.update({
                 'gen_time': gen_time,
@@ -2268,11 +2282,11 @@ if __name__ == "__main__":
                 autotune_summary = self.read_autotune_results_from_directory(verify_dir)
                 if autotune_summary:
                     profile_result['autotune_summary'] = autotune_summary
-                    logger.info(f"[{self.op_name}: {self.task_id}] AutotuneConfigure Details:\n{autotune_summary}")
+                    logger.info(f"[{self.op_name}: {self.task_id}] Autotune配置详情:\n{autotune_summary}")
 
             return profile_result
         except Exception as e:
-            logger.warning(f"[{self.task_id}:{self.op_name}] profilingFailed: {str(e)}")
+            logger.warning(f"[{self.task_id}:{self.op_name}] 性能分析失败: {str(e)}")
             result = empty_profile_result(error=str(e))
             result.update(case_descs=[], unique_dir=unique_dir_name)
             return result
@@ -2283,16 +2297,16 @@ if __name__ == "__main__":
                 logger.info(f"[{self.op_name}] Released device {acquired_device}")
 
     def read_autotune_results_from_directory(self, verify_dir: str) -> str:
-        """Read all autotune results and format the output from the authentication directory
+        """从验证目录读取所有autotune结果并格式化输出
 
-        Read all autotune_info_case_*.json files in the specified directory.
-        and output in a format similar to TRITON_PRINT_AUTOOTUNING=1.
+        读取指定目录下的所有 autotune_info_case_*.json 文件，
+        并以类似 TRITON_PRINT_AUTOTUNING=1 的格式输出。
 
         Args:
-            Verify_dir: Verified Directory Path
+            verify_dir: 验证目录路径
 
         Returns:
-            Formatted autotune result string, formatted as follows:
+            格式化的autotune结果字符串，格式如下：
 
             Case 0:
             All config timings for kernel_name:
@@ -2303,16 +2317,16 @@ if __name__ == "__main__":
 
         result_lines = []
 
-        # Find all autotune files
+        # 查找所有autotune文件
         verify_path = Path(verify_dir)
         autotune_files = sorted(verify_path.glob("autotune_info_case_*.json"))
 
         if not autotune_files:
             return ""
 
-        # Read & Format
+        # 逐个读取并格式化
         for autotune_file in autotune_files:
-            # Extract Case Index
+            # 提取case索引
             case_idx = autotune_file.stem.split('_')[-1]
 
             try:
@@ -2321,11 +2335,11 @@ if __name__ == "__main__":
 
                 result_lines.append(f"Case {case_idx}:")
 
-                # Every kernel
+                # 遍历每个kernel
                 for kernel_name, configs in data.items():
                     result_lines.append(f"All config timings for {kernel_name}:")
 
-                    # Sort Output by Rank
+                    # 按rank排序输出
                     sorted_configs = sorted(configs, key=lambda x: x['rank'])
 
                     for config_info in sorted_configs:
@@ -2337,23 +2351,23 @@ if __name__ == "__main__":
                         status = " (BEST)" if is_best else ""
                         result_lines.append(f"  Config {rank}: {config_str} -> {timing_us:.4f}us{status}")
 
-                result_lines.append("")  # Empty Lines Separate Different Case
+                result_lines.append("")  # 空行分隔不同case
 
             except Exception as e:
-                logger.warning(f"[{self.op_name}: {self.task_id}] ReadautotuneFile Failed {autotune_file.name}: {e}")
+                logger.warning(f"[{self.op_name}: {self.task_id}] 读取autotune文件失败 {autotune_file.name}: {e}")
 
         return "\n".join(result_lines)
 
     # ------------------------------------------------------------------
-    # Autotune config authentication aids (used at OP_AUTORESEARCH_VERIFY_PER_CONFIG=1)
+    # Autotune 逐 config 验证辅助方法（OP_AUTORESEARCH_VERIFY_PER_CONFIG=1 时启用）
     # ------------------------------------------------------------------
 
     def _detect_triton_autotune(self, code: str) -> bool:
-        """Check if the code contains @triton.autotune decorator"""
+        """检测代码中是否包含 @triton.autotune 装饰器"""
         return '@triton.autotune' in code or '@autotune' in code
 
     def _extract_autotune_configs(self, code: str) -> list:
-        """Extract all unannotated autotonne configs from the Triton code"""
+        """从 triton 代码中提取所有未被注释的 autotune config"""
 
         pattern = r'@triton\.autotune\s*\(\s*configs\s*=\s*\[(.*?)\]'
         match = re.search(pattern, code, re.DOTALL)
@@ -2376,7 +2390,7 @@ if __name__ == "__main__":
         return valid_configs
 
     def _count_all_autotune_configs(self, code: str) -> int:
-        """Quantity of all autotune config (including annotated)"""
+        """统计所有 autotune config 的数量（包括已注释的）"""
 
         pattern = r'@triton\.autotune\s*\(\s*configs\s*=\s*\[(.*?)\]'
         match = re.search(pattern, code, re.DOTALL)
@@ -2385,7 +2399,7 @@ if __name__ == "__main__":
         return match.group(1).count('triton.Config')
 
     def _generate_single_config_code(self, original_code: str, config_to_keep: str, config_index: int) -> str:
-        """Generate code containing only one config"""
+        """生成只包含单个 config 的代码"""
 
         all_configs = self._extract_autotune_configs(original_code)
         if not all_configs:
@@ -2396,7 +2410,7 @@ if __name__ == "__main__":
         return re.sub(pattern, new_configs_block, original_code, count=1, flags=re.DOTALL)
 
     def _generate_final_code_with_valid_configs(self, original_code: str, valid_configs: list, all_configs: list) -> str:
-        """Generate final code: keep the right config, comment on the wrong config"""
+        """生成最终代码：保留正确的 config，注释掉错误的 config"""
 
         if not all_configs:
             return original_code
@@ -2417,15 +2431,15 @@ if __name__ == "__main__":
     def _save_verification_result_to_jsonl(self, verify_dir: str, current_step: int, verification_passed: bool,
                                            verify_logs: str, all_configs_count: int = 0, valid_configs_count: int = 0):
         """
-        Save authentication results to JSONL file
+        保存验证结果到JSONL文件
 
         Args:
-            Verify_dir: Authentication Directory
-            current_step: Current steps
-            Verification_passed: Verify pass
-            Verify_logs: Validation log
-            All_configs_count: all config quantities (autotune earmarked)
-            Valid_configs_count: Number of adopted configs (autotune exclusive)
+            verify_dir: 验证目录
+            current_step: 当前步骤
+            verification_passed: 验证是否通过
+            verify_logs: 验证日志
+            all_configs_count: 所有config数量（autotune专用）
+            valid_configs_count: 通过的config数量（autotune专用）
         """
         result_jsonl_path = os.path.join(os.path.expanduser(self.log_dir), "verification_results.jsonl")
         result_info = {
@@ -2453,58 +2467,58 @@ if __name__ == "__main__":
 
     async def _verify_configs_separately(self, target_code: str, verify_dir: str, device_id: int, verify_timeout: int, current_step: int = 0) -> Tuple[bool, str, str]:
         """
-        The config authentication mode (which is enabled when OP_AUTORESEARCH_VERIFY_PER_CONFIG=1) is then run back to the full code.
+        逐 config 验证模式（OP_AUTORESEARCH_VERIFY_PER_CONFIG=1 时启用），全部通过后再跑一次完整代码回归验证。
 
         Returns:
-            Tuple [bool, st, st]: (whether config passed, validation log, final code)
+            Tuple[bool, str, str]: (是否有 config 通过, 验证日志, 最终代码)
         """
-        logger.info(f"[{self.op_name}] [PVconfigMode] Detected autotune, start checking one by one...")
+        logger.info(f"[{self.op_name}] [逐config模式] 检测到 autotune，开始逐个验证...")
 
         total_configs_count = self._count_all_autotune_configs(target_code)
         all_configs = self._extract_autotune_configs(target_code)
 
         if not all_configs:
             if total_configs_count > 0:
-                logger.info(f"[{self.op_name}] Detected {total_configs_count} individual config, but all have been commented")
+                logger.info(f"[{self.op_name}] 检测到 {total_configs_count} 个 config，但全部已被注释")
                 verify_logs = [
-                    "=== Autotune ConfigAuthentication===\n",
-                    f"Detected {total_configs_count} individual config, all commented (failure to verify)\n",
-                    "Skip authentication, directly return failed result \n",
+                    "=== Autotune Config 验证 ===\n",
+                    f"检测到 {total_configs_count} 个 config，全部已被注释（之前验证失败）\n",
+                    "跳过验证，直接返回失败结果\n",
                 ]
                 try:
                     self.gen_verify_project(target_code, verify_dir, device_id)
                 except Exception as e:
-                    verify_logs.append(f"\nFailed to generate authentication project: {e}\n")
+                    verify_logs.append(f"\n生成验证项目失败: {e}\n")
                 self._save_verification_result_to_jsonl(
                     verify_dir, current_step, False, "".join(verify_logs),
                     total_configs_count, 0
                 )
                 return False, "".join(verify_logs), target_code
             else:
-                logger.warning(f"[{self.op_name}] Could not initialise Bonobo configBack to direct authentication.")
+                logger.warning(f"[{self.op_name}] 未能提取到 config，回退到直接验证")
                 return None, "", target_code
 
         skipped_count = total_configs_count - len(all_configs)
         if skipped_count > 0:
-            logger.info(f"[{self.op_name}] {total_configs_count} individual config in {skipped_count} Annotated to verify the remaining {len(all_configs)} individual")
+            logger.info(f"[{self.op_name}] {total_configs_count} 个 config 中 {skipped_count} 个已注释，验证剩余 {len(all_configs)} 个")
         else:
-            logger.info(f"[{self.op_name}] Extracted {len(all_configs)} individual config, start checking one by one...")
+            logger.info(f"[{self.op_name}] 提取到 {len(all_configs)} 个 config，开始逐个验证...")
 
         valid_configs = []
         verify_logs = []
-        verify_logs.append("=== Autotune ConfigArticle by Article Validation===\n")
+        verify_logs.append("=== Autotune Config 逐条验证 ===\n")
         if skipped_count > 0:
-            verify_logs.append(f"Detected {total_configs_count} individual config,among them {skipped_count} A comment has been made\n")
-            verify_logs.append(f"To be validated config Number: {len(all_configs)}\n\n")
+            verify_logs.append(f"检测到 {total_configs_count} 个 config，其中 {skipped_count} 个已被注释\n")
+            verify_logs.append(f"待验证 config 数量: {len(all_configs)}\n\n")
         else:
-            verify_logs.append(f"Total {len(all_configs)} individual config\n\n")
+            verify_logs.append(f"总共 {len(all_configs)} 个 config\n\n")
 
         consecutive_timeouts = 0
         max_consecutive_timeouts = 2
 
         for i, config in enumerate(all_configs):
             config_num = i + 1
-            logger.info(f"[{self.op_name}] Authentication Config {config_num}/{len(all_configs)}...")
+            logger.info(f"[{self.op_name}] 验证 Config {config_num}/{len(all_configs)}...")
             verify_logs.append(f"--- Config {config_num} ---\n{config}\n")
 
             try:
@@ -2516,21 +2530,21 @@ if __name__ == "__main__":
                 config_res, config_log = await self.run_verify(temp_verify_dir, timeout=verify_timeout)
 
                 if config_res:
-                    verify_logs.append("Validation via \n \n")
+                    verify_logs.append("验证通过\n\n")
                     valid_configs.append(config)
-                    logger.info(f"[{self.op_name}] Config {config_num} Validation pass")
+                    logger.info(f"[{self.op_name}] Config {config_num} 验证通过")
                     consecutive_timeouts = 0
                 else:
-                    verify_logs.append(f"Authentication Failed\nError Log:\n{config_log}\n\n")
-                    logger.info(f"[{self.op_name}] Config {config_num} Authentication Failed")
+                    verify_logs.append(f"验证失败\n错误日志:\n{config_log}\n\n")
+                    logger.info(f"[{self.op_name}] Config {config_num} 验证失败")
                     log_lower = config_log.lower()
-                    if "timed out" in log_lower or "timeout after" in log_lower or "timeouterror" in log_lower or "Calculate timeout" in log_lower:
+                    if "timed out" in log_lower or "timeout after" in log_lower or "timeouterror" in log_lower or "计算超时" in log_lower:
                         consecutive_timeouts += 1
                         if consecutive_timeouts >= max_consecutive_timeouts:
                             skip_count = len(all_configs) - i - 1
-                            warn_msg = f"Continuous {consecutive_timeouts} individual config Timeout, trigger. Fail-Fast"
+                            warn_msg = f"连续 {consecutive_timeouts} 个 config 超时，触发 Fail-Fast"
                             if skip_count > 0:
-                                warn_msg += f"Skip the rest {skip_count} individual"
+                                warn_msg += f"，跳过剩余 {skip_count} 个"
                             logger.warning(f"[{self.op_name}] {warn_msg}")
                             verify_logs.append(f"{warn_msg}\n\n")
                             shutil.rmtree(temp_verify_dir, ignore_errors=True)
@@ -2540,16 +2554,16 @@ if __name__ == "__main__":
 
                 shutil.rmtree(temp_verify_dir, ignore_errors=True)
             except Exception as e:
-                verify_logs.append(f"Authentication anomaly: {e}\n\n")
-                logger.error(f"[{self.op_name}] Config {config_num} Authentication anomaly: {e}")
+                verify_logs.append(f"验证异常: {e}\n\n")
+                logger.error(f"[{self.op_name}] Config {config_num} 验证异常: {e}")
                 consecutive_timeouts = 0
 
-        verify_logs.append(f"Adopted config Number: {len(valid_configs)}/{len(all_configs)}\n")
+        verify_logs.append(f"通过的 config 数量: {len(valid_configs)}/{len(all_configs)}\n")
 
         full_code_verify_passed = True
         if len(valid_configs) == len(all_configs) and len(all_configs) > 1:
-            verify_logs.append("\n = = complete code regression verification (all config combined) = = \n")
-            logger.info(f"[{self.op_name}] PV config All pass. Start full code back validation....")
+            verify_logs.append("\n=== 完整代码回归验证（所有 config 合并） ===\n")
+            logger.info(f"[{self.op_name}] 逐 config 全部通过，开始完整代码回归验证...")
 
             try:
                 full_verify_dir = os.path.join(verify_dir, "full_code_verify")
@@ -2558,44 +2572,44 @@ if __name__ == "__main__":
                 full_res, full_log = await self.run_verify(full_verify_dir, timeout=verify_timeout)
 
                 if full_res:
-                    verify_logs.append("Full code back authentication via \n")
-                    logger.info(f"[{self.op_name}] Full code back authentication passed.")
+                    verify_logs.append("完整代码回归验证通过\n")
+                    logger.info(f"[{self.op_name}] 完整代码回归验证通过")
                 else:
                     full_code_verify_passed = False
-                    verify_logs.append(f"Full code backvalidation failed!\nError Log:\n{full_log}\n\n")
+                    verify_logs.append(f"完整代码回归验证失败！\n错误日志:\n{full_log}\n\n")
                     verify_logs.append(
-                        "[Key issues] Each config pass individually, but all config merge failed. \n"
-                        "This is usually due to the lack of restore_value parameters for the @triton.autotune decorator. \n"
-                        "Autotune benchmark will repeat the kernel, and the output of different config will pollute each other. \n"
-                        "Add a restore_value=['all output pointer parameter'] to @triton.autotune. \n"
+                        "【关键问题】每个 config 单独验证均通过，但所有 config 合并后验证失败。\n"
+                        "这通常是因为 @triton.autotune 装饰器缺少 restore_value 参数。\n"
+                        "autotune benchmark 会反复执行 kernel，不同 config 的输出会互相污染。\n"
+                        "请在 @triton.autotune 中添加 restore_value=['所有输出指针参数名']。\n"
                     )
-                    logger.warning(f"[{self.op_name}] PV config The complete code verification failed and is suspected to be missing. restore_value")
+                    logger.warning(f"[{self.op_name}] 逐 config 通过但完整代码验证失败，疑似缺少 restore_value")
 
                 shutil.rmtree(full_verify_dir, ignore_errors=True)
             except Exception as e:
-                verify_logs.append(f"Full code regression authentication anomaly: {e}\n")
-                logger.error(f"[{self.op_name}] Full code regression authentication anomaly: {e}")
+                verify_logs.append(f"完整代码回归验证异常: {e}\n")
+                logger.error(f"[{self.op_name}] 完整代码回归验证异常: {e}")
 
         final_code = self._generate_final_code_with_valid_configs(target_code, valid_configs, all_configs)
         verification_passed = len(valid_configs) > 0 and full_code_verify_passed
 
         if verification_passed:
-            verify_logs.append(f"Validation passed, reserved. {len(valid_configs)} That's right. config\n")
-            logger.info(f"[{self.op_name}] Autotune config Validation completed: {len(valid_configs)}/{len(all_configs)} Pass.")
+            verify_logs.append(f"验证通过，保留了 {len(valid_configs)} 个正确的 config\n")
+            logger.info(f"[{self.op_name}] Autotune config 验证完成: {len(valid_configs)}/{len(all_configs)} 通过")
         elif len(valid_configs) > 0 and not full_code_verify_passed:
-            verify_logs.append("PVconfigCould not close temporary folder: %srestore_value\n")
-            logger.info(f"[{self.op_name}] Required Add restore_value")
+            verify_logs.append("逐 config 验证通过但完整代码验证失败，需要添加 restore_value\n")
+            logger.info(f"[{self.op_name}] 需要添加 restore_value")
         else:
-            verify_logs.append("None of the config failed to verify \n")
-            logger.info(f"[{self.op_name}] All config None verified")
+            verify_logs.append("所有 config 都未通过验证\n")
+            logger.info(f"[{self.op_name}] 所有 config 都未通过验证")
 
-        verify_logs.append("\n== Generating Final Validation Project==\n")
+        verify_logs.append("\n=== 生成最终验证项目 ===\n")
         try:
             self.gen_verify_project(final_code, verify_dir, device_id)
-            logger.info(f"[{self.op_name}] Final validation of project generation success")
+            logger.info(f"[{self.op_name}] 最终验证项目生成成功")
         except Exception as e:
-            verify_logs.append(f"Failed to generate final validation project: {e}\n")
-            logger.error(f"[{self.op_name}] Failed to generate final validation project: {e}")
+            verify_logs.append(f"生成最终验证项目失败: {e}\n")
+            logger.error(f"[{self.op_name}] 生成最终验证项目失败: {e}")
             verification_passed = False
 
         self._save_verification_result_to_jsonl(
@@ -2606,20 +2620,20 @@ if __name__ == "__main__":
 
     async def run(self, task_info: Dict[str, Any], current_step: int = 0, device_id: int = -1):
         """
-        Run kernel verifier, verify the validity of the code
+        运行内核验证器，验证代码的正确性
 
         Args:
-            task_info: Task Info Dictionary, with all codes and status
-            current_step: Current steps
-            Device_id: deviceID (Default-1 means automated management, LocalWorker automatically gets it from device_pool)
+            task_info: 任务信息字典，包含所有代码和状态
+            current_step: 当前步骤
+            device_id: 设备ID（默认-1表示自动管理，LocalWorker会自动从device_pool获取）
 
         Returns:
-            Tuple [bool, st]: (validation results, error log)
+            Tuple[bool, str]: (验证结果, 错误日志)
         """
         logger.info(f"Verifier Run - Step: {current_step}")
         self.last_verify_ok = None
 
-        # Get code from tsk_info according to the type of realization
+        # 根据实现类型从task_info获取代码
         target_code = task_info.get('coder_code', '')
 
         if not target_code:
@@ -2627,7 +2641,7 @@ if __name__ == "__main__":
             self.last_verify_ok = False
             return False, "No target code found for verification"
 
-        # Dynamically create a authentication directory
+        # 动态创建验证目录
         verify_dir = self._create_verify_dir(current_step)
 
         logger.info(f"[{self.op_name}] Preparing verify config before device acquire")
@@ -2646,7 +2660,7 @@ if __name__ == "__main__":
             actual_device_id = acquired_device
             logger.info(f"[{self.op_name}] Acquired device {actual_device_id} for verify")
         else:
-            # No worker (old process compatible)
+            # 没有 worker（旧流程兼容）
             actual_device_id = device_id if device_id != -1 else 0
             logger.info(f"[{self.op_name}] Using device {actual_device_id} (no worker, deprecated flow)")
 
@@ -2691,33 +2705,33 @@ if __name__ == "__main__":
                 else:
                     logger.info(f"[{self.op_name}] No cached reference data applied")
 
-            # Default mode: verify the complete code directly
+            # 默认模式：直接验证完整代码
             project_gen_log = ""
             try:
-                # For RemoteWorker, use 0 as a placeholder for code generation (actual device is managed by a remote server)
-                # For LocalWorker, use existing actual_device_id
+                # 对于 RemoteWorker，代码生成时使用 0 作为占位符（实际设备由远程服务器管理）
+                # 对于 LocalWorker，使用已经 acquired 的 actual_device_id
                 logger.info(f"[{self.op_name}] Generating verify project")
                 self.gen_verify_project(target_code, verify_dir, actual_device_id)
                 logger.info(f"[{self.op_name}] Verify project generated")
             except Exception as e:
-                # Catch abnormalities in gen_verify_project, recorded in project_gen_log
+                # 捕获gen_verify_project中的异常，记录到project_gen_log中
                 error_msg = str(e)
-                logger.error(f"Validation of project generation failed: {error_msg}")
-                project_gen_log = f"Project generation failed: {error_msg}\n"
+                logger.error(f"验证项目生成失败: {error_msg}")
+                project_gen_log = f"项目生成失败: {error_msg}\n"
 
-            # Fetch timeout configuration from config
+            # 从 config 获取 timeout 配置
             verify_timeout = resolve_eval_timeout(
                 self.config.get('verify_timeout'))
 
-            # Run Authentication
-            # Worker.verify() just executes scripts without managing device (Device is already set in scripts)
+            # 运行验证
+            # worker.verify() 只是执行脚本，不需要管理 device（device 已经在脚本中设置好了）
             logger.info(f"[{self.op_name}] Running verify project")
             verify_res, verify_log = await self.run_verify(
                 verify_dir, timeout=verify_timeout, device_id=actual_device_id
             )
             logger.info(f"[{self.op_name}] Verify project finished: result={verify_res}")
 
-            # Collapse project generation logs and validation logs
+            # 拼接项目生成日志和验证日志
             verify_log = project_gen_log + verify_log
 
             # The verify script (kernel_verify_template_refactored.j2) drops
@@ -2737,12 +2751,12 @@ if __name__ == "__main__":
                     logger.warning(
                         f"[{self.op_name}] failed to read verify_result.json: {_e}")
 
-            # Save authentication results to JSONL file
+            # 保存验证结果到JSONL文件
             self._save_verification_result_to_jsonl(verify_dir, current_step, verify_res, verify_log)
 
-            # Note: Not copied to passed_cases
-            # If multiple case tests are enabled, more case validation is required before copying
-            # Copy operation is managed centrally by task.py
+            # 注意：不在这里复制到 passed_cases
+            # 如果启用了多 case 测试，需要等多 case 验证也通过后才能复制
+            # 复制操作由 task.py 统一管理
 
             self.last_verify_ok = bool(verify_res)
             return verify_res, verify_log

@@ -1,6 +1,6 @@
 ---
 name: triton-ascend-case-elemwise-broadcast-3d
-description: "Cross-axis 3D broadcasting optimization (last dimension small): vector efficiency is enhanced by a two-stage kernel strategy (starting with +reshape with 2D and then standard multi-nuclear processing), applied to cross-axis Broadcast and the last dimensionalally small (<20) resulting in a low impact of vector"
+description: "跨轴3D广播优化（最后一维很小）：采用两阶段kernel策略（先broadcast展开+reshape为2D，再标准多核处理）提升向量化效率，适用于跨轴broadcast且最后一维特别小（<20）导致向量化效果差的场景"
 category: case
 version: "1.0.0"
 metadata:
@@ -9,21 +9,21 @@ metadata:
   hardware: "Atlas A2, Atlas A3"
 ---
 
-# Cross-axis 3D Broadcast Optimization Case
+# 跨轴 3D Broadcast 优化案例
 
-## Task characteristics
-- **Operating type**: cross-axis Broadcast, Broadcast First and Three Axes
-- **Data size**(65536, 128, 16) / (1, 128, 1)
-- **Characteristics**: first dimension large, third dimension small, cross-axis Broadcast
+## 任务特征
+- **操作类型**：跨轴broadcast，broadcast第一、三根轴
+- **数据尺寸**：(65536, 128, 16) / (1, 128, 1)
+- **特点**：第一维很大，第三维很小，属于跨轴broadcast
 
-## Optimization: Two Stages Kernel Policy
+## 优化：两阶段 Kernel 策略
 
-When the last dimensional special hour (e.g. W = 16) in cross-axis Broadcast, if directly processed, results in a differential effect of vector.
+当跨轴broadcast中最后一维特别小时（如W=16），如果直接处理会导致向量化效果差。
 
-### Phase 1: Broadcast Kernel (Multinuclear Parallel)
+### 阶段1：Broadcast Kernel（多核并行）
 
 ```python
-# Forward (1, H, 1) Broadcast to (1, H, W)
+# 先将(1, H, 1) broadcast到(1, H, W)
 input2_broadcast = torch.empty(1, H, W, dtype=input2.dtype, device=input2.device)
 
 grid_broadcast = lambda meta: (meta['NUM_H_CORES'],)
@@ -35,10 +35,10 @@ broadcast_kernel_parallel[grid_broadcast](
 )
 ```
 
-### Phase 2: Division Kernel (Reshape 2D)
+### 阶段2：Division Kernel（Reshape为2D）
 
 ```python
-# Convert 3D questions to 2D
+# 将3D问题转换为2D处理
 input1_flat = input1.reshape(B, HW).contiguous()  # (B, HxW)
 input2_flat = input2_broadcast.reshape(1, HW).contiguous()  # (1, HxW)
 output_flat = torch.empty(B, HW, dtype=input1.dtype, device=input1.device)
@@ -53,20 +53,20 @@ div_flatten_kernel[grid_div](
 )
 ```
 
-### Optimizing content
-1. **Phase I kernel**: the dimensions of broadcast will be needed first to map along the HD to multi-nuclear parallel processes
-2. **Phase II kernel**: 2D for 3D reshape, 1D (B) map to polynucleus, nucleus to HW dimension (SUB_HW=512), and vector ' s dimension is significantly increased
+### 优化内容
+1. **第一阶段kernel**：先将需要broadcast的维度展开，沿H维度映射到多核并行处理
+2. **第二阶段kernel**：将3D reshape为2D，把第一维(B)映射到多核，核内对HW维度切分（SUB_HW=512），向量化维度大大提升
 
-This approach, by pre-broadcast+reshape, avoids the last small dimension of the vector efficiency problem.
+这种方法通过预先broadcast+reshape，避免了最后一维过小导致的向量化效率问题。
 
-## Generic optimization programme
+## 通用优化方案
 
-### Continuous broadcast (near dimension)
-By reshape the adjacent dimensions are combined into one dimension and converted to a single axle Broadcast.
+### 连续broadcast（相邻维度）
+通过reshape将相邻维度合并为一维，转换为单轴broadcast。
 
-### Cross-axis Broadcast
-- First dimension map to multi-nuclear parallels.
-- The other dimensions inside the core are divided according to needs
+### 跨轴broadcast（不相邻维度）
+- 第一维映射到多核上实现并行
+- 核内对其他维度按需进行切分
 
-### Summary
-When the last dimensional special hour in cross-axis Broadcast, two phases of kernel: start with +reshape as 2D, then perform standard multi-nuclear parallel processing to enhance vector efficiency.
+### 总结
+当跨轴broadcast中最后一维特别小时，采用两阶段kernel：先broadcast展开+reshape为2D，再进行标准的多核并行处理，提升向量化效率。

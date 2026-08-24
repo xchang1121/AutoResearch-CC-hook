@@ -1,6 +1,6 @@
 ---
 name: tilelang-ascend-optimization
-description: "TileLang Ascend operator performance optimization technology. Provides tools such as nuclear internal optimization (Split-K, Double Buffer, MTE2 prep, Full-Load, command vectorization, integration of commands), inter-nuclear optimization (num_stages optimization, synchronization optimization), and the Fixed Core model."
+description: "TileLang Ascend 算子性能优化技术。提供核内优化（Split-K、Double Buffer、MTE2预取、Full-Load、指令向量化、指令融合）、核间优化（num_stages调优、同步优化）、Fixed Core模式等优化手段。"
 category: fundamental
 version: "1.0.0"
 metadata:
@@ -9,68 +9,68 @@ metadata:
   hardware: "Atlas A2, Atlas A3"
 ---
 
-# TileLang Ascend Performance Optimization Guide
+# TileLang Ascend 性能优化指南
 
-Select the optimisation method according to the operator type:
+根据算子类型选择优化手段：
 
-| Optimizing direction | Annotations | Typical means |
+| 优化方向 | 说明 | 典型手段 |
 |---------|------|---------|
-| pass_configs | Adjust compiler pass behavior | Close AutoSync, Close Memory Planning |
-| kernel optimization | Raise single kernel command parallel | Double Buffer, L1 Permanent, Directive vector, Split-K Pipelined GEMM |
-| Inter-nuclear optimization | Optimizing Cube/Vector nuclear collaboration | Num_stages Optimizing, Synchronizing, Fixed Core Mode |
-| pipeline Optimization | Computation of overlap with interview memory | T. Pipelined (nuclear/inter-nuclear flow), T. Persistent (data block movement) |
-| Fixed Core | By physical core, reduce redundancy initialization and device memory expansion | `T.Kernel(core_num, is_npu=True)`, Workspace by physical core |
-| Command Integration | Reduced number of directives issued | AXPY Integration Directive, Broadcast vector |
-| Rare access memory optimization | Efficient handling of discrete data | Double vector checkup, Gaber + consecutively move out, walk away |
+| pass_configs 调优 | 调整编译器 pass 行为 | 关闭自动同步、关闭内存规划 |
+| 核内优化 | 提升单核内指令并行度 | Double Buffer、L1 常驻、指令向量化、Split-K pipelined GEMM |
+| 核间优化 | 优化 Cube/Vector 核间协作 | num_stages 调优、同步优化、Fixed Core 模式 |
+| 流水线优化 | 计算与访存重叠 | T.Pipelined（核内/核间流水）、T.Persistent（数据块调度） |
+| Fixed Core | 按物理核数 launch，减少冗余初始化和显存膨胀 | `T.Kernel(core_num, is_npu=True)`、Workspace 按物理核分配 |
+| 指令融合 | 减少指令下发次数 | AXPY 融合指令、broadcast 向量化 |
+| 稀疏访存优化 | 离散数据高效搬运 | 双 vector 核访存、Gather + 连续搬出、异步拷贝 |
 
-**Programming mode selection**: priority is given to**Developer mode**(Automated Memory Planning, AutoSync, compiler AutoSegregation Cube/Vector) and, if performance requirements cannot be met, to**Expert mode**manual control (inflective designation of L1 /UB/L0 level, manual synchronization, fine particle size scheduling).
+**编程模式选择**：优先使用 **Developer 模式**（自动内存规划、自动同步、编译器自动分离 Cube/Vector），如无法满足性能要求，再使用 **Expert 模式**手动控制（显式指定 L1/UB/L0 层级、手动同步、细粒度调度）。
 
 ---
 
-## I. Optimization of priorities corresponding to the operator type
+## 一、优化优先级与算子类型对应
 
-Select the optimisation range according to the operator type (the operator type is judged by `IS_ASCEND_AIC`/ `IS_ASCEND_AIV` in `get_kernel_source()`):
+根据算子类型选择优化范围（算子类型通过 `get_kernel_source()` 中的 `IS_ASCEND_AIC` / `IS_ASCEND_AIV` 判断）：
 
-| operator Type | Basis of judgement | Optimizing scope |
+| 算子类型 | 判断依据 | 优化范围 |
 |---------|---------|---------|
-| **Cube model** | Code contains `IS_ASCEND_AIC` | Cube kernel optimization + Fixed Core |
-| **Vector type** | Code contains `IS_ASCEND_AIV` | Victor kernel optimisation + Fixed Core |
-| **CV Integration type** | It's both. | Cube + Victor → and inter-nuclear optimization + Fixed Core |
+| **Cube 型** | 代码含 `IS_ASCEND_AIC` | Cube 核内优化 + Fixed Core |
+| **Vector 型** | 代码含 `IS_ASCEND_AIV` | Vector 核内优化 + Fixed Core |
+| **CV 融合型** | 代码两者均有 | 先核内优化（Cube + Vector）→ 再核间优化 + Fixed Core |
 
-> **Fixed Core model**applies to all operator types (nuclear/inter-nuclear energy enablers), see section 2.9.
+> **Fixed Core 模式**适用于所有算子类型（核内/核间均可使能），见 2.9 节。
 
-Prefer the Devloper feature (autosynchronous, auto-RAM planning) and try to optimize it in the following order:
+优先使用 Developer 特性（自动同步、自动内存规划），按以下顺序尝试优化：
 
 ```
-kernel optimization → Inter-nuclear optimization → pass_configs Modified (last resort)
+核内优化 → 核间优化 → pass_configs 调优（最后手段）
 ```
 
 ---
 
-## II. NUCLEAR EQUIPMENT
+## 二、核内优化
 
-> **Optimized order**
-> - **Cube operator**: Implementation of Cube kernel optimization (2.1 Split-K splitting policy, 2.2 Double Buffer, 2.3 MTE2 prep, 2.4 Full-Load, 2.5 Small Data Block combined) + 2.9 Fixed Core
-> - **Vector-type operator**: Implementation of Victor's kernel optimization (2.2 Double Buffer Vector side, 2.6 Directive vectorization, 2.7 Directive Integration, 2.8 Duplicate storage optimization) + 2.9 Fixed Core
-> - **CV Integration operator**: First Cube Nuclear Optimization, →, then Victor Nuclear Optimization, → Final Inter-nuclear Optimization (see chap. III) + 2.9 Fixed Core
+> **优化顺序**：
+> - **Cube 型算子**：执行 Cube 核内优化（2.1 Split-K 切分策略、2.2 Double Buffer、2.3 MTE2 预取、2.4 Full-Load、2.5 小数据块合并载入）+ 2.9 Fixed Core
+> - **Vector 型算子**：执行 Vector 核内优化（2.2 Double Buffer Vector 侧、2.6 指令向量化、2.7 指令融合、2.8 稀疏访存优化）+ 2.9 Fixed Core
+> - **CV 融合型算子**：先执行 Cube 核内优化 → 再执行 Vector 核内优化 → 最后执行核间优化（见第三章）+ 2.9 Fixed Core
 
-### 2.1 Split-K cut-off strategy (Cube nuclear)
+### 2.1 Split-K 切分策略（Cube 核）
 
-**Applicable scene**:
-- Matrix multiplication K dimension large, single L1 → L0 move cannot accommodate all data
-- The K dimension of GEMM is much greater than the L0 Buffer capacity
-- There is a K dimension cycle in the code, but each cycle is waiting for the previous move to be completed
+**适用场景**：
+- 矩阵乘 K 维度较大，单次 L1 → L0 搬运无法容纳全部数据
+- GEMM 的 K 维度远大于 L0 buffer 容量
+- 代码中存在 K 维度循环，但每次循环都等待前一次搬运完成
 
-**Rationale**: Split K dimensions into smaller blocks, with Ping-Pong double buffering to duplicate the flow of water calculated by Cube. This is the pre-several strategy for subsequent Double Buffer optimization.
+**原理**：将 K 维度切分为多个小块，配合 Ping-Pong 双缓冲实现 MTE1 搬运与 Cube 计算的流水重叠。这是后续 Double Buffer 优化的前置切分策略。
 
-**Before optimization**(string removal and calculation):
+**优化前**（串行搬运和计算）：
 ```python
 for k in T.serial(loop_k):
     T.copy(k_l1, l0b[:, :])
     T.mma(l0a[:, :], l0b[:, :], l0c[:, :])
 ```
 
-**Optimized**(K axle slice + Ping-Pong double buffering):
+**优化后**（K 轴切块 + Ping-Pong 双缓冲）：
 ```python
 for k in T.serial(loop_k):
     side = k % 2
@@ -83,23 +83,23 @@ for k in T.serial(loop_k):
     T.set_flag("M", "MTE1", SIG_L0AB + side)
 ```
 
-### 2.2 Double Buffer (Cube / Victor nuclear utility)
+### 2.2 Double Buffer（Cube / Vector 核通用）
 
-**Applicable scene**:
-- The cycle contains multiple serial operations (handling → calculations → writing back)
-- Data blocks can be split into multiple pieces to support pipeline parallel
-- Loop with `T.serial`
+**适用场景**：
+- 循环内包含多个串行操作（搬运 → 计算 → 写回）
+- 数据块可以切分为多份，支持流水线并行
+- 使用 `T.serial` 的循环
 
-Note:
-- Data blocks after cutting cannot be too small to be able to cover up the current:
-  - Victor nuclei: the number of elements of each data block after the cut should be ≥ 128
-  - Cube nuclei: the number of elements of each data block after the cut should be ≥ 256
-- Achieved: Manual Double Buffer (manual distribution of double buffer, used alternately through `side = k % 2`)
-- Synchronization method: Manual double buffering can be opened with `TL_ASCEND_AUTO_SYNC: True` to automatically insert compiler in sync, and then manually with `set_flag` / `wait_flag` if translation results do not match expectations
+**注意**：
+- 切分后的数据块不能太小，否则无法发挥流水掩盖效果：
+  - Vector 核：切分后每个数据块元素数应 ≥ 128
+  - Cube 核：切分后每个数据块元素数应 ≥ 256
+- 实现方式：手写 Double Buffer（手动分配双份 buffer，通过 `side = k % 2` 交替使用）
+- 同步方式：手写双缓冲时可先开启 `TL_ASCEND_AUTO_SYNC: True` 让编译器自动插入同步，若翻译结果不符合预期再改为手动 `set_flag` / `wait_flag`
 
-**Rationale**:
+**原理**：
 ```
-Serial Mode:
+串行模式:
   Block0: [MTE2][VEC][MTE3]
   Block1:        ----------[MTE2][VEC][MTE3]
 
@@ -108,22 +108,22 @@ Double Buffer:
   Block1:   [MTE2][VEC][MTE3]
 ```
 
-**Cube nuclear example**:
+**Cube 核示例**：
 
-**Before optimization**(serial execution):
+**优化前**（串行执行）：
 ```python
 for k in T.serial(loop_k):
     T.copy(k_l1, l0b[:, :])
     T.mma(l0a[:, :], l0b[:, :], l0c[:, :])
 ```
 
-**Optimized**(handwritten Ping-Pong double buffering, automatic sync enabled):
+**优化后**（手写 Ping-Pong 双缓冲，开启自动同步）：
 ```python
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
 }
 
-# Allocation of double buffering
+# 分配双缓冲
 l0a = T.alloc_L0A([2, block_M, dim], dtype)
 l0b = T.alloc_L0B([2, dim, block_N], dtype)
 l0c = T.alloc_L0C([2, block_M, block_N], accum_dtype)
@@ -134,18 +134,18 @@ for k in T.serial(loop_k):
     T.mma(l0a[side, :, :], l0b[side, :, :], l0c[side, :, :])
 ```
 
-**Optimized**(handwritten Ping-Pong double buffering+ manually synchronized, automatically synchronized when not meeting expectations):
+**优化后**（手写 Ping-Pong 双缓冲 + 手动同步，自动同步不符合预期时使用）：
 ```python
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
 }
 
-# Allocation of double buffering
+# 分配双缓冲
 l0a = T.alloc_L0A([2, block_M, dim], dtype)
 l0b = T.alloc_L0B([2, dim, block_N], dtype)
 l0c = T.alloc_L0C([2, block_M, block_N], accum_dtype)
 
-# Initialize the signal
+# 初始化信号
 T.set_flag("M", "MTE1", SIG_L0AB)
 T.set_flag("M", "MTE1", SIG_L0AB + 1)
 T.set_flag("FIX", "M", SIG_L0C)
@@ -153,7 +153,7 @@ T.set_flag("FIX", "M", SIG_L0C + 1)
 
 for k in T.serial(loop_k):
     side = k % 2
-    # MTE1 Swap and Cube Calculating Stream
+    # MTE1 搬运与 Cube 计算流水重叠
     T.wait_flag("M", "MTE1", SIG_L0AB + side)
     T.copy(k_l1, l0b[side, :, :])
     T.set_flag("MTE1", "M", SIG_L0AB + side)
@@ -165,9 +165,9 @@ for k in T.serial(loop_k):
     T.set_flag("M", "FIX", SIG_L0C + side)
 ```
 
-**Vector Nuclear Example**:
+**Vector 核示例**：
 
-**Before optimization**(serial execution):
+**优化前**（串行执行）：
 ```python
 for k in T.serial(loop_k):
     T.copy(GM_data[k], ub_buf)
@@ -175,13 +175,13 @@ for k in T.serial(loop_k):
     T.copy(result_buf, GM_out[k])
 ```
 
-**Optimized**(handwritten Ping-Pong double buffering, automatic sync enabled):
+**优化后**（手写 Ping-Pong 双缓冲，开启自动同步）：
 ```python
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
 }
 
-# Allocation of double buffering
+# 分配双缓冲
 ub_buf = T.alloc_ub([2, block_size], dtype)
 result_buf = T.alloc_ub([2, block_size], dtype)
 
@@ -192,151 +192,151 @@ for k in T.serial(loop_k):
     T.copy(result_buf[side, :], GM_out[k])
 ```
 
-### 2.3 MTE2 Pre-Advanced Optimization (Cube Nuclear)
+### 2.3 MTE2 预取优化（Cube 核）
 
-**Applicable scene**:
-- Double Buffer is on, but each pipeline busy ≤ 70% (no base)
-- K direction cut `kL1Iter ≥ 2`
+**适用场景**：
+- 已开启 Double Buffer 但各流水线 busy ≤ 70%（准无 bound）
+- K 方向切分次数 `kL1Iter ≥ 2`
 
-**Rationale**: The main cycle is converted to a three-part structure for the "first round pre-take → formal cycle" to allow MTE2 to move into the next round of data ahead of schedule and eliminate running costs.
+**原理**：将主循环改造为「首轮预取 → 正式循环」三段结构，让 MTE2 提前搬入下一轮数据，消除流水起停开销。
 
-**Before optimization**(portation per wheel + calculation line):
+**优化前**（每轮搬运 + 计算串行）：
 ```python
 for k in T.serial(loop_k):
-    T.copy(k_l1, l0b[side, :, :])  # MTE2 Move in
-    T.mma(l0a[side, :, :], l0b[side, :, :], l0c[side, :, :])  # Cube Calculate
+    T.copy(k_l1, l0b[side, :, :])  # MTE2 搬入
+    T.mma(l0a[side, :, :], l0b[side, :, :], l0c[side, :, :])  # Cube 计算
 ```
 
-**Optimized**(first round prep + running water mask):
+**优化后**（首轮预取 + 流水掩盖）：
 ```python
-# First Round Pre-PING PING
+# 首轮预取 PING
 T.copy(k_l1_iter0, l0b[0, :, :])
 
 for k in T.serial(1, loop_k):
     side = k % 2
     next_side = (k + 1) % 2
-    # Prefetch the next round of data to PONG
+    # 预取下一轮数据到 PONG
     if k < loop_k - 1:
         T.copy(k_l1_next, l0b[next_side, :, :])
-    # Consumption of the current round
+    # 消费当前轮
     T.mma(l0a[side, :, :], l0b[side, :, :], l0c[side, :, :])
 ```
 
-### 2.4 Reduction of duplicate loads / Full-Load (Cube nuclear)
+### 2.4 减少重复载入 / Full-Load（Cube 核）
 
-**Applicable scene**:
-- Smaller matrix on side (e.g. `baseM × K × dtype ≤ L1/2`)
-- Number of side loops `T ≥ 2` (e. g. N multi-rotational)
-- Small side matrix repeats from GM to L1 in each cycle
+**适用场景**：
+- 一侧矩阵较小（如 `baseM × K × dtype ≤ L1/2`）
+- 对侧循环次数 `T ≥ 2`（如 N 方向有多轮迭代）
+- 小侧矩阵在每轮循环中重复从 GM 搬运到 L1
 
-**Rationale**: one-time presence of small-side matrices in L1, elimination of repeat GM→L1 removal in side cycle, equivalent to compression of the MTE2 total byte bytes by `(T-1)/T`.
+**原理**：将小侧矩阵一次性驻留 L1，消除对侧循环中的重复 GM→L1 搬运，等效把 MTE2 总字节数压缩 `(T-1)/T`。
 
-**Pre-optimization**(with small matrix A carried on each wheel):
+**优化前**（每轮都搬运小侧矩阵 A）：
 ```python
 for n_iter in T.serial(T):
     for k in T.serial(loop_k):
-        T.copy(A[bz, by, :, :], a_l1)  # Repeated loads per round
+        T.copy(A[bz, by, :, :], a_l1)  # 每轮重复搬运
         T.copy(K[bz, by, k * block_N:(k + 1) * block_N, :], k_l1)
         T.gemm_v0(a_l1, k_l1, acc_l0c, transpose_B=True)
 ```
 
-**Optimized**(A one-time presence L1):
+**优化后**（A 一次性驻留 L1）：
 ```python
-# Initialization: A one-time presence L1
+# 初始化阶段：A 一次性驻留 L1
 T.copy(A[bz, by, :, :], a_l1)
 
 for n_iter in T.serial(T):
     for k in T.serial(loop_k):
-        # A is present, skip porter.
+        # A 已驻留，跳过搬运
         T.copy(K[bz, by, k * block_N:(k + 1) * block_N, :], k_l1)
         T.gemm_v0(a_l1, k_l1, acc_l0c, transpose_B=True)
 ```
 
-### 2.5 Integration of small data blocks (Cube nuclei)
+### 2.5 小数据块合并载入（Cube 核）
 
-**Applicable scene**:
-- Existence of small block-by-line data (e. g. Scale, Bias, Lut, etc.), single load < 20 KB
-- K cycle more frequently, small pieces of data being repeatedly moved
-- Low utilization of MTE2 bandwidth (< 70%)
+**适用场景**：
+- 存在小块随路数据（如 Scale、Bias、LUT 等），单次搬运量 < 20 KB
+- K 方向循环次数较多，小块数据被反复搬运
+- MTE2 带宽利用率低（< 70%）
 
-**Rationale**:will KA small piece of data in the direction to be shredded is combined into a big move.≥ 20 KBI'm sorry. I'm sorry.MTE2The cost of the launch head, please.bandwidthUtilization rate from50%–70%Pull back.80%+.
+**原理**：将 K 方向上被切碎的小块数据合并成一次大搬运（≥ 20 KB），摊薄 MTE2 发射头开销，使带宽利用率从 50%–70% 拉回到 80%+。
 
-**Before optimisation**(with small scale on each wheel):
+**优化前**（每轮都搬小块 scale）：
 ```python
 for k in T.serial(loop_k):
-    T.copy(scale[k * base_scale:(k + 1) * base_scale], scale_l1)  # Every time. 2 KB
+    T.copy(scale[k * base_scale:(k + 1) * base_scale], scale_l1)  # 每次 2 KB
     T.copy(data[k * block_N:(k + 1) * block_N, :], data_l1)
     T.gemm_v0(data_l1, scale_l1, acc_l0c)
 ```
 
-**Optimized**(consolidation of multiple rounds scale one move):
+**优化后**（合并多轮 scale 一次搬运）：
 ```python
-# Merge 8 wheel scale 1 move (2 KB × 8 = 16 KB)
+# 合并 8 轮 scale 一次搬运（2 KB × 8 = 16 KB）
 for k in T.serial(loop_k):
     if k % 8 == 0:
         T.copy(scale[k * base_scale:(k + 8) * base_scale], scale_l1_merged)
-    # Remove corresponds from merged buffer by offset
+    # 从合并 buffer 中按偏移取对应片
     T.copy(data[k * block_N:(k + 1) * block_N, :], data_l1)
     T.gemm_v0(data_l1, scale_l1_merged[k % 8], acc_l0c)
 ```
 
-### 2.6 Instruction vector (Vector nuclei)
+### 2.6 指令向量化（Vector 核）
 
-**Applicable scene**:
-- Exists in code for multiple scalar operations in cycle (line-by-line/Element-by-Element)
-- Use `range()` to do the same for multiple slices of tensor
-- operator contains a large number of element-by-element mathematical operations (e. g. line-by-line alignment in Softmax)
+**适用场景**：
+- 代码中存在 for 循环下的多次 scalar 运算（逐行/逐元素操作）
+- 使用 `range()` 循环对 tensor 的多个切片分别执行相同操作
+- 算子包含大量逐元素数学运算（如 Softmax 中的逐行归一化）
 
-**Note: vector adaptations must ensure that the logic of operations remains unchanged, particularly in the case of data dependence or cumulative operations, where the equivalence needs to be carefully verified.
+**注意**：向量化改造必须保证运算逻辑不变，特别是存在数据依赖或累加操作的场景，需仔细验证等价性。
 
-**Before optimization**(multiple scalar operations in cycle):
+**优化前**（循环中多次 scalar 运算）：
 ```python
 for h_i in range(block_M // 2):
     T.tile.sub(acc_s_ub[h_i, :], acc_s_ub[h_i, :], m_i[h_i])
 ```
 
-**Optimized**(single file operation):
+**优化后**（单次 tile 操作）：
 ```python
 T.tile.broadcast(m_i_2d, m_i, tmp_ub)
 T.tile.sub(acc_s_ub, acc_s_ub, m_i_2d)
 ```
 
-### 2.7 Directive Integration (Vector nuclei)
+### 2.7 指令融合（Vector 核）
 
-**Applicable scene**:
-- Continuous operation according to specific mode (e.g. `y = a * x + y`)
-- Need to reduce the number of instructions issued
+**适用场景**：
+- 符合特定模式的连续运算（如 `y = a * x + y`）
+- 需要减少指令下发次数
 
-**AXPY Integration**: `dst = scalar * src0 + dst`
+**AXPY 融合**：`dst = scalar * src0 + dst`
 
-**Before optimization**(two directives):
+**优化前**（两条指令）：
 ```python
 T.tile.mul(acc_s_ub, acc_s_ub, sm_scale)
 T.tile.sub(acc_s_ub, acc_s_ub, m_i_2d)
 ```
 
-**Optimized**(using AXPY integration):
+**优化后**（使用 AXPY 融合）：
 ```python
 T.tile.axpy(acc_s_ub, m_i_2d, sm_scale)
 ```
 
-**Other integration directives**:
-- `T.tile.leaky_relu(dst, src0, scalar)`: ReLU + Multiplication Integration (`dst = max(0, src0) if src0 >= 0 else src0 * scalar`)
+**其他融合指令**：
+- `T.tile.leaky_relu(dst, src0, scalar)`：ReLU + 乘法融合（`dst = max(0, src0) if src0 >= 0 else src0 * scalar`）
 
-**tip**: In addition to the integration commands mentioned above, active search should be made for the integrated mode of calculation in the code, and attempts should be made to replace the multistep base calculation with other composite operating instructions (e.g. `T.tile.select`, `T.tile.clamp`, `T.tile.compare`, etc.) provided by `T.tile`.
+**提示**：除上述融合指令外，应主动搜索代码中可融合的计算模式，尝试使用 `T.tile` 提供的其他复合运算指令（如 `T.tile.select`、`T.tile.clamp`、`T.tile.compare` 等）替代多步基础运算。
 
-> **Note: User confirmation, description of integration programmes and expected benefits, prior to integration of implementing instructions, must be obtained and the code modified with the user ' s consent.
+> **注意**：实施指令融合前必须询问用户确认，说明融合方案和预期收益，经用户同意后再修改代码。
 
-### 2.8 Rare access memory optimization (Vector nuclei)
+### 2.8 稀疏访存优化（Vector 核）
 
-**Applicable scene**:
-- KV data is dispersed in Global Memoory (e. g. Paged Attention, Sparse Attention)
-- Access KV data using index/page tables
-- We need to use the discrete data first. Gather calculates for continuous blocks.
+**适用场景**：
+- KV 数据在 Global Memory 中呈离散分布（如 Paged Attention、Sparse Attention）
+- 使用索引表/页表访问 KV 数据
+- 需要先将离散数据 Gather 为连续块再进行计算
 
-**Before optimisation**(Element-by-Element Gather+ Frequent Synchronization):
+**优化前**（逐元素 Gather + 频繁同步）：
 ```python
-# Single buffer, written immediately after each loop move and containing a large number of barriers
+# 单 buffer，每次循环搬运后立即写出，且包含大量 barrier
 kv_ub = T.alloc_ub([D], dtype)
 kv_tail_ub = T.alloc_ub([D_tail], dtype)
 
@@ -348,22 +348,22 @@ for bi_i in range(BI // 2):
         block_i = block_table[b_i, block_idx]
         block_inter = index_i % block_size
         T.barrier_all()
-        # Separate copies of elements by element
+        # 逐元素离散拷贝
         T.copy(KV[block_i, block_inter, 0, :D], kv_ub)
         T.copy(KV[block_i, block_inter, 0, D:], kv_tail_ub)
     else:
         T.tile.fill(kv_ub, 0.0)
         T.tile.fill(kv_tail_ub, 0.0)
     T.barrier_all()
-    # Write element by element to Workspace
+    # 逐元素写出到 Workspace
     T.copy(kv_ub, workspace_1[cid, bi_i + vid * BI // 2, :])
     T.copy(kv_tail_ub, workspace_2[cid, bi_i + vid * BI // 2, :])
     T.barrier_all()
 ```
 
-**Optimized**(two Buffer Garther + batch written):
+**优化后**（双 Buffer Gather + 批量写出）：
 ```python
-# Distribute double Buffer for Gather
+# 分配双 Buffer 用于 Gather
 kv_ub_gather = T.alloc_ub([BI // 2, D], dtype)
 kv_tail_ub_gather = T.alloc_ub([BI // 2, D_tail], dtype)
 
@@ -372,101 +372,101 @@ for bi_i in range(BI // 2):
     block_idx = index_i // block_size
     block_i = block_table[b_i, block_idx]
     block_inter = index_i % block_size
-    # Dispersed data Gather to Double Buffer (reduce barrier)
+    # 离散数据 Gather 到双 Buffer（减少 barrier）
     T.copy(KV[block_i, block_inter, 0, :D], kv_ub_gather[bi_i, :])
     T.copy(KV[block_i, block_inter, 0, D:], kv_tail_ub_gather[bi_i, :])
 
-# Gather completed, one-time batch to Workspace
+# Gather 完成后，一次性批量写出到 Workspace
 T.copy(kv_ub_gather, workspace_1[cid, vid * BI // 2 : (vid + 1) * BI // 2, :])
 T.copy(kv_tail_ub_gather, workspace_2[cid, vid * BI // 2 : (vid + 1) * BI // 2, :])
 ```
 
-**Key optimization points**:
-- **Dispersed KV Gather**: first separate KV from the continuous area collected from GM to UB, then move out again
-- **Double Buffer mechanism**: double Buffer replacement list with `[BI // 2, D]` to support Gather and subsequent calculation of flow cover
-- **Reduced Synchronization**: remove `T.barrier_all()` and condition branches from the cycle and increase the efficiency of command delivery
+**关键优化点**：
+- **离散 KV Gather**：先将离散 KV 从 GM 收集到 UB 的连续区域，再一次性搬出
+- **双 Buffer 机制**：使用 `[BI // 2, D]` 的双 buffer 替代单 buffer，支持 Gather 与后续计算的流水掩盖
+- **减少同步**：移除循环内的 `T.barrier_all()` 和条件分支，提升指令下发效率
 
-### 2.9 Fixed Core mode (all operator types are common)
+### 2.9 Fixed Core 模式（所有算子类型通用）
 
-**Applicable scene**:
-- Logical tasks are much larger than physical cores (e.g. block_num > > 24)
-- Workspace device memory distribution increases linearly with block_num
-- operator contains a large number of initializations for `alloc_buffer`, `annotate_address`, etc.
+**适用场景**：
+- 逻辑任务数远大于物理核数（如 block_num >> 24）
+- Workspace 显存分配随 block_num 线性增长
+- 算子包含大量 `alloc_buffer`、`annotate_address` 等初始化操作
 
-**Before optimization**(logical tasks lanch):
+**优化前**（按逻辑任务数 launch）：
 ```python
 with T.Kernel(block_num, is_npu=True) as (cid, vid):
     workspace = T.alloc_L1([block_M, block_N], dtype)
     T.copy(result, workspace[cid, :, :])
 ```
 
-**Optimized**(by physical core launch, manually assigned tasks):
+**优化后**（按物理核数 launch，手动分配任务）：
 ```python
 with T.Kernel(core_num, is_npu=True) as (cid, vid):
     workspace = T.alloc_L1([block_M, block_N], dtype)
     single_core_load = T.ceildiv(block_num, core_num)
     for block_idx in T.serial(cid * single_core_load, (cid + 1) * single_core_load):
         ...
-        T.copy(result, workspace[cid, :, :])  # workspace[cid] Reused
+        T.copy(result, workspace[cid, :, :])  # workspace[cid] 被复用
 ```
 
-### 2.10 Pass_configs Modified (last resort)
+### 2.10 pass_configs 调优（最后手段）
 
-> **Note: Changes in pass_configs settings equivalent to less-used Devloper features should be used after other optimisations have been tried. This optimization applies to all operator types (nuclear/nuclear).
+> **注意**：更改 pass_configs 设置相当于少用 Developer 特性，应在其他优化手段尝试后再使用。此优化适用于所有算子类型（核内/核间）。
 
-#### Close AutoSync
+#### 关闭自动同步
 
-**Applicable scene**:
-- All the above-mentioned optimization tools have been tried and performance still falls short
-- Use Expert mode and need precise control of sync timing
-- Automatically inserted sync command leads to unnecessary waiting (confirmed by viewing the generated Ascend C code)
+**适用场景**：
+- 以上优化手段均已尝试，性能仍不达标
+- 使用 Expert 模式且需要精确控制同步时机
+- 自动插入的同步指令导致不必要的等待（可通过查看生成的 Ascend C 代码确认）
 
-**Before optimization**:
+**优化前**：
 ```python
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True,
 }
 ```
 
-**Optimized**:
+**优化后**：
 ```python
 pass_configs = {
     tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: False,
 }
-# Manually insert T. Barrier_all() / T.set_flag / T.wait_flag
+# 手动插入 T.barrier_all() / T.set_flag / T.wait_flag
 ```
 
 ---
 
-## III. Inter-nuclear optimization
+## 三、核间优化
 
-> **Subject applicable**: Only**CV Integration operator**requires inter-nuclear optimization. Pure Cube or pure Victor operator skips this chapter.
+> **适用对象**：仅 **CV 融合型算子** 需要执行核间优化。纯 Cube 或纯 Vector 算子跳过本章。
 
-### 3.1 Num_stages Modified
+### 3.1 num_stages 调优
 
-**Applicable scene**:
-- Use `T.Pipelined` for inter-nuclear flow optimization
-- More cycles (e.g. `loop_range ≥ 4`)
-- The time-consuming differences between the Cube nuclear and the Vector nuclear are significant, with visible inter-nuclear waiting bubbles.
+**适用场景**：
+- 使用 `T.Pipelined` 进行核间流水优化
+- 循环次数较多（如 `loop_range ≥ 4`）
+- Cube 核和 Vector 核的耗时差异较大，存在明显核间等待气泡
 
-**Easing proposal**:
-- **Constraint**: `num_stages ≥ 2` and `num_stages ≤ loop_range` (maximum not more than the number of cycles)
-- Larger `num_stages` values are required when there are more cycles or CV time differences
-- Starting with `num_stages=2`, gradually increasing, observing performance change selection best value
-- Note that `num_stages` adds memory occupancy to the General Assembly. When `TL_ASCEND_MEMORY_PLANNING` is opened, the number of `num_stages`s should be reduced if the memory overwrites the error
+**调优建议**：
+- **约束**：`num_stages ≥ 2` 且 `num_stages ≤ loop_range`（最大不超过循环次数）
+- 循环次数较多或 CV 耗时差距大时，需要较大的 `num_stages` 值
+- 从 `num_stages=2` 开始，逐步增加，观察性能变化选择最优值
+- 注意 `num_stages` 过大会增加内存占用。开启 `TL_ASCEND_MEMORY_PLANNING` 后，如果内存超限会报错，此时应调小 `num_stages` 数量
 
-### 3.2 Nuclear Synchronization Optimization
+### 3.2 核间同步优化
 
-**Applicable scene**:
-- CV multiple interactions, multiple cycles
-- Retain only > 50% of the time taken for inter-nuclear synchronization after commenting on all computing and moving codes
+**适用场景**：
+- CV 交互次数多，循环次数多
+- 注释掉所有计算和搬运代码后，仅保留核间同步的耗时占比 > 50%
 
-**Easing proposal**:
-- This operation reduces the parallelity between CVs and needs to be used with caution
-- Synchronize parameters to 2 maximum
-- Performance gains must be validated after implementation and, if not, reversed immediately
+**调优建议**：
+- 此操作会降低 CV 间并行度，需谨慎使用
+- 同步间隔等参数最大调节到 2
+- 实施后必须验证性能收益，如果没有收益则立即回退
 
-**Before optimization**(each task is synchronized):
+**优化前**（每次任务都同步）：
 ```python
 for i in range(n):
     process()
@@ -474,7 +474,7 @@ for i in range(n):
     T.wait_cross_flag(SEM_ID)
 ```
 
-**Optimized**(sync after multiple assignments):
+**优化后**（多次任务后同步）：
 ```python
 for i in range(n):
     process()
@@ -483,16 +483,16 @@ for i in range(n):
         T.wait_cross_flag(SEM_ID)
 ```
 
-> **Nuclear Pipeline**: use `T.Pipelined` for inter-nuclear current water cover.
+> **核间 Pipeline**：使用 `T.Pipelined` 实现核间流水掩盖。
 
 ---
 
-## iv. common issue
+## 四、常见问题速查
 
-| The phenomenon | Possible causes | Solutions |
+| 现象 | 可能原因 | 解决方案 |
 |------|----------|----------|
-| C. Large nuclear bubbles | V nuclear time-consuming, `num_stages` too small | Increase `num_stages` |
-| Memory Spill | `num_stages` Too big or buffer too big | Decreased block parameters or `num_stages` |
-| Orders slow down. | scalar overoperated | Change to `T.tile` vector |
-| GM bandwidth is not fully filled | Inefficiency of data removal | Open L1 Permanent, Double Buffer |
-| Scalar base high | Too many syncs | Reduce sync frequency, use `cross_interval` |
+| C 核大量气泡 | V 核耗时长，`num_stages` 太小 | 增大 `num_stages` |
+| 内存溢出 | `num_stages` 过大或 buffer 过大 | 减小分块参数或 `num_stages` |
+| 指令下发慢 | scalar 操作过多 | 改用 `T.tile` 向量化操作 |
+| GM 带宽未打满 | 数据搬运效率低 | 开启 L1 常驻、Double Buffer |
+| scalar bound 高 | 同步次数过多 | 减少 sync 频率，使用 `cross_interval` |

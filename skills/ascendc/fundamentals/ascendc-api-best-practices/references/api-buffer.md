@@ -1,55 +1,55 @@
-# UB Buffer zone management guide
+# UB 缓冲区管理指南
 
-TBuf/TQue Selection, Double Buffer pipeline Parallel, Batch Removal Mode.
-
----
-
-## Contents
-
-1. [Tbuf vs TQue Selection](#tbuf-vs-tque-Selection)
-2. [TQue Detailed](#tque - Detailed)
-3. [TBuf Detailed](#tbuf-Definitioned)
-4. [Double Buffer pipelineParallel](#double-buffer-pipelineParallel)
-5. [Bulk removal + line-by-line calculation mode](#volume removal - line-by-line calculation mode)
+TBuf/TQue 选择、Double Buffer 流水线并行、批量搬运模式。
 
 ---
 
-## TBuf vs TQue Selection
+## 目录
 
-| scene | Type of recommendation | Annotations |
+1. [TBuf vs TQue 选择](#tbuf-vs-tque-选择)
+2. [TQue 详解](#tque-详解)
+3. [TBuf 详解](#tbuf-详解)
+4. [Double Buffer 流水线并行](#double-buffer-流水线并行)
+5. [批量搬运 + 逐行计算模式](#批量搬运--逐行计算模式)
+
+---
+
+## TBuf vs TQue 选择
+
+| 场景 | 推荐类型 | 说明 |
 |-----|---------|------|
-| MTE2/MTE3 Move buffer zone | `TQue<VECIN/VECOUT>` | Need to parallel Victor and need EnQue/ DeQue |
-| Pure Victor calculates the buffer zone | `TBuf<VECCALC>` | Not involving MTE handling, fetching with `Get<T>()` |
-| Double Buffer | `TQue` + `InitBuffer(que, 2, size)` | Set num = 2 in InitBuffer |
+| MTE2/MTE3 搬运缓冲区 | `TQue<VECIN/VECOUT>` | 需要与 Vector 并行，需要 EnQue/DeQue |
+| 纯 Vector 计算缓冲区 | `TBuf<VECCALC>` | 不涉及 MTE 搬运，用 `Get<T>()` 获取 |
+| Double Buffer | `TQue` + `InitBuffer(que, 2, size)` | 在 InitBuffer 中设置 num=2 开启 |
 
 ---
 
-## TQue Detail
+## TQue 详解
 
-### Template parameters
+### 模板参数
 
 ```cpp
 template <TPosition pos, int32_t depth, auto mask = 0> class TQue;
 ```
 
-| Parameters | Annotations |
+| 参数 | 说明 |
 |------|------|
-| `pos` | Queue logical position: `VECIN`, `VECOUT`, `A1`, `A2`, `B1`, `B2`, `CO1`, `CO2` |
-| `depth` | Queue Depth, indicating the number of consecutive EnQue/ DeQue |
-| `mask` | Data format conversion (ND↔NZ) or compilation optimization parameters |
+| `pos` | 队列逻辑位置：`VECIN`, `VECOUT`, `A1`, `A2`, `B1`, `B2`, `CO1`, `CO2` |
+| `depth` | 队列深度，表示可连续 EnQue/DeQue 的次数 |
+| `mask` | 数据格式转换（ND↔NZ）或编译期优化参数 |
 
-### Key description of depth parameters
+### depth 参数关键说明
 
-| depth value | Apply scene | Annotations |
+| depth 值 | 适用场景 | 说明 |
 |---------|---------|------|
-| `depth=1` | **Default recommended**, non-Tensor in situ | compiler has a special optimization and better performance. |
-| `depth=0` | **Tensor In situ Operation** | Required Settings |
-| `depth=2` | 2 consecutive EnQue scenes | Independent of num parameters for InitBuffer |
+| `depth=1` | **默认推荐**，非 Tensor 原地操作 | 编译器有特殊优化，性能更好 |
+| `depth=0` | **Tensor 原地操作** | 需要设置 |
+| `depth=2` | 连续 2 次 EnQue 场景 | 与 InitBuffer 的 num 参数独立 |
 
-**Note: `depth` has nothing to do with Double Buffer. Double Buffer is controlled by `num` parameters for `InitBuffer`.
+**注意**：`depth` 与 Double Buffer 无关。Double Buffer 由 `InitBuffer` 的 `num` 参数控制。
 
 ```cpp
-// ✅ Non-continuous entry (ordinary scenario): decth=1
+// ✅ 非连续入队（普通场景）：depth=1 即可
 AscendC::TQue<AscendC::TPosition::VECIN, 1> que;
 pipe->InitBuffer(que, 1, size);
 auto tensor = que.AllocTensor<T>();
@@ -58,54 +58,54 @@ tensor = que.DeQue<T>();
 que.FreeTensor(tensor);
 ```
 
-### Double Buffer Configuration
+### Double Buffer 配置
 
-**Double Buffer is set in the `num` parameter for `InitBuffer`, not related to the template parameter `depth`.**
+**Double Buffer 是在 `InitBuffer` 的 `num` 参数中设置，与模板参数 `depth` 无关。**
 
-| InitBuffer Arguments | Role | Annotations |
+| InitBuffer 参数 | 作用 | 说明 |
 |----------------|------|------|
-| `InitBuffer(que, num, size)` | `num` Control Double Buffer | `num=1` = single Buffer, `num=2` = open Double Buffer |
-| Template Parameters `depth` | Queue Depth | Indicates the number of consecutive EnQue |
+| `InitBuffer(que, num, size)` | `num` 控制 Double Buffer | `num=1`=单 Buffer，`num=2`=开启 Double Buffer |
+| 模板参数 `depth` | 队列深度 | 表示可连续 EnQue 的次数 |
 
 ```cpp
-// ✅ Open Double Buffer: set num=2 in InitBuffer
-AscendC::TQue<AscendC::TPosition::VECIN, 1> que;  // Templates depth=1 That's fine.
-pipe->InitBuffer(que, 2, size);  // num=2 Open Double Buffer
+// ✅ 开启 Double Buffer：在 InitBuffer 中设置 num=2
+AscendC::TQue<AscendC::TPosition::VECIN, 1> que;  // 模板 depth=1 即可
+pipe->InitBuffer(que, 2, size);  // num=2 开启 Double Buffer
 
-// ✅ Close Double Buffer
+// ✅ 关闭 Double Buffer
 AscendC::TQue<AscendC::TPosition::VECIN, 1> que;
-pipe->InitBuffer(que, 1, size);  // num=1 Single Buffer
+pipe->InitBuffer(que, 1, size);  // num=1 单 Buffer
 ```
 
-### TQue Buffer Quantity Limit
+### TQue Buffer 数量限制
 
-| Product series | Number of events IDs | Maximum TQue number |
+| 产品系列 | eventID 数量 | 最大 TQue 数量 |
 |---------|-------------|---------------|
-| Atlas Training Series | 4 | 4 |
-| Atlas Logic Series AI Core | 8 | 8 |
-| Atlas Logic Series, Victor Core | 8 | 8 |
-| Atlas A2/A3 series | 8 | 8 |
+| Atlas 训练系列 | 4 | 4 |
+| Atlas 推理系列 AI Core | 8 | 8 |
+| Atlas 推理系列 Vector Core | 8 | 8 |
+| Atlas A2/A3 系列 | 8 | 8 |
 
-Note:
-- Double Buffer (num=1): Up to 8 TQue
-- Open Double Buffer (num=2): Each TQue occupies 2 buffer with a maximum of 4 TQue
+**注意**：
+- 不开启 Double Buffer（num=1）：最多可申请 8 个 TQue
+- 开启 Double Buffer（num=2）：每个 TQue 占用 2 个 buffer，最多只能申请 4 个 TQue
 
 ```cpp
-// Only 4 TQue when you open Double Buffer
+// 开启 Double Buffer 时，最多只能申请 4 个 TQue
 pipe->InitBuffer(que0, 2, size);  // ✅
 pipe->InitBuffer(que1, 2, size);  // ✅
 pipe->InitBuffer(que2, 2, size);  // ✅
 pipe->InitBuffer(que3, 2, size);  // ✅
-pipe->InitBuffer(que4, 2, size);  // ❌ Beyond the limit
+pipe->InitBuffer(que4, 2, size);  // ❌ 超过限制
 ```
 
-### TQue Use correctly
+### TQue 正确用法
 
 ```cpp
-// TQue: Need for queue management (MTE handling-related)
-// Template depth=1 is sufficient, Double Buffer sets in the InitBuffer num parameter
+// TQue：需要队列管理（MTE 搬运相关）
+// 模板 depth=1 即可，Double Buffer 在 InitBuffer 的 num 参数中设置
 AscendC::TQue<AscendC::TPosition::VECIN, 1> inQueueX;
-pipe->InitBuffer(inQueueX, 2, bufferSize);  // num=2 Open Double Buffer
+pipe->InitBuffer(inQueueX, 2, bufferSize);  // num=2 开启 Double Buffer
 
 AscendC::LocalTensor<half> x = inQueueX.AllocTensor<half>();
 AscendC::DataCopyPad(x, xGm, {1, size * sizeof(half), 0, 0}, {false, 0, 0, 0});
@@ -117,79 +117,79 @@ inQueueX.FreeTensor(xLocal);
 
 ---
 
-## TBuf Detail
+## TBuf 详解
 
-### Features
+### 特性
 
-| Features | Annotations |
+| 特性 | 说明 |
 |------|------|
-| Memory uses | Could not execute EnQue/DeQue |
-| Memory Allocation | Each time InitBuffer assigns only one memory |
-| Tensor Release | There's no need to release it manually. |
+| 内存用途 | 只能参与计算，无法执行 EnQue/DeQue |
+| 内存分配 | 每次 InitBuffer 只分配一块内存 |
+| Tensor 释放 | 无需手动释放 |
 
 ```cpp
-// TBuf: Pure calculation of buffer zone
+// TBuf：纯计算缓冲区
 AscendC::TBuf<AscendC::TPosition::VECCALC> workBuf;
 pipe->InitBuffer(workBuf, bufferSize);
 
-// ✅ Use Get<T>() to get Tensor without release
+// ✅ 使用 Get<T>() 获取 Tensor，无需释放
 AscendC::LocalTensor<float> work = workBuf.Get<float>();
-// ...calculating logic...
-// No need, FreeTensor.
+// ... 计算逻辑 ...
+// 无需 FreeTensor
 ```
 
 ---
 
-## Duble Buffer pipeline
+## Double Buffer 流水线并行
 
-### Core knowledge
+### 核心认知
 
-**Double Buffer is not "calculated with two pieces of memory" but "to move in/out with two blocks of memory so that MTE2/MTE3 is calculated in parallel with Victor".**
+**Double Buffer 不是"用2块内存计算"，而是"用2块内存做搬入/搬出，使 MTE2/MTE3 与 Vector 计算并行"。**
 
-Essential:**memory handling in parallel with calculation, covering latency**.
+本质：**内存搬运与计算并行，掩盖搬运延迟**。
 
-### Hardware principles
+### 硬件原理
 
-- **MTE2**: movers, GM → UB
-- **Vector**: Processors, calculations
-- **MTE3**: movers, UB → GM
+- **MTE2**：搬运工，GM → UB
+- **Vector**：加工员，计算
+- **MTE3**：搬运工，UB → GM
 
-### Timeline Contrast
+### 时间线对比
 
-**No Double Buffer (serial)**:
+**无 Double Buffer（串行）**：
 ```
 Row 0: [MTE2][Vector][MTE3]
 Row 1:                      [MTE2][Vector][MTE3]
 ```
 
-**There is Double Buffer (parallel)**:
+**有 Double Buffer（并行）**：
 ```
 Row 0: [MTE2-B0][Vector-B0][MTE3-B0]
 Row 1:          [MTE2-B1][Vector-B1][MTE3-B1]
-                  ↑ MTE2andVectorParallel!
+                  ↑ MTE2与Vector并行！
 ```
 
-### Realization of principles
+### 实现原则
 
-| Buffer Type | InitBuffer num | Annotations |
+| Buffer 类型 | InitBuffer num | 说明 |
 |------------|----------------|------|
-| `TQue<VECIN>` (MTE2 Removal) | **2** | Num=2 open Double Buffer, parallel to Victor |
-| `TQue<VECOUT>` (MTE3 Removal) | **2** | Num=2 open Double Buffer, parallel to Victor |
-| `TBuf<VECCALC>` (pure calculation) | - | TBuf does not involve MTE handling |
+| `TQue<VECIN>` (MTE2 搬运) | **2** | num=2 开启 Double Buffer，与 Vector 并行 |
+| `TQue<VECOUT>` (MTE3 搬运) | **2** | num=2 开启 Double Buffer，与 Vector 并行 |
+| `TBuf<VECCALC>` (纯计算) | - | TBuf 不涉及 MTE 搬运 |
 
-### Use correctly
+### 正确用法
 
 ```cpp
-// Init: num=2 Start Double Buffer
+// 1. Init: num=2 开启 Double Buffer
 pipe->InitBuffer(inQueueX,  2, tileSize * sizeof(T));
 pipe->InitBuffer(outQueueY, 2, tileSize * sizeof(T));
 pipe->InitBuffer(workBuf, workSize * sizeof(T));
 
-// 2. Process: Single-cycle structure, TQue automatic rotation
+// 2. Process: 单循环结构，TQue 自动轮转
 for (int i = 0; i < totalTiles; i++) {
-    CopyIn(i);   // MTE2 Step forwarding
-    Compute(i);  // Vector Calculate
-    CopyOut(i);  // MTE3 Move out of here.
+    CopyIn(i);   // MTE2 异步搬运
+    Compute(i);  // Vector 计算
+    CopyOut(i);  // MTE3 异步搬出
 }
 
 // 3. CopyIn
@@ -216,54 +216,54 @@ void CopyOut(int i) {
 }
 ```
 
-### Why does it have to go in parallel?
+### 为什么能并行？
 
-| Operation | Features |
+| 操作 | 特性 |
 |------|------|
-| `DataCopy` | Step DMA, back immediately. |
-| `EnQue` | Unblocked. Mark ready. |
-| `DeQue` | Blocking, waiting. |
+| `DataCopy` | 异步 DMA，立即返回 |
+| `EnQue` | 非阻塞，标记就绪 |
+| `DeQue` | 阻塞，等待就绪 |
 
-### Common error zone
+### 常见误区
 
-| Error | Get it right. |
+| 误区 | 正确理解 |
 |------|---------|
-| Manually split into two sets of Ping/Pong codes | Single Cycle + `InitBuffer(que, 2, size)` AutoManaging |
-| depth Template Parameter Control | Double Buffer is controlled by `num` parameters for `InitBuffer` |
-| The bigger the bigger the better. | Template depth is usually set to 1 with the highest value for money |
-| All buffer needs num = 2. | Double Buffer is needed only for MTE porters |
+| 需要手动拆成 Ping/Pong 两套代码 | 单循环 + `InitBuffer(que, 2, size)` 自动管理 |
+| depth 模板参数控制 Double Buffer | Double Buffer 由 `InitBuffer` 的 `num` 参数控制 |
+| depth 越大越好 | 模板 depth 通常设为 1，性价比最高 |
+| 所有 buffer 都要 num=2 | 只有涉及 MTE 搬运的才需要 Double Buffer |
 
 ---
 
-## Batch load + line-by-line mode
+## 批量搬运 + 逐行计算模式
 
-### Apply scene
+### 适用场景
 
-When processing multiline data, batch handling reduces the number of MTE2/MTE3 calls, making full use of bandwidth.
+处理多行数据时，批量搬运减少 MTE2/MTE3 调用次数，充分利用带宽。
 
-### Mode Structure
+### 模式结构
 
 ```
-CopyInBatch(NOkay.) → Line-by-line calculation(NNumbers) → CopyOutBatch(NOkay.)
+CopyInBatch(N行) → 逐行计算(N次) → CopyOutBatch(N行)
 ```
 
-### Code Template
+### 代码模板
 
 ```cpp
 __aicore__ inline void ProcessBatch()
 {
     uint32_t totalRowsToProcess = endRow - startRow;
     if (totalRowsToProcess == 0) return;
-
+    
     for (uint32_t tile = 0; tile < tilesPerCore; tile++) {
         uint32_t startLocalRow = tile * tileRows;
-
-        // Border check: prevent uint32_t spill
+        
+        // 边界检查：防止 uint32_t 下溢
         if (startLocalRow >= totalRowsToProcess) break;
-
+        
         uint32_t remaining = totalRowsToProcess - startLocalRow;
         uint32_t rowsThisTile = (remaining < tileRows) ? remaining : tileRows;
-
+        
         CopyInBatch(startLocalRow, rowsThisTile);
         ComputeBatch(rowsThisTile);
         CopyOutBatch(startLocalRow, rowsThisTile);
@@ -271,12 +271,12 @@ __aicore__ inline void ProcessBatch()
 }
 ```
 
-### Host Side Tiling Calculator
+### Host 侧 Tiling 计算
 
 ```cpp
 // A2/A3 UB = 192KB
 constexpr uint64_t UB_SIZE = 192 * 1024;
-constexpr uint32_t MAX_BLOCK_COUNT = 4095;  // DataCopyPad blockCount Limits
+constexpr uint32_t MAX_BLOCK_COUNT = 4095;  // DataCopyPad blockCount 限制
 
 // bytesPerTileRow: double buffer (in*2 + out*2)
 uint32_t bytesPerTileRow = paddedColsT * typeSizeBytes * 4;
@@ -286,52 +286,52 @@ uint32_t tileRows = (UB_SIZE - overheadBytes) / bytesPerTileRow;
 tileRows = std::max(1u, std::min(tileRows, MAX_BLOCK_COUNT));
 ```
 
-### note
+### 注意事项
 
-1. **tieRows limit**: `blockCount` maximum 4095 for DataCopyPad
-2. **Final processing**: early exit at `startLocalRow >= totalRowsToProcess`
-3. **stride calculation**: UB side stride is 32 bytes, GM side is bytes
+1. **tileRows 限制**：DataCopyPad 的 `blockCount` 最大 4095
+2. **尾核处理**：`startLocalRow >= totalRowsToProcess` 时提前退出
+3. **stride 计算**：UB 侧 stride 单位是 32 字节块，GM 侧是字节
 
 ---
 
-## Multisage shared L1 / L0 Buffer constants
+## 多 stage 共享 L1 / L0 Buffer 的常量一致性
 
-### Apply scene
+### 适用场景
 
-Mix Kernel (`__mix__(N, M)`) or more stage operator, the same pair of L1 / L0 Buffer is often rotated by multiple Compute status-sharing (e.g. two consecutive Mmad calculations of GMM operator share the same pair of L1 input buffer).
+mix kernel（`__mix__(N, M)`）或多 stage 算子中，同一对 L1 / L0 Buffer 经常被多个 Compute stage 函数共享访问做轮转（例如 GEMM 算子中两个连续 Mmad 计算共享同一对 L1 输入 buffer）。
 
-### It has to be consistent constants.
+### 必须一致的常量
 
-The following constants are used in each stage function,**which must be consistent with the actual allocation bytes for InitBuffer**:
+各 stage 函数内使用以下常量，**必须与 InitBuffer 的实际分配字节数一致**：
 
-- Number of single slot elements (`slotElems`)
-- Single slot bytes (`slotBytes`)
-- per-slot profile/ slot offset base
+- 单 slot 元素数（`slotElems`）
+- 单 slot 字节数（`slotBytes`）
+- per-slot stride / 槽偏移基数
 
-### Typical pedal.
+### 典型踩坑
 
 ```cpp
-// InitBuffer when allocated:
-buf.InitBuffer(matAL1_, 64 * 1024 * PRELOAD_NUM);   // Every slot 64KB
+// InitBuffer 时分配：
+buf.InitBuffer(matAL1_, 64 * 1024 * PRELOAD_NUM);   // 每 slot 64KB
 
-// CenterStage1 (correct):
-const uint32_t slotElems = 64 * 1024 / sizeof(DATA_T);   // and InitBuffer Unanimously
+// ComputeStage1 中（正确）：
+const uint32_t slotElems = 64 * 1024 / sizeof(DATA_T);   // 与 InitBuffer 一致
 auto a = matAL1_.Get<DATA_T>()[loopSlot * slotElems];
 
-// CommandStage2 (Error!
-const uint32_t slotElems = 128 * 1024 / sizeof(DATA_T);  // ❌ Error 128KB
-auto b = matAL1_.Get<DATA_T>()[loopSlot * slotElems];    // task=0 Offset=0 Mooching,task=1+ Read cross-border dirty data
+// ComputeStage2 中（错误！）：
+const uint32_t slotElems = 128 * 1024 / sizeof(DATA_T);  // ❌ 误写 128KB
+auto b = matAL1_.Get<DATA_T>()[loopSlot * slotElems];    // task=0 偏移=0 蒙混，task=1+ 读越界脏数据
 ```
 
-### Symptom
+### 症状
 
-- Task task = 0 output normal (diversion = 0, even if the constant is not crossed, read in the legal distribution area)
-- Task task =1+ output NAN / inf (diversion to dirty data at end of buffer)
-- cyclical error of the "Alternative PASS / Odd Case FAIL" or "First task PASS / Follow-up Task All Exploding"
+- 任务 task=0 输出正常（偏移=0，即使常量错也不越界，读到的还是合法分配区）
+- 任务 task=1+ 输出 NaN / inf（偏移到 buffer 末尾外的脏数据）
+- "偶数 task PASS / 奇数 task FAIL" 或 "首个 task PASS / 后续 task 全爆炸" 型周期性错误
 
-### Project constraints
+### 工程约束
 
-All per-slot constants refer to a single header or single constexpr definition, all stages refer to the same definition:
+把所有 per-slot 常量提到单一头文件或单一 constexpr 定义，所有 stage 引用同一定义：
 
 ```cpp
 // constants.h
@@ -340,4 +340,4 @@ constexpr uint32_t L1_BUF_B_SLOT_BYTES = 64 * 1024;
 constexpr uint32_t L1_BUF_A_SLOT_ELEMS = L1_BUF_A_SLOT_BYTES / sizeof(DATA_T);
 ```
 
-Avoids declaring `const uint32_t slotElems = ...;` separately in each stage function.
+避免在每个 stage 函数内各自声明 `const uint32_t slotElems = ...;`。

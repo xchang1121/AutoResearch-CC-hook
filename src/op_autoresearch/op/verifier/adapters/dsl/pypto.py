@@ -1,4 +1,18 @@
-"""PyPTO DSL adapter - Support ModelNew (KernelBench) format."""
+# Copyright 2025 Huawei Technologies Co., Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""PyPTO DSL adapter - 支持 ModelNew (KernelBench) 格式."""
 
 from typing import Any, Optional
 import re
@@ -8,11 +22,11 @@ from .base import DSLAdapter
 
 class DSLAdapterPypto(DSLAdapter):
     """Adapter for PyPTO DSL.
-
-    PyPTO is a new language used to generate NPU operator, using @pypto.jit decorations and slice syntax.
-    Unlike Triton, PyPTO uses tensor [start:end] syntax instead of tl.load/store.
+    
+    PyPTO 是一种用于生成 NPU 算子的新语言，使用 @pypto.jit 装饰器和切片语法。
+    与 Triton 不同，PyPTO 使用 tensor[start:end] 语法而非 tl.load/store。
     """
-
+    
     profile_via_python_script = True
 
     def get_import_statements(self, framework: str) -> str:
@@ -54,11 +68,11 @@ class DSLAdapterPypto(DSLAdapter):
                 'print(f"[INFO] Task override: OP_AUTORESEARCH_PYPTO_RUNTIME_DEBUG_MODE={os.environ[\'OP_AUTORESEARCH_PYPTO_RUNTIME_DEBUG_MODE\']}")'
             )
         return "\n".join(lines) + ("\n" if lines else "")
-
+    
     def get_impl_import(self, op_name: str, impl_func_name: str) -> str:
         """Return implementation function import.
-
-        Use the ModelNew class format (KernelBench style) in a uniform way.
+        
+        统一使用 ModelNew 类格式（KernelBench 风格）。
         """
         module_name = re.sub(r"\W", "_", op_name)
         if not module_name or module_name[0].isdigit():
@@ -75,38 +89,38 @@ class DSLAdapterPypto(DSLAdapter):
         )
 
     def create_impl_module(self, framework: str,
-                          framework_adapter: Any,
+                          framework_adapter: Any, 
                           init_params_var: str = "init_params",
                           device_var: str = "device") -> str:
-        """Generates the code that creates impl_model (examples only once).
-
+        """生成创建 impl_model 的代码（只实例化一次）。
+        
         Args:
             framework: Framework name (torch, mindspore, numpy)
             framework_adapter: Framework adapter instance
             init_params_var: Variable name for init_params (default: "init_params")
             device_var: Variable name for device (default: "device")
-
+            
         Returns:
             str: Code string to create impl_model
         """
         code = f"impl_model = ModelNew(*{init_params_var})\n"
         if framework == "torch":
             code += f"impl_model = impl_model.to({device_var})\n"
-
+        
         return code
-
+    
     def call_impl(self, impl_func_name: str, inputs: str, device_id: int,
-                  framework_adapter: Any, op_name: str,
-                  data_dir: Optional[str] = None,
+                  framework_adapter: Any, op_name: str, 
+                  data_dir: Optional[str] = None, 
                   framework_output: Optional[str] = None) -> str:
         """Return code string to call PyPTO implementation function.
 
-        Call ``impl_model`` already sampled.
+        调用已经实例化好的 ``impl_model``。
         """
         return (
             f"impl_output = impl_model(*{inputs})\n"
         )
-
+    
     def benchmark_impl(self, impl_func_name: str, inputs: str,
                       warmup: int, runs: int, backend: str, op_name: str,
                       case_idx: int = 0, framework_model: Optional[str] = None,
@@ -114,21 +128,21 @@ class DSLAdapterPypto(DSLAdapter):
                       device_id: Optional[int] = None,
                       framework: str = "torch") -> str:
         """Return code string to benchmark PyPTO implementation.
-
-        Performance tests are performed using impl_model, which has already been sampled.
-        PyPTO runs on NPU, using NPU programr for performance testing.
+        
+        使用已经实例化好的 impl_model 进行性能测试。
+        PyPTO 运行在 NPU 上，使用 NPU profiler 进行性能测试。
         """
         code = f"""        import os
         import json
         import sys
         import subprocess
         from pathlib import Path
-
-        # Define Performance Test Functions
+        
+        # 定义性能测试函数
         def pypto_benchmark_fn():
             result = impl_model(*{inputs})
             return result
-
+        
         def _calc_trace_span_us(trace_path):
             try:
                 from op_autoresearch import get_project_root
@@ -146,14 +160,14 @@ class DSLAdapterPypto(DSLAdapter):
                 data = json.load(f)
             events = [e for e in data.get("traceEvents", []) if e.get("ph") == "X"]
             if not events:
-                raise RuntimeError("Not found ph==X Events")
+                raise RuntimeError("未找到 ph==X 的事件")
             min_ts = min(float(e.get("ts", 0) or 0) for e in events)
             max_end = max(
                 float(e.get("ts", 0) or 0) + float(e.get("dur", 0) or 0)
                 for e in events
             )
             return max_end - min_ts
-
+        
         def _find_latest_swimlane(base_dir):
             \"\"\"Find merged_swimlane.json from profiler output directory.\"\"\"
             import glob
@@ -182,8 +196,8 @@ class DSLAdapterPypto(DSLAdapter):
             )
 
         if backend == "ascend":
-            # persistent The output directory and log status must be reset at each time in the scene;
-            # Otherwise... pypto Could be reused from last cache output_* subdirectories, which result in files not found for secondary running.
+            # persistent 场景下必须每次重置输出目录与日志状态；
+            # 否则 pypto 可能复用上一次缓存的 output_* 子目录，导致二次运行找不到文件。
             output_dir = os.path.abspath(f"prof_generation_output_case{case_idx}")
             os.environ["TILE_FWK_OUTPUT_DIR"] = output_dir
             os.makedirs(output_dir, exist_ok=True)
@@ -192,7 +206,7 @@ class DSLAdapterPypto(DSLAdapter):
                     pypto.pypto_impl.ResetLog("")
             except Exception as e:
                 print(f"[WARN] pypto ResetLog failed: {{e}}")
-            # PyPTO profile I don't need it. warmup
+            # PyPTO profile 不需要 warmup
             pypto_benchmark_fn()
             trace_path = _find_latest_swimlane(output_dir)
             print(f"[INFO] PyPTO trace path: {{trace_path}}")
@@ -200,7 +214,7 @@ class DSLAdapterPypto(DSLAdapter):
             execution_time_ms = execution_time_us / 1000
             method = "trace_span"
         else:
-            # Simple timer (nil) warmup)
+            # 简单计时方式（无 warmup）
             import time
             times = []
             for _ in range({runs}):
@@ -212,4 +226,4 @@ class DSLAdapterPypto(DSLAdapter):
             method = "simple_timing"
 """
         return code
-
+    

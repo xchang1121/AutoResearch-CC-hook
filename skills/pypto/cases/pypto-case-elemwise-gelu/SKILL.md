@@ -1,6 +1,6 @@
 ---
 name: pypto-case-elemwise-gelu
-description: "Example A: 1D elementwise - GELU activates, displays a handwritten formula, operator when equal, untangible"
+description: "模式 A 示例：1D elementwise — GELU 激活，展示展平、无 tanh 时的手写公式、运算符使用"
 category: example
 version: "1.0.0"
 metadata:
@@ -9,7 +9,7 @@ metadata:
   operator_patterns: "elementwise,activation"
 ---
 
-# Mode A:1D Elementwise — GELU
+# 模式 A：1D Elementwise — GELU
 
 ```python
 def create_gelu_kernel(flat_size):
@@ -29,10 +29,10 @@ def create_gelu_kernel(flat_size):
     return gelu_kernel
 ```
 
-forward:`reshape(-1)` → kernel → `reshape(x.shape)`
+forward：`reshape(-1)` → kernel → `reshape(x.shape)`
 
-## Elements of a model
-- `assert dim + shape`, `reshape(-1)` parsing to 1D in Forward
-- `set_vec_tile_shapes(8192)` — 1D requires only one argument
-- There's no insider than → `(exp(2x)-1)/(exp(2x)+1)` -- note that in `exp_pos - 1.0` Tensor is legal on the left.
-- All `Tensor op scalar` valid; rewrite if `scalar op Tensor` is required
+## 模式要点
+- forward 中 `assert dim + shape`，`reshape(-1)` 展平为 1D
+- `set_vec_tile_shapes(8192)` — 1D 只需一个参数
+- 无内建 tanh → `(exp(2x)-1)/(exp(2x)+1)` — 注意 `exp_pos - 1.0` 中 Tensor 在左，合法
+- 所有 `Tensor op scalar` 合法；若需 `scalar op Tensor` 则改写

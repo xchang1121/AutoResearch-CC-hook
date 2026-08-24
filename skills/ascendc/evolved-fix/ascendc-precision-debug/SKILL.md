@@ -1,50 +1,50 @@
 ---
 name: ascendc-precision-debug
-description: Ascend C operator accuracy debugs skill to provide a diagnosis and solution to the problem of accuracy. Trigger: Output anomalies (all zero, random, uninitialized), accuracy authentication failure (rtol/atol below standard), FP16 accuracy below expectations, post-Cast data error, need to check pipeline Sync (EnQue/DeQue) or DataCopy alignment.
+description: Ascend C 算子精度调试技能，提供精度问题诊断和解决方法。触发：输出异常（全为0、随机值、未初始化）、精度验证失败（rtol/atol 不达标）、FP16 精度差于预期、Cast 后数据错误、需要排查流水线同步（EnQue/DeQue）或 DataCopy 对齐问题。
 ---
 
-# Ascend C operator accuracy debug
+# Ascend C 算子精度调试
 
-## Core concepts
+## 核心理念
 
-> **accuracy debug = Understand + Analyse + Position + Fix**
+> **精度调试 = 理解 + 分析 + 定位 + 修复**
 
-1. **data type limit**: FP16 approximately 3-4 bits, FP32 about 6-7 bits.
-2. **Identification of numerical stability problems**: large-scale consumption of decimals, catastrophic offsetting.
-3. **Mastery of scientific debugging methods**: from minimal recurrence to root cause analysis.
+1. **理解数据类型限制**：FP16 约 3-4 位有效数字，FP32 约 6-7 位。
+2. **识别数值稳定性问题**：大数吃小数、灾难性抵消。
+3. **掌握科学调试方法**：从最小复现到根因分析。
 
-## Time to use
+## 使用时机
 
-**Applicable**: accuracy authentication failed (rtol/atol did not meet the standard), output was all zero or random, FP16 was above FP32, specified range error was large, pipeline synchronized, DataCopy alignment problem.
+**适用**：精度验证失败（rtol/atol 不达标）、输出全为0或随机值、FP16差于FP32、特定数值范围误差大、流水线同步问题、DataCopy对齐问题。
 
 ---
 
-## Debug preset request ⭐ ⭐ ⭐
+## 调试前置要求 ⭐⭐⭐
 
-> Before entering debugging**must**complete the following three steps
+> 进入调试前**必须**完成以下三步
 
-### 1. Fixed Minimum Recoverable Example
+### 1. 固定最小可复现用例
 
-| Item | Annotations | Example: |
+| 项目 | 说明 | 示例 |
 |------|------|------|
-| Shape | tensor shape | `{8, 16}` |
-| Dtype | data type | `float16` |
-| Fixed value | Specific Values | `[1.0, 2.0, -0.5, ...]` |
+| Shape | tensor 形状 | `{8, 16}` |
+| Dtype | 数据类型 | `float16` |
+| 固定值 | 具体数值 | `[1.0, 2.0, -0.5, ...]` |
 
-**Selection principle**: priority simplistic → priority 32 byte alignment → priority FP32 → over boundary values
+**选择原则**：优先简单 → 优先32字节对齐 → 优先FP32 → 覆盖边界值
 
-**💡 Recommended Practice**: Debugging is suggested to be validated with at least two dtypes (e.g. FP16 and FP32)**the same size + the same data**. If one dtype passes through another failure, it can be rapidly reduced to the corresponding diagnostic model below.
+**💡 推荐实践**：调试时建议在至少两个 dtype（如 FP16 和 FP32）上用**同一 shape + 同一数据**验证。如果一种 dtype 通过另一种失败，可按下方对应的诊断模式快速缩小范围。
 
-### 2. Search asc-devkit ⭐
+### 2. 检索 asc-devkit ⭐
 
-> **Intuitive changes to codes are prohibited**
+> **禁止凭直觉修改代码**
 
-**Retrieving order**
-1. Search `asc-devkit/examples/` for similar operator.
-2. View `asc-devkit/docs/api/context/` API documents.
-3. A comparison between official and current achievements.
+**检索顺序**：
+1. 搜索 `asc-devkit/examples/` 查找类似算子。
+2. 查看 `asc-devkit/docs/api/context/` API 文档。
+3. 对比官方实现与当前实现。
 
-### 3. Clear cache and temporary files
+### 3. 清理缓存和临时文件
 
 ```bash
 rm -rf build input output
@@ -53,230 +53,230 @@ mkdir -p build/input build/output
 
 ---
 
-## Quick Decision Tree
+## 快速决策树
 
 ```
-[Precheck] Fixed examples? RetrievedAPI  Cleaned up the cache
+[前置检查] 已固定用例？已检索API？已清理缓存？
     │
-    └─ Yes → Let's finish the pre-step.
-    └─ Yes. → Go on.
+    └─ 否 → 先完成前置步骤
+    └─ 是 → 继续
         │
-        ├─ [I don't think so.0Step] ⭐ The code is changed and the output is completely unchanged?
-        │   ├─ Yes. → Cleaning build/ and kernel_cache Try again after
-        │   └─ Yes → Go on.
+        ├─ [第0步] ⭐ 代码修改后输出完全不变？
+        │   ├─ 是 → 清理 build/ 和 kernel_cache 后重试
+        │   └─ 否 → 继续
         │
-        ├─ [I don't think so.0.5Step] ⭐ More dtype Cross-validation
-        │   ├─ FP32Passed butFP16/BF16Failed → accuracyNot enough. See the diagnosis below.
-        │   ├─ BF16Passed butFP16/FP32Failed → API fallback Path difference or accuracyThreshold differences, see below diagnostic model
-        │   └─ It's all through./Failed All → Go on.
+        ├─ [第0.5步] ⭐ 多 dtype 交叉验证
+        │   ├─ FP32通过但FP16/BF16失败 → 精度不足，见下方诊断模式
+        │   ├─ BF16通过但FP16/FP32失败 → API fallback 路径差异 或 精度阈值差异，见下方诊断模式
+        │   └─ 全部通过/全部失败 → 继续
         │
-        ├─ [Step one.] Checking data handling ⭐⭐⭐
-        │   ├─ Whether the output is all 0 Or a random error?
-        │   │   ├─ Yes. → InspectionpipelineSyncEnQue / DeQue)⭐⭐⭐
-        │   │   │       └─ DataCopy And then straight to the calculations?→ Add EnQue/DeQue
-        │   │   │       └─ Provisional certification: plus PipeBarrier, confirm the sync problem if correct
-        │   │   ├─ Inspection DataCopy Whether or not 32 Byte Alignment
-        │   │   │       └─ Inconsistent → Change DataCopyPad
-        │   │   └─ Check for use GlobalTensor.SetValue
-        │   │           └─ Yes. → Change LocalTensor.SetValue + DataCopyPad Move Out to GM
-        │   └─ Validation: Use "CopyIn → CopyOut" Test handling
+        ├─ [第一步] 排查数据搬运 ⭐⭐⭐
+        │   ├─ 输出是否全为 0 或随机错误？
+        │   │   ├─ 是 → 检查流水线同步（EnQue / DeQue）⭐⭐⭐
+        │   │   │       └─ DataCopy 后直接计算？→ 添加 EnQue/DeQue
+        │   │   │       └─ 临时验证：加 PipeBarrier，若正确则确认同步问题
+        │   │   ├─ 检查 DataCopy 是否 32 字节对齐
+        │   │   │       └─ 非对齐 → 改用 DataCopyPad
+        │   │   └─ 检查是否使用 GlobalTensor.SetValue
+        │   │           └─ 是 → 改用 LocalTensor.SetValue + DataCopyPad 搬出到 GM
+        │   └─ 验证：用 "CopyIn → CopyOut" 测试搬运
         │
-        ├─ [Step two.] Comparative analysis
-        │   └─ Compare official examples with current achievements → Discrepancies detected
+        ├─ [第二步] 对比分析
+        │   └─ 对比官方示例与当前实现 → 发现差异
         │
-        └─ [Step three.] Type of diagnostic problem
-            ├─ All the results are bad. → Formula/Constant/APISelection
-            ├─ Individual value error → Border conditions/Zero./Spill
-            └─ errorThe whole thing is big. → FP16accuracyNot enough. → TryFP32Intermediate calculation
+        └─ [第三步] 诊断问题类型
+            ├─ 所有结果都差 → 公式/常量/API选择
+            ├─ 个别值错误 → 边界条件/除零/溢出
+            └─ 误差整体偏大 → FP16精度不足 → 尝试FP32中间计算
 ```
 
 ---
 
-## Symptoms - causes quick check
+## 症状-原因速查表
 
-| Symptom | Possible causes | Diagnosis |
+| 症状 | 可能原因 | 诊断方向 |
 |------|----------|----------|
-| **Output is all 0 or random error** | pipeline Synchronisation Missing / DataCopy Unmatched / GlobalTensor. SetValue | Check EnQue / DeQue, Data Alignment, Change to LocalTensor. SetValue + DataCopyPad ⭐ ⭐ ⭐ |
-| `sum = 0, max_err = input level ` | The output is not written. | Check output queue type (VECIN vs VECOUT) |
-| `sum=0, max_err≈0` | Output fully 0/ not initialized | Check UB spill, Buffer distribution |
-| `Specific parameters range failed ' | Threshold/Boundary Error | Validate threshold calculation, check branch conditions |
-| `Unmatched data failed ' | DataCopy Alignment Problem | Change to DataCopyPad |
-| {\cHFFFFFF}{\cH00FFFF} {\cHFFFFFF}{\cH00FFFF} {\cHFFFFFF}{\cH00FFFF} {\cHFFFFFF}{\cH00FFFF} {\cHFFFFFF}{\cH00FFFF} | accuracy is inadequate | Intermediate calculation using FP32 |
-| `Cast post-data error ' | RundMode Error | half → float for CAST_NONE, float → half for CAST_ROUND |
-| **BF16 passed but FP16/FP32 failed** | (1) Part API does not support BF16, BF16 takes a simpler fallback path; (2) BF16 does not have the same characteristics as FP16/FP32 accuracy (BF16 matissa 7bit vs FP16 10bit), accuracy threshold or spill behaviour difference | First check for API fallback branch differences, then check if accuracy threshold values (rtol/atol) fit each dtype |
-| **FP32 passed but FP16/BF16 failed** | Half-accuracy calculation of accuracy is insufficient | accuracy: Cast → FP32 Calculates → Cast returns half accuracy |
-| **The output remains completely unchanged with the change in code** | Binary not updated / compiler cache | Cleans up bild/ and $HOMEZ1XQ/ Try again |
+| **输出全为 0 或随机错误** | 流水线同步缺失 / DataCopy 非对齐 / GlobalTensor.SetValue | 检查 EnQue / DeQue、数据对齐、改用 LocalTensor.SetValue + DataCopyPad ⭐⭐⭐ |
+| `sum=0, max_err=输入级别` | 输出没写出 | 检查输出队列类型（VECIN vs VECOUT） |
+| `sum=0, max_err≈0` | 输出全0/未初始化 | 检查 UB 溢出、buffer 分配 |
+| `特定参数范围失败` | 阈值/边界错误 | 验证阈值计算、检查分支条件 |
+| `非对齐数据失败` | DataCopy 对齐问题 | 改用 DataCopyPad |
+| `FP16 差但 FP32 好` | 精度不足 | 中间计算用 FP32 |
+| `Cast 后数据错误` | RoundMode 错误 | half → float用CAST_NONE，float → half用CAST_ROUND |
+| **BF16 通过但 FP16/FP32 失败** | (1) 部分 API 不支持 BF16，BF16 走了更简单的 fallback 路径反而正确；(2) BF16 与 FP16/FP32 精度特性不同（BF16 mantissa 7bit vs FP16 10bit），精度阈值或溢出行为差异 | 先排查 API fallback 分支差异，再检查精度阈值（rtol/atol）是否适配各 dtype |
+| **FP32 通过但 FP16/BF16 失败** | 半精度中间计算精度不足 | 升精度：Cast → FP32 计算 → Cast 回半精度 |
+| **修改代码后输出完全不变** | 二进制未更新 / 编译器缓存 | 清理 build/ 和 $HOME/atc_data/kernel_cache/ 后重试 |
 
-### Diagnosis mode: "FP32 passed but FP16/BF16 failed."
+### 诊断模式："FP32 通过但 FP16/BF16 失败"
 
-This is the most common diagnostic signal for accuracy: FP16/BF16 usually shares the same Cast-to-FP32 calculation path in Ascend C (`if constexpr (std:is_same_v<T, bfloat16_t>) || std::is_same_v<T, half>) ', FP32 by stating that the core algorithm is correct, the problem is at the semi-accuracy conversion point.
-
-```
-Confirm.: FP32It's through.FP16/BF16Failed
-    │
-    ├─ Check Intermediate Calculatoraccuracy
-    │   ├─ FP16/BF16 Cast→FP32 Is the calculation path correct?
-    │   ├─ Is there an outstanding upgrade?accuracy..intermediate (e.g. direct) Add<half>)?
-    │   └─ Authentication: will FP16 All calculations in the middle of the path FP32Watch the results.
-    │
-    ├─ Inspection Cast RoundMode
-    │   ├─ half→float Should be used CAST_NONE
-    │   ├─ float→half Should be used CAST_ROUND
-    │   └─ Authentication: Comparison Cast Values before and after
-    │
-    ├─ Inspection Pipeline Sync
-    │   ├─ FP16/BF16 There's an extra path. Cast Operation,Cast Whether or not after EnQue/DeQue?
-    │   ├─ FP32 Path None Cast, there's no such thing as natural sync.
-    │   └─ Authentication: In Cast Then add PipeBarrier, confirm the sync problem if correct
-    │
-    └─ Inspection Buffer Size
-        ├─ FP16/BF16 Additional path required Cast buffer(2× innerDim × sizeof(float))
-        ├─ FP32 Path not needed Cast buffer
-        └─ Authentication: Inspection Tiling in castBuf Size Count
-```
-
-### Diagnosis mode: "BF16 passed, but FP16/FP32 failed."
-
-This is a valuable diagnostic signal, which may result from two types of causes:
-
-**Reason 1: API does not support the resulting fallback path difference**. Part Ascend C arithmetic/ reporting API does not support BF16, the developer achieves a simpler fallback path for BF16. BF16 fallback uses the complex API called in the FP16/FP32 path by stating that the logic is correct.
-
-**Reason 2: accuracy threshold / range difference**. BF16 (mantissa 7bit, index range equal to FP32) and FP16 (mantissa 10bit, index range smaller) accuracy characteristics: BF16 is not easy to spill but the tail number accuracy is low, FP16 is easy to spill but the tail number accuracy is high. If the verification threshold (rtol / atol) is not differentiated, or if the spill of FP16 does not occur and BF16 does not exist, then BF16 has passed but failed.
+这是最常见的精度诊断信号：FP16/BF16 在 Ascend C 中通常共享相同的 Cast-to-FP32 计算路径（`if constexpr (std::is_same_v<T, bfloat16_t> || std::is_same_v<T, half>)`），FP32 通过说明核心算法正确，问题在半精度转换环节。
 
 ```
-Confirm.: BF16It's through.FP16/FP32Failed
+确认: FP32通过，FP16/BF16失败
     │
-    ├─ [Reason1] API fallback Path Difference
-    │   ├─ Searching code if constexpr (std::is_same_v<T, bfloat16_t>) Branch
-    │   ├─ BF16 Let's go. fallback Path vs FP16/FP32 Where's the difference in the main path?
-    │   ├─ List FP16 / FP32 Use in path but BF16 Path not used API
-    │   ├─ Verify differences on a case-by-case basis API Parameters (%2)mask,repeatTime,stride)
-    │   └─ Temporary General FP16 The path should read BF16 Same. fallback Achieved and observed through
+    ├─ 检查中间计算精度
+    │   ├─ FP16/BF16 Cast→FP32 计算路径是否正确？
+    │   ├─ 是否有未升精度的中间运算（如直接 Add<half>）？
+    │   └─ 验证：将 FP16 路径的中间计算全部用 FP32，观察结果
     │
-    ├─ [Reason2] accuracythreshold / Difference in range of values
-    │   ├─ FP16 Is it spilling?FP16 max ≈ 65504,BF16 Index range equal FP32)
-    │   ├─ Validate threshold (%2)rtol/atol) Whether to press dtype Distinction?
-    │   │   ├─ BF16: rtol=1e-2 Level (%1)mantissa only 7bit)
-    │   │   └─ FP16: rtol=1e-3 Level (%1)mantissa 10bit)
-    │   └─ Check if the intermediate calculation is due FP16 HigheraccuracyThe request exposed the algorithm's flaws.
+    ├─ 检查 Cast RoundMode
+    │   ├─ half→float 应使用 CAST_NONE
+    │   ├─ float→half 应使用 CAST_ROUND
+    │   └─ 验证：对比 Cast 前后的数值
     │
-    └─ Cross-validation
-        ├─ Inspection asc-devkit Document confirmation relevant API Supported or not BF16
-        ├─ If... API Not supported BF16 → Prioritize by cause1Check it out.
-        └─ If... API Support BF16(BF16/FP16 Go the same path)→ Prioritize by cause2Check it out.
+    ├─ 检查 Pipeline 同步
+    │   ├─ FP16/BF16 路径有额外的 Cast 操作，Cast 后是否 EnQue/DeQue？
+    │   ├─ FP32 路径无 Cast，天然无此同步问题
+    │   └─ 验证：在 Cast 后加 PipeBarrier，若正确则确认同步问题
+    │
+    └─ 检查 Buffer 大小
+        ├─ FP16/BF16 路径需额外 Cast buffer（2× innerDim × sizeof(float)）
+        ├─ FP32 路径不需要 Cast buffer
+        └─ 验证：检查 Tiling 中 castBuf 大小计算
+```
+
+### 诊断模式："BF16 通过，但 FP16/FP32 失败"
+
+这是一个有价值的诊断信号，可能由两类原因导致：
+
+**原因1：API 不支持导致 fallback 路径差异**。部分 Ascend C 算术/归约 API 不支持 BF16，开发者为 BF16 实现更简单的 fallback 路径。BF16 fallback 通过说明逻辑正确，问题出在 FP16/FP32 路径中调用的复杂 API 上。
+
+**原因2：精度阈值 / 数值范围差异**。BF16 (mantissa 7bit, 指数范围同 FP32) 与 FP16 (mantissa 10bit, 指数范围更小) 精度特性不同：BF16 不易溢出但尾数精度低，FP16 易溢出但尾数精度高。如果验证阈值（rtol / atol）未区分适配，或 FP16 发生溢出而 BF16 没有，就会出现 BF16 通过但 FP16 失败。
+
+```
+确认: BF16通过，FP16/FP32失败
+    │
+    ├─ [原因1] API fallback 路径差异
+    │   ├─ 搜索代码中 if constexpr (std::is_same_v<T, bfloat16_t>) 分支
+    │   ├─ BF16 走的 fallback 路径 vs FP16/FP32 走的主路径，差异在哪里？
+    │   ├─ 列出 FP16 / FP32 路径中使用但 BF16 路径未使用的 API
+    │   ├─ 逐个验证差异 API 的参数（mask、repeatTime、stride）
+    │   └─ 临时将 FP16 路径改为与 BF16 相同的 fallback 实现，观察是否通过
+    │
+    ├─ [原因2] 精度阈值 / 数值范围差异
+    │   ├─ FP16 是否溢出？（FP16 max ≈ 65504，BF16 指数范围同 FP32）
+    │   ├─ 验证阈值（rtol/atol）是否按 dtype 区分？
+    │   │   ├─ BF16: rtol=1e-2 级别（mantissa 仅 7bit）
+    │   │   └─ FP16: rtol=1e-3 级别（mantissa 10bit）
+    │   └─ 检查中间计算是否因 FP16 的更高精度要求暴露了算法缺陷
+    │
+    └─ 交叉验证
+        ├─ 检查 asc-devkit 文档确认相关 API 是否支持 BF16
+        ├─ 如果 API 不支持 BF16 → 优先按原因1排查
+        └─ 如果 API 支持 BF16（BF16/FP16 走相同路径）→ 优先按原因2排查
 ```
 
 ---
 
-## Common trap-search.
+## 常见陷阱速查
 
-| A trap. | Symptom | Solutions |
+| 陷阱 | 症状 | 解决方案 |
 |-----|------|----------|
-| **pipeline sync is missing** | Output all 0 or random error | DataCopy must be followed by EnQue/ DeQue Sync ⭐ ⭐ ⭐ |
-| **DataCopy Unmatched** | Small-scale data full of 0/Abnormal | Use DataCopyPad ⭐ ⭐ ⭐ |
-| **GlobalTensor.SetValue** | All output is 0 | Move to GM ⭐ ⭐ ⭐ with LocalTensor. SetValue + DataCopyPad |
-| **Cast RoundMode** | Post-Cast data mess. | half→float for CAST_NONE, float→half for CAST_ROUND ⭐ |
-| FP16 accuracy is inadequate | Simple calculations have error. | Critical middle value FP32 |
-| Exp/ log spill | Show Inf or NN | Minus the maximum and then calculate. |
-| Subtract offset | When a ≈b is a-b error big | Use a numerically stable equivalent formula |
-| Reduce error | Reduce, the result is bigger than the element by element, error. | Use FP32 loader |
-| Zero risk. | NN or abnormally large | Add epsilon protection |
+| **流水线同步缺失** | 输出全0或随机错误 | DataCopy 后必须 EnQue/DeQue 同步 ⭐⭐⭐ |
+| **DataCopy 非对齐** | 小规模数据全0/异常 | 使用 DataCopyPad ⭐⭐⭐ |
+| **GlobalTensor.SetValue** | 输出全为0 | 改用 LocalTensor.SetValue + DataCopyPad 搬出到 GM ⭐⭐⭐ |
+| **Cast RoundMode** | Cast后数据混乱 | half→float用CAST_NONE，float→half用CAST_ROUND ⭐ |
+| FP16 精度不足 | 简单计算也有误差 | 关键中间值用 FP32 |
+| exp/log 溢出 | 出现 Inf 或 NaN | 先减最大值再计算 |
+| 减法抵消 | a≈b 时 a-b 误差大 | 使用数值稳定等价公式 |
+| Reduce 误差 | Reduce 结果比逐元素误差大 | 使用 FP32 累加器 |
+| 除零风险 | NaN 或异常大值 | 添加 epsilon 保护 |
 
-### pipeline Synchronization Debug
+### 流水线同步调试
 
-**Core issue**: DataCopy / DataCopyPad is an anecdotal DMA operation, doing Vector calculations directly on moving data and possibly reading incomplete data!
+**核心问题**：DataCopy / DataCopyPad 是异步 DMA 操作，直接在搬运后的数据上做 Vector 计算可能读到未完成的数据！
 
 ```cpp
-// ❌ error: direct after AllocTensor
+// ❌ 错误：AllocTensor 后直接用
 LocalTensor<T> x = inQueue.AllocTensor<T>();
 DataCopy(x, gm, size);
-Compute(x);  // Wrong. Probably read the data on the uncompleted removal.
+Compute(x);  // 错！可能读到未完成搬运的数据
 
-// ✅ Correct: DeQue to calculate later
+// ✅ 正确：DeQue 后再计算
 LocalTensor<T> x = inQueue.AllocTensor<T>();
 DataCopy(x, gm, size);
 inQueue.EnQue(x);
-LocalTensor<T> xIn = inQueue.DeQue<T>();  // Waiting for removal to complete
+LocalTensor<T> xIn = inQueue.DeQue<T>();  // 等待搬运完成
 Compute(xIn);
 ```
 
-**Provisional debugging method**:
+**临时调试方法**：
 ```cpp
 DataCopy(x, gm, size);
-PipeBarrier<PIPE_ALL>();  // Temporary plus, if the result correctly indicates the problem of synchronization
+PipeBarrier<PIPE_ALL>();  // 临时加，如果结果正确说明是同步问题
 Compute(x);
 ```
 
-**If Pipe Barrier can solve the problem, it means synchronization.**→ Rehabilitation Program: change to EnQue/ DeQue Mechanism
+**如果 PipeBarrier 能解决问题，说明是同步问题** → 修复方案：改为 EnQue/DeQue 机制
 
-| Error | Get it right. |
+| 误区 | 正确理解 |
 |-----|---------|
-| Data is available after AllocTensor | AllocTensor only assigns memory without waiting for removal. |
-| DataCopy. It's synchronized. | DataCopy is a step away. DMA, return immediately. |
-| No, EnQue/DeQue can work. | Must sync with EnQue/ DeQue or PipeBarrier |
-| Pipe Barrier, good performance. | Pipe Barrier, full pipeline pause, performance poor. |
+| AllocTensor 后数据就可用 | AllocTensor 只分配内存，不等待搬运 |
+| DataCopy 是同步的 | DataCopy 是异步 DMA，立即返回 |
+| 不用 EnQue/DeQue 也能正常工作 | 必须用 EnQue/DeQue 或 PipeBarrier 同步 |
+| PipeBarrier 性能好 | PipeBarrier 是全流水线停顿，性能差 |
 
-For further details, see[references/common-traps.md](references/common-traps.md)
-
----
-
-## Debug Policy Level
-
-```
-Debug Method
-    │
-    ├─ A fast-track approach (prior to trying),≤7(a) Number of reports
-    │   ├─ errorDistribution analysis → IdentificationerrorMode
-    │   ├─ Printf Organisation → Zoom Out
-    │   ├─ DumpTensor 7Step → kernel Interpolation stake + CPU golden Paragraph-by-paragraph comparison ⭐
-    │   └─ Common trap screening. → It's a drug.
-    │
-    └─ Secondary debugging (feasibility)
-        └─ Quick Method Attempt≥7Switch as soon as the second or method is exhausted
-```
-
-> **Key principle**: do not try blindly more than 7 times
-
-### DumpTensor 7 Steps
-
-kernel interpolation debugging standard tool: insert `DumpTensor` at the CopyIn / Compute / CopyOut key point, matching CPU gold with the paragraph-by-paragraph desc number (100 /200/300) and fast-tracking anomalies at which stage of the data stream. Application: Output error, NaN/Inf, need to track the data at all stages of the CopyIn → Comte → CopyOut.
-
-For further details, see[references/ascendc-dumptensor.md](references/ascendc-dumptensor.md)
+详细说明见 [references/common-traps.md](references/common-traps.md)
 
 ---
 
-## Problem positioning methods
+## 调试策略层级
 
-### 1. Contrast method (comparison to working code)
+```
+调试方法
+    │
+    ├─ 快速方法（优先尝试，≤7次）
+    │   ├─ 误差分布分析 → 识别误差模式
+    │   ├─ Printf 特定位置 → 缩小范围
+    │   ├─ DumpTensor 7步法 → kernel 内插桩 + CPU golden 逐段对比 ⭐
+    │   └─ 常见陷阱排查 → 对症下药
+    │
+    └─ 二分调试（保底手段）
+        └─ 快速方法尝试≥7次或方法穷尽时立即切换
+```
 
-Finds the normal working code, compares the differences by line
+> **重要原则**：不要盲目试错超过 7 次
 
-### 2. Boundary dichotomy
+### DumpTensor 7步法
 
-Record critical points of passage/failure, analyze branch selection
+kernel 内插桩调试的标准工具：在 CopyIn / Compute / CopyOut 关键点插入 `DumpTensor`，配合 CPU golden 同 desc 编号 (100/200/300) 逐段对比，快速定位异常出现在数据流哪一阶段。适用：输出错误、NaN/Inf、需要追踪 CopyIn → Compute → CopyOut 各阶段数据。
 
-### 3. Numerical Authentication Method
+详细说明见 [references/ascendc-dumptensor.md](references/ascendc-dumptensor.md)
 
-Do not believe in the formula, use the code to calculate the actual value.
+---
 
-### 4. Buffer Debug Elements
+## 问题定位方法
 
-| Problem | Performance | Solutions |
+### 1. 对比法（与工作的代码对比）
+
+找到正常工作的代码，逐行对比差异
+
+### 2. 边界二分法
+
+记录通过/失败的临界点，分析分支选择
+
+### 3. 数值验证法
+
+不要相信估算公式，用代码计算实际值
+
+### 4. Buffer 调试要点
+
+| 问题 | 表现 | 解决方案 |
 |------|------|----------|
-| VECIN for output | Output equals input | The output must be queued with VECOUT |
-| Double Buffer | Threshold error | ×2 when calculating thresholds |
+| VECIN 用于输出 | 输出等于输入 | 输出必须用 VECOUT 队列 |
+| Double Buffer 漏算 | 阈值错误 | 计算阈值时 ×2 |
 
-See the detailed location process at [references/diagnosis-workflow.md] (references/diagnosis-workflow.md)
+详细定位流程见 [references/diagnosis-workflow.md](references/diagnosis-workflow.md)
 
 ---
 
-## accuracy standard source priority
+## 精度标准来源优先级
 
-1. **Priority 1**: well-defined accuracy requirements in operator Development Plan
-2. **Priority 2**: China for official accuracy standard document
-3. **Priority 3**: This Skill Default (Faceground only)
+1. **优先级1**：算子开发 Plan 中明确的精度要求
+2. **优先级2**：华为昇腾官方精度标准文档
+3. **优先级3**：本 Skill 默认值（仅作兜底）
 
-| data type | rtol | atol |
+| 数据类型 | rtol | atol |
 |---------|------|------|
 | FP16 | 1e-3 | 1e-4 |
 | FP32 | 1e-5 | 1e-6 |
@@ -284,52 +284,52 @@ See the detailed location process at [references/diagnosis-workflow.md] (referen
 
 ---
 
-## Agent User Guide
+## Agent 使用指南
 
-### Debug count rules
+### 调试计数规则
 
 ```
-Counter = 0
-Every time you try a fast-track method,errorAnalysis/Printf/Tighten up the trap.→ Counter+1
-Time counter >= 7 Or the fast-track approach is exhausted. → Toggle Debugging Now
+计数器 = 0
+每次尝试快速方法（误差分析/Printf/陷阱排查）→ 计数器+1
+当 计数器 >= 7 或 快速方法穷尽 → 立即切换二分调试
 ```
 
-> **Empirical proposal for 💡**: if repeated attempts do not make progress (the number of failed examples does not decrease), it is recommended that:
-> 1. Check if compiled caches (`rm -rf build/ $HOME/atc_data/kernel_cache/`) have been cleared
-> 2. Verify if modified binary sh256 really changes
-> 3. Switch to a completely different debug strategy (e.g., binary downgrade to minimum working path)
+> **💡 经验建议**：如果多次尝试未取得进展（失败用例数量未减少），建议：
+> 1. 检查是否清理了编译缓存（`rm -rf build/ $HOME/atc_data/kernel_cache/`）
+> 2. 验证修改后二进制 sha256 是否确实改变
+> 3. 切换到完全不同的调试策略（如二分法降级到最小工作路径）
 
-### Debugging summary requirements
+### 调试总结要求
 
-### Checklist
+### 检查清单
 
-**Debug phase**:
-- [ ] Fixed Minimum Recoverable Example
-- [ ] Retrieval asc-devkit confirmed API usage ⭐
-- [ ] Cleared caches and temporary files
-- [ ] **Pipeline synchronization issue** (`DataCopy` ordering around `EnQue`/`DeQue`) ⭐⭐⭐
-- [ ] **Zero-initialization issue** (`DataCopy` alignment or `GlobalTensor.SetValue` → `LocalTensor.SetValue` + `DataCopyPad`) ⭐⭐⭐
-- [ ] Compare official examples with current achievements
-- [ ] Number of attempts < 7
-- [ ] Toggle diagonal debugging immediately to the threshold
+**调试阶段**：
+- [ ] 已固定最小可复现用例
+- [ ] 已检索 asc-devkit 确认 API 用法 ⭐
+- [ ] 已清理缓存和临时文件
+- [ ] **已排查流水线同步问题**（DataCopy 后是否 EnQue/DeQue）⭐⭐⭐
+- [ ] **已排查输出全为 0 问题**（DataCopy 对齐 / GlobalTensor.SetValue → LocalTensor.SetValue + DataCopyPad）⭐⭐⭐
+- [ ] 对比官方示例与当前实现
+- [ ] 尝试次数 < 7
+- [ ] 达到阈值立即切换二分调试
 
 ---
 
-## References
+## 参考资料
 
-### Workflow
-- [diagnosis-workflow.md] (references/diagnosis-workflow.md) - Full diagnostic workflow
-- [binary-search-debug.md] (references/binary-search-debug.md) - Debug Detailed Guide
+### 工作流程
+- [diagnosis-workflow.md](references/diagnosis-workflow.md) - 完整诊断工作流程
+- [binary-search-debug.md](references/binary-search-debug.md) - 二分调试详细指南
 
-### Problem diagnosis
-- [common-traps.md] (references/common-traps.md) - Common accuracy trap
-- [best-practices.md] (references/best-practices.md) - best practice
+### 问题诊断
+- [common-traps.md](references/common-traps.md) - 常见精度陷阱详解
+- [best-practices.md](references/best-practices.md) - 最佳实践
 
-### Debug Tool
-- [printf-debug.md] (references/printf-debug.md) - Printf debugging
-- [data-comparison.md] (references/data-comparison.md) - Data Contrast
-- [tools-reference.md] (references/tools-reference.md) - Tool and Command Reference
-- [ascendc-dumptensor.md] (references/ascendc-dumptensor.md) - DumpTensor 7-step method (includes API, error mode)
+### 调试工具
+- [printf-debug.md](references/printf-debug.md) - Printf 调试法
+- [data-comparison.md](references/data-comparison.md) - 数据对比法
+- [tools-reference.md](references/tools-reference.md) - 工具和命令参考
+- [ascendc-dumptensor.md](references/ascendc-dumptensor.md) - DumpTensor 7步法（含 API、错误模式）
 
-### Field cases
-- [case-studies.md] (references/case-studies.md) - Field debugging case
+### 实战案例
+- [case-studies.md](references/case-studies.md) - 实战调试案例

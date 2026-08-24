@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Huawei Technologies Co., Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """CANN-Bench format verification project generator.
 
 Responsibilities:
@@ -52,8 +66,8 @@ CANN_DATA_FILES = ["proto.yaml", "golden.py", "cases.yaml"]
 def generate_cann_verify_project(verifier, impl_code: str, verify_dir: str, device_id: int = 0):
     """Generate CANN-Bench verification project files into verify_dir."""
     logger.info(
-        f"[{verifier.op_name}] Start Generating CANN-Bench Validation of projects,"
-        f"Contents: {verify_dir}, device_id={device_id}"
+        f"[{verifier.op_name}] 开始生成 CANN-Bench 验证项目，"
+        f"目录: {verify_dir}, device_id={device_id}"
     )
 
     cann_problem_dir = verifier.config.get("cann_problem_dir")
@@ -99,14 +113,14 @@ def generate_cann_verify_project(verifier, impl_code: str, verify_dir: str, devi
             dsl_adapter = get_dsl_adapter(verifier.dsl)
             import_statements = dsl_adapter.get_import_statements(verifier.framework)
         except Exception as e:
-            logger.error(f"[{verifier.op_name}] DSL importstatement generation failed: {e}")
+            logger.error(f"[{verifier.op_name}] DSL import语句生成失败: {e}")
             raise
 
         try:
             with open(impl_file, "w", encoding="utf-8") as f:
                 f.write(import_statements + impl_code)
         except Exception as e:
-            logger.error(f"[{verifier.op_name}] Failed to achieve file creation: {impl_file}, Error: {e}")
+            logger.error(f"[{verifier.op_name}] 实现文件创建失败: {impl_file}, 错误: {e}")
             raise
 
     # 4. Load proto.yaml for template rendering
@@ -129,7 +143,7 @@ def generate_cann_verify_project(verifier, impl_code: str, verify_dir: str, devi
         with open(template_path, "r", encoding="utf-8") as f:
             template = Template(f.read())
     except Exception as e:
-        logger.error(f"[{verifier.op_name}] Failed to load template file: {template_path}, Error: {e}")
+        logger.error(f"[{verifier.op_name}] 模板文件加载失败: {template_path}, 错误: {e}")
         raise
 
     try:
@@ -137,7 +151,7 @@ def generate_cann_verify_project(verifier, impl_code: str, verify_dir: str, devi
         dsl_adapter = get_dsl_adapter(verifier.dsl)
         backend_adapter = get_backend_adapter(verifier.backend)
     except Exception as e:
-        logger.error(f"[{verifier.op_name}] AdaptersInitialization failed: {e}")
+        logger.error(f"[{verifier.op_name}] Adapters初始化失败: {e}")
         raise
 
     try:
@@ -193,7 +207,7 @@ def generate_cann_verify_project(verifier, impl_code: str, verify_dir: str, devi
             f.write(verify_script)
 
     except Exception as e:
-        logger.error(f"[{verifier.op_name}] Authentication script generation failed: {e}")
+        logger.error(f"[{verifier.op_name}] 验证脚本生成失败: {e}")
         raise
 
 
@@ -210,8 +224,8 @@ def generate_cann_profile_project(verifier, verify_dir: str, device_id: int = 0,
     warmup_times = resolve_warmup_times(warmup_times)
     run_times = resolve_run_times(run_times)
     logger.info(
-        f"[{verifier.op_name}] Start Generating CANN-Bench The performance test project,"
-        f"Contents: {verify_dir}, device_id={device_id}"
+        f"[{verifier.op_name}] 开始生成 CANN-Bench 性能测试项目，"
+        f"目录: {verify_dir}, device_id={device_id}"
     )
 
     cann_problem_dir = verifier.config.get("cann_problem_dir")
@@ -276,15 +290,15 @@ def generate_cann_profile_project(verifier, verify_dir: str, device_id: int = 0,
             base_path = os.path.join(verify_dir, f"profile_{verifier.op_name}_base.py")
             with open(base_path, "w", encoding="utf-8") as f:
                 f.write(base_script)
-            logger.info(f"[{verifier.op_name}] CANN base profile Script written: {base_path}")
+            logger.info(f"[{verifier.op_name}] CANN base profile 脚本已写入: {base_path}")
         except Exception as e:
-            logger.error(f"[{verifier.op_name}] CANN base profile Script Generation Failed: {e}")
+            logger.error(f"[{verifier.op_name}] CANN base profile 脚本生成失败: {e}")
             raise
     else:
-        logger.info(f"[{verifier.op_name}] Skip CANN base profile Generateskip_base=True)")
+        logger.info(f"[{verifier.op_name}] 跳过 CANN base profile 生成（skip_base=True）")
 
     if not profile_generation_enabled:
-        logger.info(f"[{verifier.op_name}] Skip CANN generation profile Generate (Previous round) verify Not adopted)")
+        logger.info(f"[{verifier.op_name}] 跳过 CANN generation profile 生成（上一轮 verify 未通过）")
         return
 
     common_vars = _get_cann_common_template_vars(verifier, device_id)
@@ -310,9 +324,9 @@ def generate_cann_profile_project(verifier, verify_dir: str, device_id: int = 0,
         gen_path = os.path.join(verify_dir, f"profile_{verifier.op_name}_generation.py")
         with open(gen_path, "w", encoding="utf-8") as f:
             f.write(gen_script)
-        logger.info(f"[{verifier.op_name}] CANN generation profile Script written: {gen_path}")
+        logger.info(f"[{verifier.op_name}] CANN generation profile 脚本已写入: {gen_path}")
     except Exception as e:
-        logger.error(f"[{verifier.op_name}] CANN generation profile Script Generation Failed: {e}")
+        logger.error(f"[{verifier.op_name}] CANN generation profile 脚本生成失败: {e}")
         raise
 
 

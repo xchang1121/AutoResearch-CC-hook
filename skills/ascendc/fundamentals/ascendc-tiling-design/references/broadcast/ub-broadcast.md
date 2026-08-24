@@ -1,166 +1,166 @@
-# Broadcast - UB Broadcast static interface (DAV_2201)
+# Broadcast - UB Broadcast 静态接口（DAV_2201）
 
-> **Applied scene**: Multi-dimensional after axle, there are inputs that need to be broadcast. The `Broadcast()` static interface is used to expand the → calculation by moving to raw data → UB. Only rank=1/2, axis=0/1 is supported.
+> **适用场景**: 合轴后多维，存在需要广播的输入。搬入原始数据 → UB 内用 `Broadcast()` 静态接口扩展 → 计算。仅支持 rank=1/2、axis=0/1。
 >
-> **DAV_3510**It is suggested to use dynamic interfaces (rank 1-9, no alignment limit), as detailed in [dynamic-ub-broadcast.md] (dynamic-ub-broadcast.md).
+> **DAV_3510** 建议使用动态接口（rank 1~9，无对齐限制），详见 [dynamic-ub-broadcast.md](dynamic-ub-broadcast.md)。
 
 ---
 
-## I. SPECIFIC STATE
+## 一、分支特征
 
-| Features | Annotations |
+| 特征 | 说明 |
 |------|------|
-| **Post-axis dimensions** | > 1 D |
-| **Broadcasting mode** | Move to unbroadcast data, UB in call `Broadcast()` API extension |
-| **Data continuity** | Enter consecutively, but each input different (radio axle dim=1) |
-| **Calculated** | vector equal size to output file |
+| **合轴后维度** | > 1 维 |
+| **广播方式** | 搬入未广播数据，UB 内调用 `Broadcast()` API 扩展 |
+| **数据连续性** | 输入连续，但各输入 shape 不同（广播轴 dim=1） |
+| **计算结果** | 与输出 tile 等大小的向量 |
 
 ---
 
-## II. Decision-making on broadcasting
+## 二、广播方式决策
 
 ```
-⚠️ Align judgment with original shape Dimension Value × sizeof(T)No, it's not. DataCopyPad Move UB Back-to-back!
-   Example:srcShape[1]=37, 37×4=148B → No, it's not. 32B Multiplier → Unsatisfied constraints
-   Even after `DataCopyPad`, the UB row width is 160B and still violates the constraint.
+⚠️ 对齐判断用原始 shape 维度值 × sizeof(T)，不是 DataCopyPad 搬到 UB 后的对齐值！
+   例：srcShape[1]=37, 37×4=148B → 不是 32B 倍数 → 不满足约束
+   即使 DataCopyPad 搬入后 UB 上补齐到 160B，仍不满足
 
-Broadcast Inputsstride=0 Axis:
+广播输入（stride=0 的轴）：
   │
-  ├─ axis=-1((M,1)→(M,N))?
-  │   ├─ Satisfied Broadcast Static interface binding ()srcShape[0] × sizeof(T) Yes. 32B How many?
-  │   │   └─ YES → Broadcast Static interface(s)§(iv)
+  ├─ axis=-1（(M,1)→(M,N)）？
+  │   ├─ 满足 Broadcast 静态接口约束（srcShape[0] × sizeof(T) 是 32B 倍数）？
+  │   │   └─ YES → Broadcast 静态接口（§四）
   │   │
-  │   └─ NO → M > 2?
-  │       ├─ YES → DataCopyPad dummy Fill + Copy + GatherMask(§3.1)
-  │       └─ NO(M≤2) → Line-by-line Duplicate Expand
+  │   └─ NO → M > 2？
+  │       ├─ YES → DataCopyPad dummy 填充 + Copy + GatherMask（§3.1）
+  │       └─ NO（M≤2） → 逐行 Duplicate 展开
   │
-  ├─ axis=-2((1,N)→(M,N))?
-  │   ├─ Satisfied Broadcast Static interface binding ()srcShape[1] × sizeof(T) Yes. 32B How many?
-  │   │   └─ YES → Broadcast Static interface(s)§(iv)
+  ├─ axis=-2（(1,N)→(M,N)）？
+  │   ├─ 满足 Broadcast 静态接口约束（srcShape[1] × sizeof(T) 是 32B 倍数）？
+  │   │   └─ YES → Broadcast 静态接口（§四）
   │   │
-  │   └─ NO → Copy Line Copy + GatherMask(§3.2)
-  │            This is not a good idea.DataCopyPad After moving in, UB already 32B Alignment
+  │   └─ NO → Copy 行复制 + GatherMask（§3.2）
+  │            无对齐限制，DataCopyPad 搬入后 UB 已 32B 对齐
   │
-  └─ Other → Broadcast Static interface(s)§(iv)
+  └─ 其他 → Broadcast 静态接口（§四）
 ```
 
 ---
 
-## III. Efficacy of handling command broadcasting
+## 三、搬运指令广播优化
 
-Broadcast API was replaced by DataCopyPad + Copy + GatherMask, and tmpBuffer was used to carry running water to complete the broadcast.
+利用 DataCopyPad + Copy + GatherMask 替代 Broadcast API，省 tmpBuffer，搬运流水完成广播。
 
-### 3.1 axis =-1 Broadcast: DataCopyPad dummy fill
+### 3.1 axis=-1 广播：DataCopyPad dummy 填充
 
-**Applicable scene**: most kernel dim=1 broadcast to dim=N, e.g. `(13, 1)` → `(13, 37)`
+**适用场景**：最内维 dim=1 广播到 dim=N，如 `(13, 1)` → `(13, 37)`
 
-**Rationale**: DataCopyPad fills the dummy data with**lead element value**of the source data block when `blockLen` is under 32B alignment. `blockLen = sizeof(T)` (one element) fills 32B (float: 1→8).
+**原理**：DataCopyPad 在 `blockLen` 不足 32B 对齐时，用源数据块的**首元素值**填充 dummy 数据。`blockLen = sizeof(T)`（单个元素），自动用该元素值填充到 32B（float: 1→8 个）。
 
-**Example**(dtype=float):
+**示例**（dtype=float）：
 
 ```
-Step 1: DataCopyPad Move in (%1)blockLen=4B, blockCount=13)
-  GM [0] → UB: [0,0,0,0,0,0,0,0]   ← 32B,8 Same one. float
+Step 1: DataCopyPad 搬入（blockLen=4B, blockCount=13）
+  GM [0] → UB: [0,0,0,0,0,0,0,0]   ← 32B，8 个相同 float
   GM [1] → UB: [1,1,1,1,1,1,1,1]
   ...
   GM [12]→ UB: [12,12,...,12]
-  Got it. UB Let's go. (13, 8) Data
+  得到 UB 上 (13, 8) 的数据
 
-Step 2: Copy Expand the width of the target(s)srcStride=0 Repeat the same. 8 Elements)
+Step 2: Copy 扩展到目标宽度（srcStride=0 重复读同一 8 元素）
   (13, 8) → (13, 40)              ← 40 = ceil(37/8)*8
 
-Step 3: GatherMask Crop to a valid width
-  (13, 40) → (13, 37)             ← Get rid of the tail. 3 A spare element.
+Step 3: GatherMask 裁剪到有效宽度
+  (13, 40) → (13, 37)             ← 去掉尾部 3 个多余元素
 ```
 
-### 3.2 axis=2 Broadcast: Copy Row Copy
+### 3.2 axis=-2 广播：Copy 行复制
 
-**Applicable scene**: 2nd-dimensional dim = 1 broadcast to dim = M, e.g. `(1, 37)` → `(13, 37)`
+**适用场景**：倒数第二维 dim=1 广播到 dim=M，如 `(1, 37)` → `(13, 37)`
 
-**Rationale**: Copy the line to the number of the target lines using Copy, then crop the GatherMask.
+**原理**：使用 Copy 将该行复制到目标行数，再 GatherMask 裁剪。
 
-**Example**(dtype=float):
+**示例**（dtype=float）：
 
 ```
-Step 1: DataCopyPad Move in 1 LineblockLen=37*4=148B, blockCount=1)
-  GM [0..36] → UB: [0,1,...,36, ?,?,?]   ← 160B(32B I'm not sure I can do that.40 individual float
+Step 1: DataCopyPad 搬入 1 行（blockLen=37*4=148B, blockCount=1）
+  GM [0..36] → UB: [0,1,...,36, ?,?,?]   ← 160B（32B 对齐），40 个 float
 
-Step 2: Copy Copy to Target Lines (%1)srcStride=0 Repeat the same line)
+Step 2: Copy 复制到目标行数（srcStride=0 重复读同一行）
   (1, 40) → (13, 40)
 
-Step 3: GatherMask Crop each line to a valid width
+Step 3: GatherMask 裁剪每行到有效宽度
   (13, 40) → (13, 37)
 ```
 
-### Involving API
+### 涉及 API
 
-| API | Purpose |
+| API | 用途 |
 |-----|------|
-| `DataCopyPad` | GM→UB, axis=1 fill with dummy; axis=2 move to single line (automatic 32B alignment) |
-| `Copy` | UB Inner Removal, srcStride=0 Repeat reading to achieve row/column extensions |
-| `GatherMask` | Press mask to select a valid element and crop to the actual width |
+| `DataCopyPad` | GM→UB，axis=-1 利用 dummy 填充；axis=-2 搬入单行（自动 32B 对齐） |
+| `Copy` | UB 内搬运，srcStride=0 重复读实现行/列扩展 |
+| `GatherMask` | 按 mask 选取有效元素，裁剪到实际宽度 |
 
-### Advantages
+### 优势
 
-- No Broadcast API, tmpBuffer
-- The handling instructions are broadcast, the running water can be transported in parallel with the calculating of the running water.
+- 不调用 Broadcast API，省 tmpBuffer
+- 搬运指令完成广播，搬运流水和计算流水可并行
 
 ---
 
-## IV. Broadcast static interface
+## 四、Broadcast 静态接口
 
-DAV_2201/DAV_3510 is available, but DAV_3510 recommends that priority be given to the dynamic interface (see the initial link). dim and axis support only 1D/2D, axis=0 or 1.
+DAV_2201/DAV_3510 均可使用，但 DAV_3510 建议优先使用动态接口（见文首链接）。dim 和 axis 为编译期模板参数，仅支持 1D/2D、axis=0 或 1。
 
 ```cpp
-// dim: tensor dimension (1 or 2)
-// axis: broadcast dimensions (0 or 1)
+// dim: tensor 维度（1 或 2）
+// axis: 广播维度（0 或 1）
 Broadcast<T, dim, axis>(dstLocal, srcLocal, dstShape, srcShape, tmpBuffer);
-// or framework automatically apply for a temporary space version (tmpBuffer without manual management)
+// 或框架自动申请临时空间版本（无需手动管理 tmpBuffer）
 Broadcast<T, dim, axis>(dstLocal, srcLocal, dstShape, srcShape);
 
-// Example: [M,1] → [M, K](broadcasting along axis=1)
+// 示例: [M, 1] → [M, K]（沿 axis=1 广播）
 uint32_t dstShape[] = {M, K};
 uint32_t srcShape[] = {M, 1};
 Broadcast<float, 2, 1>(dstLocal, srcLocal, dstShape, srcShape, tmpBuffer);
 ```
 
-### Constraints
+### 约束
 
-| Constraints | Annotations |
+| 约束 | 说明 |
 |------|------|
-| **Dimensions** | 1D and 2D only |
-| **axis** | Only 0 and 1 |
-| **dim=2, axis=0** | SrcShape [1] must be 32B aligned |
-| **dim=2, axis=1** | SrcShape [0] must be 32B aligned |
-| **Address overlap** | Src and dst cannot overlap |
-| **dtype(DAV_2201)** | int8_t, uint8_t, half, float |
+| **维度** | 仅 1D 和 2D |
+| **axis** | 仅 0 和 1 |
+| **dim=2, axis=0** | srcShape[1] 必须 32B 对齐 |
+| **dim=2, axis=1** | srcShape[0] 必须 32B 对齐 |
+| **地址重叠** | src 和 dst 不能重叠 |
+| **dtype（DAV_2201）** | int8_t, uint8_t, half, float |
 
-### tmpBuffer Size
+### tmpBuffer 大小
 
 ```cpp
-// Host Side Retrieving
+// Host 侧获取
 uint32_t maxTmpSize, minTmpSize;
 GetBroadCastMaxMinTmpSize(platform, srcShape, dstShape, sizeof(T), false, maxTmpSize, minTmpSize);
-// Kennel side reserved maxTmpSize bytes
+// Kernel 侧预留 maxTmpSize 字节
 ```
 
 ---
 
-## V. Tiling Parameter Calculation
+## 五、Tiling 参数计算
 
-### 5.1 UB Capacity Calculation
+### 5.1 UB 容量计算
 
 ```cpp
-// BufferNum = all survival nodes
-// maxDtypeBits = maximum dtype bit width
+// bufferNum = 所有存活节点数
+// maxDtypeBits = 最大 dtype 位宽
 maxElemNum = (ubSize - extraSize) * 8 / (bufferNum * maxDtypeBits);
-maxElemNum = floor_align(maxElemNum, 256 * 8 / minDtypeBits);  // 256B repeat Alignment
+maxElemNum = floor_align(maxElemNum, 256 * 8 / minDtypeBits);  // 256B repeat 对齐
 ```
 
-### 5.2 UB split
+### 5.2 UB 切分
 
 ```cpp
-// Aggressive output from the inner axis to the outside dims, find indestructible axes
+// 从最内轴向外累乘输出 dims，找到放不下的轴
 uint64_t curProduct = 1;
 for (i = shapeLen - 1; i >= 0; i--) {
     curProduct *= outputDims[i];
@@ -175,7 +175,7 @@ ubOuter = ceil(outputDims[ubSplitAxis] / ubFormer);
 ubTail = outputDims[ubSplitAxis] - (ubOuter - 1) * ubFormer;
 ```
 
-### 5.3 Polynuclear Cuts
+### 5.3 多核切分
 
 ```cpp
 fusedProduct = ubOuter;
@@ -189,34 +189,34 @@ blockTail = fusedProduct - (blockNum - 1) * blockFormer;
 
 ---
 
-## VI. KERNEL IMPLEMENTS
+## 六、Kernel 实现要点
 
-### 6.1 Data flows
+### 6.1 数据流
 
 ```
-For each of them. tile (by ubSplitAxis Severation):
+对每个 tile (由 ubSplitAxis 切分)：
 
-  General input (no broadcast):
+  普通输入（无广播）:
     GM → DataCopyPad → UB [tileSize]
 
-  Broadcast Inputsstride=0 Axis):
-    GM → DataCopyPad → UB [srcShape, Not broadcast]
+  广播输入（stride=0 的轴）:
+    GM → DataCopyPad → UB [srcShape, 未广播]
       ↓
-    Broadcast(dst, src, dstShape, srcShape) → UB [dstShape, Broadcasted]
+    Broadcast(dst, src, dstShape, srcShape) → UB [dstShape, 已广播]
 
-  Calculate:
+  计算:
     Add/Mul/Sub(output, input0, input1, eleNum)
 
-  Move out.:
+  搬出:
     UB → DataCopyPad → GM
 ```
 
-### 6.2 MDI indexing
+### 6.2 多维索引计算
 
-Kernel needs to maintain a multi-dimensional index `axesIndices[8]` to calculate the GM offset for each file:
+Kernel 需要维护多维索引 `axesIndices[8]`，用于计算每个 tile 的 GM 偏移：
 
 ```cpp
-// Initialization: expand blockFormer * blockIdx to a multi-dimensional index
+// 初始化：将 blockFormer * blockIdx 展开为多维索引
 void BroadcastGetAxesIndices(int64_t axesIndices[], int64_t flatIdx,
     const int64_t outputDims[], int64_t ubSplitAxis, int64_t dimProduct)
 {
@@ -225,17 +225,17 @@ void BroadcastGetAxesIndices(int64_t axesIndices[], int64_t flatIdx,
         axesIndices[i] = flatIdx / dimProduct;
         flatIdx %= dimProduct;
     }
-    axesIndices[ubSplitAxis] = flatIdx;  // ubSplitAxis Index in %1
+    axesIndices[ubSplitAxis] = flatIdx;  // ubSplitAxis 内的索引
 }
 
-// ubLoop every time later
+// 每次 ubLoop 后进位
 void BroadcastUpdateAxesIndices(int64_t axesIndices[], const int64_t outputDims[],
     int64_t ubSplitAxis, int64_t ubOuter)
 {
     axesIndices[ubSplitAxis]++;
     if (axesIndices[ubSplitAxis] >= ubOuter) {
         axesIndices[ubSplitAxis] = 0;
-        // Outward bits
+        // 向外进位
         for (int64_t i = ubSplitAxis - 1; i >= 0; i--) {
             axesIndices[i]++;
             if (axesIndices[i] < outputDims[i]) break;
@@ -245,21 +245,21 @@ void BroadcastUpdateAxesIndices(int64_t axesIndices[], const int64_t outputDims[
 }
 ```
 
-### 6.3 GM Offset Calculation
+### 6.3 GM 偏移计算
 
 ```cpp
-// GM offset for normal input
+// 普通输入的 GM 偏移
 int64_t gmOffset = 0;
 for (int64_t i = 0; i < ubSplitAxis; i++) {
     gmOffset += axesIndices[i] * inputStrides[i];
 }
 gmOffset += axesIndices[ubSplitAxis] * ubFormer * inputStrides[ubSplitAxis];
 
-// Radio input: stride=0 axis non-contribution deviation
-// (Axes of broadcasting have been set to zero during the axis phase, and the formula is naturally skipping)
+// 广播输入：stride=0 的轴不贡献偏移
+// （在合轴阶段已将广播轴 stride 设为 0，上述公式自然跳过）
 ```
 
-### 6.4 Core implementation cycle
+### 6.4 核心执行循环
 
 ```cpp
 __aicore__ inline void Process()
@@ -279,25 +279,25 @@ __aicore__ inline void Process()
         int64_t ubSplitSize = (axesIndices[ubSplitAxis] == ubOuter - 1)
                               ? ubTail : ubFormer;
 
-        // 1. Moving into regular input
+        // 1. 搬入普通输入
         int64_t gmOffset0 = BroadcastGetGmOffset(axesIndices, input0Strides, ...);
         DataCopyPad(input0Local, input0Gm[gmOffset0],
             {1, inputLength0 * sizeof(T), 0, 0});
 
-        // 2. Moving into broadcast input (original shape)
+        // 2. 搬入广播输入（原始 shape）
         int64_t gmOffset1 = BroadcastGetGmOffset(axesIndices, input1Strides, ...);
         DataCopyPad(srcBrcLocal, input1Gm[gmOffset1],
             {1, srcBrcLength * sizeof(T), 0, 0});
 
-        // 3. UB Internal Broadcasting
+        // 3. UB 内广播
         uint32_t dstShape[] = {ubSplitSize, innerDim};
-        uint32_t srcShape[] = {1, innerDim};  // Radio axis dim=1
+        uint32_t srcShape[] = {1, innerDim};  // 广播轴 dim=1
         Broadcast<T, 2, 0>(dstBrcLocal, srcBrcLocal, dstShape, srcShape, tmpBuffer);
 
-        // 4. Calculation
+        // 4. 计算
         Add(outputLocal, input0Local, dstBrcLocal, ubSplitSize * innerDim);
 
-        // 5. Removal
+        // 5. 搬出
         int64_t outOffset = BroadcastGetGmOffset(axesIndices, outputStrides, ...);
         DataCopyPad(outputGm[outOffset], outputLocal,
             {1, ubSplitSize * innerDim * sizeof(T), 0, 0});
@@ -307,25 +307,25 @@ __aicore__ inline void Process()
 
 ---
 
-## VII. Buffer Planning
+## 七、Buffer 规划
 
-| Buffer | Size | Purpose |
+| Buffer | 大小 | 用途 |
 |--------|------|------|
-| General input × N₁ | tileSize × sizeof(T) | Inputs without broadcast |
-| Broadcast input source × N₂ | srcTileSize × sizeof(T) | Raw data before broadcast |
-| Broadcast Input Expand × N₂ | tileSize × sizeof(T) | Post-broadcast data |
-| Output | tileSize × sizeof(T) | Calculate results |
-| tmpBuffer | GetBroadCastMaxMinTmpSize | Broadcast API temporary space |
+| 普通输入 × N₁ | tileSize × sizeof(T) | 无需广播的输入 |
+| 广播输入源 × N₂ | srcTileSize × sizeof(T) | 广播前原始数据 |
+| 广播输入展开 × N₂ | tileSize × sizeof(T) | 广播后数据 |
+| 输出 | tileSize × sizeof(T) | 计算结果 |
+| tmpBuffer | GetBroadCastMaxMinTmpSize | Broadcast API 临时空间 |
 
-UB ≈ (N₁s + 2× N₂ + 1) × fileSize × maxDtypeBytes +tmpBufferSize
+总 UB ≈ (N₁ + 2×N₂ + 1) × tileSize × maxDtypeBytes + tmpBufferSize
 
 ---
 
-## VIII. common issue
+## 八、常见问题
 
-| Problem | Reason | Solutions |
+| 问题 | 原因 | 解决方案 |
 |------|------|---------|
-| Broadcast made a mistake. | dstShape/srcShape | dstShape is output file Shape, srcShape is input original |
-| dim=2, axis=0 | srcShape [1] Not 32B alignment | Use dynamic interface or pad to align |
-| accuracy error | The ubSplitAxis division resulted in incomplete broadcast coverage | Make sure the radio axes aren't cut apart by UB. |
-| The multi-dimensional index crossed the border. | AxesIndices Logic Error | Check UpdateAxesIndices Boundaries |
+| Broadcast 结果错误 | dstShape/srcShape 传反 | dstShape 是输出 tile shape，srcShape 是输入原始 shape |
+| dim=2, axis=0 报错 | srcShape[1] 未 32B 对齐 | 使用动态接口或 pad 到对齐 |
+| 精度错误 | ubSplitAxis 处拆分导致广播范围不完整 | 确保广播轴不被 UB 切分拆断 |
+| 多维索引越界 | axesIndices 进位逻辑错误 | 检查 UpdateAxesIndices 边界 |

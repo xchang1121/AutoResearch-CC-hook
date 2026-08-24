@@ -1,6 +1,6 @@
 ---
 name: triton-ascend-case-index-put
-description: "Index value (index_put) optimization: Batch load index data into the UB cycle and reuse through Get_election (duplicate access to global memory) to significantly reduce memory access to latency for irregular memory access scenarios requiring multiple access to the same data in the cycle"
+description: "索引赋值（index_put）优化：批量加载索引数据到UB后循环内通过get_element复用（避免重复访问全局内存），显著降低内存访问延迟，适用于需要在循环中多次访问同一片数据的不规则内存访问场景"
 category: case
 version: "1.0.0"
 metadata:
@@ -9,48 +9,48 @@ metadata:
   hardware: "Atlas A2, Atlas A3"
 ---
 
-# Index Put Index-Authorized Cases
+# Index Put 索引赋值优化案例
 
-## Task characteristics
-- **Operating type**: indexed value, data written to target buffer based on index mapping
-- **Data size**: input fractions (16,384, 4), group buffer zones (8,65536)
-- **Characteristics**: irregular memory access, subject to element-by-fact processing to avoid writing conflicts
+## 任务特征
+- **操作类型**：索引赋值，根据索引映射将数据写入目标缓冲区
+- **数据尺寸**：输入分数(16384, 4)，组缓冲区(8, 65536)
+- **特点**：不规则内存访问，需逐元素处理以避免写冲突
 
-## Optimization: Batch Load + Data Reuse
+## 优化：批量加载 + 数据复用
 
-### Error: Simple way: double load in cycle
+### 错误：简单方式：循环内重复加载
 
 ```python
 for i in tl.range(0, BLOCK_SIZE):
     if start_idx + i < total_elements:
-        # Load index from global memory for each cycle
+        # 每次循环都从全局内存加载索引
         unit_idx = tl.load(unit_indices_ptr + start_idx + i)
         pos_idx = tl.load(position_map_ptr + start_idx + i)
 ```
 
-**Question**: global memory, latency is highly effective and inefficient for each cycle.
+**问题**：每次循环都访问全局内存，延迟高，效率低。
 
-### Correct: Optimized: Batch load to UB, recycle
+### 正确：优化方式：批量加载到UB，循环内复用
 
 ```python
-# Out of circulation: load a piece of index data to UB (unified buffer zone)
+# 循环外：批量加载一片索引数据到UB（统一缓冲区）
 unit_indices_tile = tl.load(unit_indices_ptr + offsets, mask=mask, other=0)
 position_map_tile = tl.load(position_map_ptr + offsets, mask=mask, other=0)
 
-# Loop: take numbers from UB through Get_election, reuse data
+# 循环内：通过get_element从UB中取数，复用数据
 for i in tl.range(0, BLOCK_SIZE):
     if start_idx + i < total_elements:
-        # Take the number from the UB and avoid accessing global memory
+        # 从UB中取数，避免重复访问全局内存
         unit_idx = tl.get_element(unit_indices_tile, [i])
         pos_idx = tl.get_element(position_map_tile, [i])
-        # Follow-up...
+        # 后续处理...
 ```
 
-### Optimizing content
-- Outside the cycle, load the entire BLONK_SIZE index data batch to UB by an `tl.load` operation
-- In the cycle, remove index values from the UB individually by `tl.get_element`
-- Convert multiple global memory visits into one batch load + multiple chip caches
-- Considerable reduction of memory access latency
+### 优化内容
+- 在循环外，通过一次`tl.load`操作将整个BLOCK_SIZE的索引数据批量加载到UB
+- 在循环内，通过`tl.get_element`从UB中逐个取出索引值
+- 将多次全局内存访问转换为一次批量加载+多次片上缓存访问
+- 显著降低内存访问延迟
 
-### Summary
-**[Universal Optimization]**When multiple accesss to the same data are required in the cycle, load the cache (UB) on the plate first in bulk, then re-use the data by getting_election on a case-by-case basis, reduce the number of global memory visits and enhance performance.
+### 总结
+**[通用优化]** 当需要在循环中多次访问同一片数据时，应先批量加载到片上缓存（UB），然后通过get_element逐个取用，实现数据复用，减少全局内存访问次数，提升性能。

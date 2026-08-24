@@ -1,3 +1,17 @@
+# Copyright 2025 Huawei Technologies Co., Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import os
 
 _collected_config_timings = {}
@@ -5,7 +19,7 @@ _current_framework = "torch"
 
 
 def set_framework(framework: str):
-    """Sets the current framework type to influence the behaviour of op_autoresearch_restore_copy / benchmarker."""
+    """设置当前框架类型，影响 op_autoresearch_restore_copy / benchmarker 的行为。"""
     global _current_framework
     _current_framework = framework
     if framework == "mindspore":
@@ -17,8 +31,8 @@ def get_framework() -> str:
 
 # ============================================================================
 # OP_AUTORESEARCH_restore_copy Triton kernel
-# Reference l2_cache_clear.py design: Using kernel, with the prefix of OP_AUTORESEARCH,
-# Easy to filter by name in profiller 's op_statistic.csv.
+# 参考 l2_cache_clear.py 的设计：使用带 OP_AUTORESEARCH_ 前缀的专用 kernel，
+# 便于在 profiler 的 op_statistic.csv 中按名字精确过滤。
 # ============================================================================
 
 OP_AUTORESEARCH_RESTORE_COPY_KERNEL_NAME = "OP_AUTORESEARCH_restore_copy"
@@ -38,10 +52,10 @@ if _TRITON_AVAILABLE:
         BLOCK_SIZE: tl.constexpr, CORE_NUM: tl.constexpr,
     ):
         """
-        Restore_value is dedicated to copy kernel.
+        restore_value 专用 copy kernel。
 
-        kernel name with OP_AUTORESEARCH_ prefix, displayed as OP_AUTORESEARCH_restore_copy,
-        Precisely filtered without deleting the TensorMove equivalent in the user code.
+        kernel 名称带 OP_AUTORESEARCH_ 前缀，在 profiler 中显示为 OP_AUTORESEARCH_restore_copy，
+        可精确过滤，不会误删用户代码中的 TensorMove 等同名操作。
         """
         pid = tl.program_id(0)
         num_blocks = tl.cdiv(n_elements, BLOCK_SIZE)
@@ -74,7 +88,7 @@ def _get_core_nums(vec_default=40, cube_default=20):
 
 
 def op_autoresearch_restore_copy_torch(dst, src):
-    """An OP_AUTORESEARCH_restore_copy kernel is used to execute tensor copy (PyTorch version)."""
+    """用 OP_AUTORESEARCH_restore_copy kernel 执行 tensor copy（PyTorch 版）。"""
     import torch
     n = dst.numel()
     dst_flat = dst.view(-1)
@@ -88,7 +102,7 @@ def op_autoresearch_restore_copy_torch(dst, src):
 
 
 def op_autoresearch_restore_copy_mindspore(dst, src):
-    """An OP_AUTORESEARCH_restore_copy Kernel is used to execute tensor copy (MindSpore version)."""
+    """用 OP_AUTORESEARCH_restore_copy kernel 执行 tensor copy（MindSpore 版）。"""
     import mindspore as ms
     n = dst.numel()
     dst_flat = dst.view(-1)
@@ -102,7 +116,7 @@ def op_autoresearch_restore_copy_mindspore(dst, src):
 
 
 def op_autoresearch_restore_copy(dst, src):
-    """Use OP_AUTORESEARCH_restore_copykel to execute tensor copy instead of tensor.copy_()."""
+    """用 OP_AUTORESEARCH_restore_copy kernel 执行 tensor copy，替代 tensor.copy_()。"""
     if get_framework() == "mindspore":
         op_autoresearch_restore_copy_mindspore(dst, src)
     else:
@@ -136,15 +150,15 @@ def _wrap_kernel_call_with_restore(kernel_call, restore_info):
 
 
 # ============================================================================
-# _Bench Patch: Disable primary copy of _value.
-# Let kernel_call contain only pure kernel, restore to benchmarker with a name kernel.
+# _bench patch: 禁用原生 restore_value 的 copy_()，
+# 让 kernel_call 只包含纯 kernel，restore 交给 benchmarker 用命名 kernel 做。
 # ============================================================================
 
 _restore_info = None
 
 
 def _patch_autotuner_bench(autotuner_module):
-    """Patch Autotuner. _Bench, take over under conditione_value."""
+    """Patch Autotuner._bench，在 restore_value 场景下接管 pre_hook。"""
     original_bench = getattr(autotuner_module.Autotuner, '_bench', None)
     if original_bench is None:
         return
@@ -188,7 +202,7 @@ def _patch_autotuner_bench(autotuner_module):
 
 
 # ============================================================================
-# Bottom realization parameters that need filtering
+# 需要过滤的底层实现参数
 # ============================================================================
 
 _FILTERED_CONFIG_PARAMS = {
@@ -204,7 +218,7 @@ _FILTERED_CONFIG_PARAMS = {
 
 
 def _filter_config_string(config_str: str) -> str:
-    """Filter configuration string, remove bottom realization parameters"""
+    """过滤配置字符串，移除底层实现参数"""
     params = []
     for param in config_str.split(','):
         param = param.strip()
@@ -223,7 +237,7 @@ def _filter_config_string(config_str: str) -> str:
 
 
 def patch_triton_autotuner():
-    """Dynamic patch, add configuration information collection + _bench conditione_value to take over."""
+    """动态补丁 triton autotuner，添加配置信息收集 + _bench restore_value 接管。"""
     try:
         import triton.runtime.autotuner as autotuner_module
     except ImportError:
@@ -247,7 +261,7 @@ def patch_triton_autotuner():
     if autotiling_module and hasattr(autotiling_module, 'AutoTilingTuner'):
         original_autotiling_run = getattr(autotiling_module.AutoTilingTuner, 'run', None)
 
-    # Patch _bench take over restore_value
+    # Patch _bench 接管 restore_value
     _patch_autotuner_bench(autotuner_module)
 
     def _process_config_timings(self):
@@ -347,11 +361,11 @@ def clear_collected_config_timings():
 
 
 def patch_driver_benchmarker():
-    """Patches driver.active.get_benchmarker(), allowing autotune to use profler_npu.
+    """补丁 driver.active.get_benchmarker()，让 autotune 使用 profiler_npu。
 
-    When _restore_info is not empty (i.e. _bench disables the original restore_value),
-    Benchmarker uses OP_AUTORESEARCH_restore_copy kernel_call,
-    Profiler filters accurately by kernel name and does not miss the user 's TensorMove operation.
+    当 _restore_info 不为空时（即 _bench 禁用了原生 restore_value），
+    benchmarker 自动用 OP_AUTORESEARCH_restore_copy kernel 包装 kernel_call，
+    profiler 按 kernel 名字精确过滤，不会误删用户的 TensorMove 操作。
     """
     try:
         from triton.runtime import driver
@@ -398,7 +412,7 @@ def patch_driver_benchmarker():
 
 
 def apply_triton_patches():
-    """Apply all triton patches"""
+    """应用所有triton补丁"""
     success1 = patch_triton_autotuner()
     success2 = patch_driver_benchmarker()
     return success1 or success2

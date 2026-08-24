@@ -1,9 +1,9 @@
 ---
 name: task-constructor
 description: >
-  The extraction of operator from the PyTorch/Triton code warehouse was achieved, and the standardized single file in KernelBench format was built to contain tasks.
-  Supports code extraction, AST-dependent tracking, intra-functional connection, import clean-up, format validation and reference comparison testing.
-  Use this Skill when the user needs to build a name_code from an existing code.
+  从 PyTorch/Triton 代码仓中提取算子实现，构建为 KernelBench 格式的标准化单文件自包含任务。
+  支持代码提取、AST 依赖追踪、函数内联、import 清理、格式验证和参考对比测试。
+  当用户需要从现有代码构建 task_code 时使用此 Skill。
 category: workflow
 version: "1.0.0"
 metadata:
@@ -12,23 +12,23 @@ metadata:
   input_types: code,file,directory
 ---
 
-# Standardised Task Build Workstream
+# 标准化任务构建工作流
 
-## Apply scene
+## 适用场景
 
-- User provides PyTorch/Triton code warehouse path, needs to extract operator and build task_code
-- User provides code clips that require standardized tasks in KernelBench format
-- The user specifies an internal torch function that needs to be extracted and decomposed
+- 用户提供 PyTorch/Triton 代码仓路径，需要提取算子并构建 task_code
+- 用户提供代码片段，需要包装成 KernelBench 格式的标准化任务
+- 用户指定某个 torch 内部函数，需要提取其分解实现
 
-## Objective Format
+## 目标格式
 
-The resulting file must be**single-inclusion Python file**:
+最终生成的文件必须是 **单一自包含 Python 文件**：
 
 ```python
 import torch
 import torch.nn as nn
 
-# All relying functions inline (not able external file)
+# 所有依赖函数内联（不能 import 外部文件）
 
 class Model(nn.Module):
     def __init__(self, <params>):
@@ -44,55 +44,55 @@ def get_init_inputs():
     return [param1, ...]
 ```
 
-## Guide for the use of tools
+## 工具使用指南
 
-### Call `call_task_constructor`
+### 调用 `call_task_constructor`
 
-This tool runs a full rect loop internally and automatically completes the following steps:
+此工具内部运行完整的 ReAct 循环，自动完成以下步骤：
 
-1. **Target code**: search target function
-2. **Dependence on tracking**: AST analysis automatically discovers all dependencies (with file function + call from external module)
-3. **Task configuration**: Select the best policy (exclusion/selective/complete embedding) to build a self-inclusion file
-4. **Validation**: Format Validation (Practicalisation +Forward + NN/ Inf + Consistency)
-5. **Reference**: Multigroup input compared to the original torch function
+1. **定位目标代码**：搜索目标函数
+2. **依赖追踪**：AST 分析自动发现所有依赖（同文件函数 + 外部模块调用）
+3. **任务装配**：选择最佳策略（排除式/选择性/完整嵌入）构建自包含文件
+4. **验证**：格式验证（实例化 + forward + NaN/Inf + 一致性检查）
+5. **参考对比**：与原始 torch 函数对比多组输入
 
-### Parameters
+### 参数
 
-- `user_input`: Description of user needs (e. g. "Decomposition of xx extracted from pytoch warehouse")
-- `source_path`: Optional, code warehouse/file path
+- `user_input`：用户需求描述（如 "从 pytorch 仓中提取 xxx 的分解实现"）
+- `source_path`：可选，代码仓/文件路径
 
-### Back
+### 返回
 
-- `task_code`: Standardized task code generated
-- `task_code_path`: Path to code file
-- `op_name`: operator name
-- `summary`: Summary of the construction process
+- `task_code`：生成的标准化任务代码
+- `task_code_path`：代码文件路径
+- `op_name`：算子名称
+- `summary`：构建过程摘要
 
-## Core rules
+## 核心规则
 
-1. **Complicated functions are prohibited**: original functions can be run and reused directly, without change in any line
-2. **return value must be consistent**: additional tensor returns back to tuple, uninterrupted
-3. **Inline external functions are preceded by signature**: external call source module automatically detected by relying on tracking
+1. **禁止重写复杂函数**：原始函数可运行就直接复用，一行都不改
+2. **返回值必须一致**：多张量返回就返回 tuple，不能截断
+3. **内联外部函数前先查签名**：通过依赖追踪自动检测外部调用来源模块
 
 ## Scripts
 
-1. `scripts/validate_kernelbench_task.py` - Verify whether the tag code matches KernelBench format (parameters: `--stdin --json`)
+1. `scripts/validate_kernelbench_task.py` - 验证 task 代码是否符合 KernelBench 格式（参数：`--stdin --json`）
 
-### Use Example
+### 使用示例
 
 ```
-Think: Requires validation of generated task Is the code correct?
-Action: execute_script(script_path="skills/task-constructor/scripts/validate_kernelbench_task.py", args="--stdin --json", stdin_input="<task Code>")
+Think: 需要验证生成的 task 代码是否正确
+Action: execute_script(script_path="skills/task-constructor/scripts/validate_kernelbench_task.py", args="--stdin --json", stdin_input="<task 代码>")
 Observation: {"valid": true, "static_check": {...}, "runtime_check": {...}}
 ```
 
-You can also verify the file directly:
+也可以直接验证文件：
 
 ```
 Action: execute_script(script_path="skills/task-constructor/scripts/validate_kernelbench_task.py", args="/path/to/task.py --json")
 ```
 
-## Reference Documents
+## 参考文档
 
-- `references/kernelbench-format.md` - Format Specification
-- `references/assembly-strategies.md` - assembly policy statement
+- `references/kernelbench-format.md` - 格式规范
+- `references/assembly-strategies.md` - 装配策略说明

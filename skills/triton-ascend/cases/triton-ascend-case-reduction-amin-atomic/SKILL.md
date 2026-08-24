@@ -1,6 +1,6 @@
 ---
 name: triton-ascend-case-reduction-amin-atomic
-description: "Amin (amin) optimization of atomic operation: the nonreduce axis maps reduce axis multiple cores at hours, provides both inner/outside atomic operating options (reduced storage vs less competition), increases performance by double-segregation + calculation, for M<N (e.g. 16×262144) extreme Shape scale scenario"
+description: "原子操作归约（amin）优化：非reduce轴很小时将reduce轴映射多核，提供循环内/外两种原子操作方案（减少存储vs减少竞争），通过二次切分+计算重组提升性能，适用于M<<N（如16×262144）的极端shape比例场景"
 category: case
 version: "1.0.0"
 metadata:
@@ -9,132 +9,132 @@ metadata:
   hardware: "Atlas A2, Atlas A3"
 ---
 
-# Amin Completing Atomic Optimization Case
+# Amin 归约原子操作优化案例
 
-## Task characteristics
-- **Data size**(16,262144), nonreduce axis small, reduce axis large
-- **Strategy**: mapping the reduce axis to the polynucleus to achieve the return of the cross-line elements through atomic operations
+## 任务特征
+- **数据尺寸**：(16, 262144)，非reduce轴很小，reduce轴很大
+- **策略**：将reduce轴映射到多核，通过原子操作实现跨线程块归约
 
-## Optimizing 1: Cut Policy Adjustments
+## 优化 1：切分策略调整
 
 ```python
-# Simple way: Nonreduce axis map multiple cores
+# 简单方式：非reduce轴映射多核
 grid = lambda meta: (triton.cdiv(M, meta['BLOCK_SIZE_M']),)
 
-# Error: Optimization: reduce axis map multiple cores
+# 错误：优化方式：reduce轴映射多核
 grid = lambda meta: (triton.cdiv(N, meta['BLOCK_SIZE_N']),)
 
-# Retract columns within Kernel
+# Kernel内对列进行二次切分
 for n_start in range(0, BLOCK_SIZE_N, SUB_BLOCK_SIZE_N):
     n_offsets = pid * BLOCK_SIZE_N + n_start + tl.arange(0, SUB_BLOCK_SIZE_N)
 ```
 
-### Optimizing content
-- Adjusting the splitting policy from the nonreduce axis map multi-nuclei to the reduce axis map multi-nuclei
-- In order not to exceed the hardware cache, the rows in the kernel are split in a double-slit.
+### 优化内容
+- 调整切分策略，由非reduce轴映射多核调整为reduce轴映射多核
+- 为了不超过硬件缓存，kernel内对列进行二次切分
 
-## Optimization 2: Calculate reorganization
+## 优化 2：计算重组
 
 ```python
-# Simple way: multiple returns within the cycle
+# 简单方式：循环内多次归约
 row_min = float('inf')
 for n_start in range(0, BLOCK_SIZE_N, SUB_BLOCK_SIZE_N):
-  Error:curr_min = tl.min(data_block, 1)
+  错误：curr_min = tl.min(data_block, 1)
     row_min = tl.minimum(curr_min, row_min)
 
-# Correct: Optimistic approach: maintenance of matrix structure
+# 正确：优化方式：维护矩阵结构
 curr_min = tl.full((BLOCK_SIZE_M, SUB_BLOCK_SIZE_N), float('inf'), dtype=tl.float32)
 for n_start in range(0, BLOCK_SIZE_N, SUB_BLOCK_SIZE_N):
     curr_min = tl.minimum(data_block, curr_min)
 row_min = tl.min(curr_min, 1)
 ```
 
-### Optimizing content
-- Maintain matrix structure and maintain intermediate results using curr_min
-- Consolidation of multiple returns into one contract and reduction in the number of returns
+### 优化内容
+- 利用curr_min保持矩阵结构，维护中间结果
+- 将多次归约合并为一次归约，减少归约次数
 
-## Optimization 3: Atomic Operations (two scenarios)
+## 优化 3：原子操作（两种方案）
 
-### Option I: Atomic operation in cycle
+### 方案一：循环内进行原子操作
 
 ```python
 for m_start in range(0, M, BLOCK_SIZE_M):
     m_offsets = m_start + tl.arange(0, BLOCK_SIZE_M)
     mmask = m_offsets < M
-
+    
     curr_min = tl.full((BLOCK_SIZE_M, SUB_BLOCK_SIZE_N), float('inf'), dtype=tl.float32)
     for n_start in range(0, BLOCK_SIZE_N, SUB_BLOCK_SIZE_N):
         n_offsets = pid * BLOCK_SIZE_N + n_start + tl.arange(0, SUB_BLOCK_SIZE_N)
         nmask = n_offsets < N
         mask = (mmask[:, None]) & (nmask[None, :])
-
+        
         block_ptrs = in_ptr0 + m_offsets[:,None] * in_stride0 + n_offsets[None,:] * in_stride1
         data_block = tl.load(block_ptrs, mask=mask, other=float('inf'))
-
+        
         curr_min = tl.minimum(data_block, curr_min)
     row_min = tl.min(curr_min, 1)
-
+    
     output_ptrs = out_ptr0 + m_offsets * out_stride0
-    tl.atomic_min(output_ptrs, row_min, mask=mmask)  # Atoms per piece immediately
+    tl.atomic_min(output_ptrs, row_min, mask=mmask)  # 每块立即原子操作
 ```
 
-**Features**:
-- Reduced intermediate storage
-- But it's increasing the frequency of atomic operations.
+**特点**：
+- 减少了中间存储
+- 但增加了原子操作频率
 
-### Option II: Atomic operations outside the cycle
+### 方案二：循环外进行原子操作
 
 ```python
-all_row_min = tl.full((M,), float('inf'), dtype=tl.float32)  # Full array pre-allocated
+all_row_min = tl.full((M,), float('inf'), dtype=tl.float32)  # 预分配完整数组
 
 for m_start in range(0, M, BLOCK_SIZE_M):
     m_offsets = m_start + tl.arange(0, BLOCK_SIZE_M)
     mmask = m_offsets < M
-
+    
     curr_min = tl.full((BLOCK_SIZE_M, SUB_BLOCK_SIZE_N), float('inf'), dtype=tl.float32)
     for n_start in range(0, BLOCK_SIZE_N, SUB_BLOCK_SIZE_N):
         n_offsets = pid * BLOCK_SIZE_N + n_start + tl.arange(0, SUB_BLOCK_SIZE_N)
         nmask = n_offsets < N
         mask = (mmask[:, None]) & (nmask[None, :])
-
+        
         block_ptrs = in_ptr0 + m_offsets[:,None] * in_stride0 + n_offsets[None,:] * in_stride1
         data_block = tl.load(block_ptrs, mask=mask, other=float('inf'))
-
+        
         curr_min = tl.minimum(data_block, curr_min)
     row_min = tl.min(curr_min, 1)
     curr_block_size_m = tl.minimum(BLOCK_SIZE_M, M - m_start)
-    all_row_min = tl.insert_slice(all_row_min, row_min, [m_start], [curr_block_size_m], [1])  # Provisional intermediate result
+    all_row_min = tl.insert_slice(all_row_min, row_min, [m_start], [curr_block_size_m], [1])  # 暂存中间结果
 
 output_ptrs = out_ptr0 + tl.arange(0, M) * out_stride0
-tl.atomic_min(output_ptrs, all_row_min)  # Final unified atomic operation
+tl.atomic_min(output_ptrs, all_row_min)  # 最后统一原子操作
 ```
 
-**Features**:
-- Reduced competition through centralized atomic operations
-- Additional storage space is required for large-scale data
+**特点**：
+- 通过集中执行原子操作减少了竞争
+- 需要额外存储空间，适合大规模数据
 
-## Optimize 4: Configure
+## 优化 4：配置
 
 ```python
 @triton.autotune(
     configs=[
-        # (AI core=40)
-        # Grid = 32 < 40, UB full
-        triton.Config({'BLOCK_SIZE_M': 8, 'BLOCK_SIZE_N': 8192, 'SUB_BLOCK_SIZE_N': 1024}),  # MIt's a small cut.UBFull.
-        triton.Config({'BLOCK_SIZE_M': 16, 'BLOCK_SIZE_N': 8192, 'SUB_BLOCK_SIZE_N': 512}),  # MIt's bigger than that.16,NofSUBThrust to small.512Prevention of super.UB
+        # （AI core=40）
+        # grid=32<40, UB用满
+        triton.Config({'BLOCK_SIZE_M': 8, 'BLOCK_SIZE_N': 8192, 'SUB_BLOCK_SIZE_N': 1024}),  # M切分较小，UB用满
+        triton.Config({'BLOCK_SIZE_M': 16, 'BLOCK_SIZE_N': 8192, 'SUB_BLOCK_SIZE_N': 512}),  # M切分调大至16，N的SUB切分调小至512，防止超UB
     ],
     key=[...],
-    restore_value=['out_ptr0'],  # autotune I have to. restore_value
+    restore_value=['out_ptr0'],  # autotune 必须加 restore_value
 )
 ```
 
-### Optimizing content
-- The split can be severed by the sape.
-- Grid numbers are as large as possible but not exceeding AI core (BLONK_SIZE_N=8192, making grid=32)
-- Make kernel cleaving adjustments when the UB is full
+### 优化内容
+- 切分能被对应shape整除
+- Grid数尽量大但不超过AI core（BLOCK_SIZE_N=8192，使grid=32）
+- 在UB用满的前提下，进行kernel内切分大小调整
 
-### Summary
-1. When the nonreduce axis is small and the reduce axis is large, reduce axis is mapped to multiple cores and combined with atomic operations
-2. Both atomic operating options have advantages and disadvantages: option one reduces storage but atom operations are frequent, option two concentrates atom operations but requires additional space
-3. Once the number is determined, a secondary cut may be considered if the hardware cache is exceeded
-4. Adjust the split and nucleus configuration to ensure as much as possible of the UB as possible without going beyond the UB
+### 总结
+1. 非reduce轴很小、reduce轴很大时，将reduce轴映射到多核并结合原子操作
+2. 两种原子操作方案各有优劣：方案一减少存储但原子操作频繁，方案二集中原子操作但需额外空间
+3. 确定核数后，若超过硬件缓存，可以考虑二次切分
+4. 调整切分和核数配置，尽量保证在不超出UB的前提下尽量用满UB

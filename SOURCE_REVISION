@@ -1,0 +1,5 @@
+Upstream branch: br_agents
+Upstream commit: 5bedb476241bacd7f9f7fc79834e91837d6962d3
+Copied components: workspace, verifier, local/remote worker, worker service,
+device pool, evaluation/process helpers, code checker, DSL adapters, templates,
+operator skills, remote dispatch, and workflow git support.

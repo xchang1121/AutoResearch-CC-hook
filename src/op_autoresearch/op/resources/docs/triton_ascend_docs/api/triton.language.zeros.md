@@ -2,8 +2,8 @@
 ```python
 accumulator = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 ```
-- **Parameters**:
-  - `shape`: tensorZ1XQ
-  - `dtype`: data type
-- **Return**: Zero tensor
+- **参数**:
+  - `shape`: 张量形状
+  - `dtype`: 数据类型
+- **返回**: 全零张量
 

@@ -1,55 +1,44 @@
 # Op AutoResearch
 
-Op AutoResearch is a standalone workspace for agent-driven optimization of
-operator kernels. It combines reproducible correctness checks, performance
-measurement, constrained code editing, and an explicit optimization state
-machine:
+一个独立的、由代码 Agent 驱动的算子内核迭代优化项目。它把可度量的内核验证与性能评测组织为：
 
 ```text
 BASELINE -> PLAN -> EDIT -> EVAL -> KEEP / DISCARD / FAIL
                                       -> REPLAN / DIAGNOSE / FINISH
 ```
 
-The repository includes the workspace workflow, `KernelVerifier`, backend and
-DSL adapters, local and remote workers, a device lease pool, static code
-checks, runtime guards, skill documentation, Claude Code and OpenCode entry
-points, and batch-processing tools. It does not require another source tree.
+本仓库自带完整工作区、KernelVerifier、多后端/多 DSL 适配器、本地与远端 worker、设备租约池、代码检查器、技能文档库、Claude Code/OpenCode 接入和批量任务工具，不依赖其他源码仓库。
 
-## Installation
+## 安装
 
 ```bash
 python -m pip install -e .
-
-# Install the HTTP worker service when needed.
+# 需要启动 HTTP worker 时：
 python -m pip install -e ".[worker]"
 ```
 
-Hardware-specific runtimes are installed separately for the selected backend.
-Typical examples include PyTorch, a device extension, a DSL compiler, and the
-device SDK.
+硬件运行时按目标后端另行安装，例如 PyTorch、对应设备扩展、DSL 编译器和设备 SDK；这些大型运行时不由本项目的通用依赖自动安装。
 
-## Quick start
+## 快速开始
 
-Place a reference implementation and a seed kernel in `workspace/`. Start
-Claude Code or OpenCode from the repository root, then run:
+把 reference 与 seed kernel 放入 `workspace/`，在仓库根目录启动 Claude Code 或 OpenCode，然后执行：
 
 ```text
 /autoresearch --ref workspace/<op>_ref.py --kernel workspace/<op>_kernel.py \
   --op-name <op> --devices <device-id>
 ```
 
-Monitor a task with:
+监控任务：
 
 ```bash
 python scripts/dashboard.py <task_dir> --watch
 ```
 
-See [AUTORESEARCH.md](AUTORESEARCH.md) for the full workflow and
-[AGENTS.md](AGENTS.md) for agent operating constraints.
+详细用法见 [AUTORESEARCH.md](AUTORESEARCH.md)，Agent 运行约束见 [AGENTS.md](AGENTS.md)。
 
-## Worker service
+## Worker
 
-Manage a local worker:
+本地启动、查询和停止：
 
 ```bash
 op-autoresearch worker --start --backend ascend --arch ascend910b3 --devices 0
@@ -57,9 +46,7 @@ op-autoresearch worker --status
 op-autoresearch worker --stop
 ```
 
-For a remote worker, define a host under `remote_worker.hosts` in
-`config.yaml`. Its `repo_path` must point to the root of this repository on the
-remote machine.
+远端 worker 在 `config.yaml` 的 `remote_worker.hosts` 中配置；`repo_path` 指向远端本仓库根目录：
 
 ```bash
 op-autoresearch worker --remote-host eval-host --start --backend ascend --devices 0
@@ -67,21 +54,17 @@ op-autoresearch worker --remote-host eval-host --status
 op-autoresearch worker --remote-host eval-host --stop
 ```
 
-## Repository layout
+## 目录
 
 ```text
-scripts/                  State machine, evaluation bridge, and batch tools
-src/op_autoresearch/      Verifier, workers, device pool, and shared runtime
-skills/                   DSL-specific optimization and debugging guidance
-.claude/                  Claude Code command, hooks, and diagnostic agent
-.opencode/                OpenCode command, plugin, and headless loop
-ar_examples/              Minimal examples for supported DSLs
-tests/                    Workflow and component tests
+scripts/                  状态机、评测桥、批处理与工作流
+src/op_autoresearch/      verifier、worker、设备池及共享运行时
+skills/                   按 DSL 分类的技能文档库
+.claude/                  Claude Code 命令、hooks 与诊断 Agent
+.opencode/                OpenCode 命令、插件与外层循环
+ar_examples/              多 DSL 最小示例
+tests/                    工作区契约测试与移植的组件单测
 ```
 
-## Validation
+复制来源的精确提交记录在 `SOURCE_REVISION`。项目使用 Apache-2.0 许可头保留原始版权信息。
 
-```bash
-python -m compileall -q scripts src
-python -m pytest -q
-```

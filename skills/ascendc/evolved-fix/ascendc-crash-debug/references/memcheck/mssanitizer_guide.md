@@ -1,181 +1,181 @@
-# MsSanitizer Memory Testing Tool Guide
+# msSanitizer 内存检测工具指南
 
-> **Document version**: MindStudio 80. RC1
-> **Applicable product**: Atlas series developers package/module group
+> **文档版本**: MindStudio 80.RC1
+> **适用产品**: Atlas 系列开发者套件/模组
 
-## 1. Overview
+## 1. 概述
 
-Memory Check is an anomaly detection function for the user program runtime.**MsSanitizer**tool detects and reports unusual cross-border and unmatched memory access to external and internal storages in operator operations.
+内存检测（Memory Check）是针对用户程序运行时的一种异常检测功能。**msSanitizer** 工具可以检测并报告算子运行中对外部存储（Global Memory）和内部存储（Local Memory）的越界及未对齐等内存访问异常。
 
-> **⚠ ️ Note:
-> *   The msSanitizer tool**does not support**the memory testing of the operator warehouse in Ascend Transformer Boost.
-> *   When users use framework, such as PyTorch, to access operator, framework's internal memory may be managed through a memory pool. The manual reporting interface (`SanitizerReportMalloc` / `SanitizerReportFree`) is used to ensure accuracy.
+> **⚠️ 注意**:
+> *   msSanitizer 工具**不支持**对加速库（Ascend Transformer Boost）的算子仓进行内存检测。
+> *   当用户使用 PyTorch 等框架接入算子时，框架内部可能会通过内存池管理 GM 内存。此时需使用手动上报接口（`SanitizerReportMalloc` / `SanitizerReportFree`）以确保检测准确性。
 
 ---
 
-## 2. Supported memory anomaly type
+## 2. 支持的内存异常类型
 
-Memory tests allow for the identification and reporting of the following six core types of anomalies:
+内存检测能够识别并报告以下六类核心异常：
 
-| Abnormal Name | Description | Organisation | Supporting address space |
+| 异常名称 | 描述 | 发生位置 | 支持地址空间 |
 | :--- | :--- | :--- | :--- |
-| **Illegally read and write**<br> (Illegal Read/Write) | Unallocated RAM areas were visited. | Kernel, Host | GM, UB, L0{A,B,C}, L1 |
-| **Multi-nucleus**<br> (Multi-core Overwrite) | Several AI Cores have visited overlapping memory areas and at least one core has performed writing operations. | Kernel | GM |
-| **Non-matched**<br> (Misaligned Access) | The address of the DMA moving data does not meet the minimum hardware access particle alignment requirement. | Kernel | GM, UB, L0{A,B,C}, L1 |
-| **Unlawfully released**<br> (Illegal Free) | Attempt to release undistributed or released memory addresses. | Host | GM |
-| **Memory leak**<br> (Memory Leak) | Not released after application of memory, resulting in continued increase in memory occupancy during operation. | Host | GM |
-| **Distribution of unused memory**<br> (Unused Memoory) | The memory allocation was not accessed or used until the procedure was completed. | Kernel, Host | GM |
+| **非法读写**<br>(Illegal Read/Write) | 访问了未分配的内存区域。 | Kernel, Host | GM, UB, L0{A,B,C}, L1 |
+| **多核踩踏**<br>(Multi-core Overwrite) | 多个 AI Core 访问了重叠的内存区域，且至少有一个核进行了写入操作。 | Kernel | GM |
+| **非对齐访问**<br>(Misaligned Access) | DMA 搬运数据的地址未满足硬件最小访问粒度对齐要求。 | Kernel | GM, UB, L0{A,B,C}, L1 |
+| **非法释放**<br>(Illegal Free) | 尝试释放未分配或已释放的内存地址。 | Host | GM |
+| **内存泄漏**<br>(Memory Leak) | 申请内存后未释放，导致运行过程中内存占用持续增加。 | Host | GM |
+| **分配内存未使用**<br>(Unused Memory) | 内存分配后直到程序结束都未被访问或使用。 | Kernel, Host | GM |
 
 ---
 
-## 3. Enable memory detection
+## 3. 启用内存检测
 
-The base memory detection (memcheck) is enabled by default when running the `msSanitizer` tool.
+运行 `msSanitizer` 工具时，默认启用基础内存检测功能（memcheck）。
 
-### 3.1 Basic testing orders
-The following are some of the most recent examples of illegal reading and writing, multi-nuclei, non-matching and illegal release tests:
+### 3.1 基础检测命令
+开启默认的非法读写、多核踩踏、非对齐访问和非法释放检测：
 ```bash
 mssanitizer --tool=memcheck <application>
 ```
 
-### 3.2 Advanced testing options
+### 3.2 高级检测选项
 
-*   **Commencing memory leak detection**:
-    If memory leaks are to be detected, the `--leak-check=yes` parameter needs to be added visibly:
+*   **开启内存泄漏检测**:
+    若需检测内存泄漏，需显式添加 `--leak-check=yes` 参数：
     ```bash
     mssanitizer --tool=memcheck --leak-check=yes <application>
     ```
 
-*   **Turn on the distribution memory unused detection**:
-    If you need to detect the assigned but not used memory, you need to add `--check-unused-memory=yes` parameters visibly:
+*   **开启分配内存未使用检测**:
+    若需检测已分配但未使用的内存，需显式添加 `--check-unused-memory=yes` 参数：
     ```bash
     mssanitizer --tool=memcheck --check-unused-memory=yes <application>
     ```
 
-> **💡 tip**:
-> *   The anomaly report will be printed to the terminal after the user program has been run.
-> *   The tool also supports the illegal reading and writing testing of HCCL communications interfaces (such as AllReduce, AllGather, etc.) and the functional integration class operator.
+> **💡 提示**:
+> *   异常报告将在用户程序运行完成后打印到终端。
+> *   该工具也支持对 HCCL 通信接口（如 AllReduce, AllGather 等）及通算融合类算子的非法读写检测。
 
 ---
 
-## 4. Memory anomaly resolution
+## 4. 内存异常报告解析
 
-The following is a typical format and interpretation of the various unusual reports.
+以下是各类异常的典型报告格式及解读方法。
 
-### 4.1 Illegal reading and writing (Illegal Read/Write)
-**Meaning**: operator visited undistributed GM or film memory (over and above hardware capacity).
+### 4.1 非法读写 (Illegal Read/Write)
+**含义**: 算子访问了未分配的 GM 或片上内存（超出硬件容量）。
 
-**Example report**:
+**示例报告**:
 ```text
-====== ERROR : illegal read of size 224
-====== at 0x12c0c0015000 on GM in add_custom_kernel
-====== in block aiv(0) on device 0
-====== code in pc current 0x77c (serialNo: 10)
-====== #0  $ {ASCEND_HOME_PATH}/compiler/tikcpp/tikcfw/impl/dav_c220/kernel_operator_data_copy_impl.h:58:9
+====== ERROR : illegal read of size 224 
+====== at 0x12c0c0015000 on GM in add_custom_kernel 
+====== in block aiv(0) on device 0 
+====== code in pc current 0x77c (serialNo: 10) 
+====== #0  $ {ASCEND_HOME_PATH}/compiler/tikcpp/tikcfw/impl/dav_c220/kernel_operator_data_copy_impl.h:58:9 
 ====== #1 ...
-====== #3 illegal_read_and_write/add_custom.cpp:18:5
+====== #3 illegal_read_and_write/add_custom.cpp:18:5 
 ```
 
 
-Interpret:
+解读:
 
-Error type: Illegally read 224 bytes.
+错误类型: 非法读取 224 字节。
 
-Location: GM address 0x12c0c0015,000, in add_custom_kernel kernel.
+位置: GM 地址 0x12c0c0015000，发生在 add_custom_kernel 核函数中。
 
-Code location: Correlation source file add_custom.cpp Line 18.
+代码定位: 对应源文件 add_custom.cpp 第 18 行。
 
-Note: If the debugging option is not added, call stack information #0 to #3 may not be displayed.
+注意: 若编译时未添加调试选项，可能不会显示 #0 到 #3 的调用栈信息。
 
 
-### 4.2 Multi-nuclei
+### 4.2 多核踩踏
 
-AI Core is the core of calculation in the Quest AI processor, where there are multiple AI Core, operator operations. These AI Cores move data from GM to or out of the calculation process. When there is no visible inter-nuclei synchronization, there is a problem of multi-touching if there is an overlap in the GM that is accessed between the cores and there is at least one cross-checking address to write. Here we make sure that there is no problem of stepping between the multiple cores through the owner 's concept, and when one memory is written into one, the memory is left with the other checking this memory.
+AI Core 是昇腾 AI 处理器中的计算核心，AI 处理器内部有多个 AI Core，算子运行就在这些 AI Core 上。这些 AI Core 会在计算过程中从 GM 上搬入或搬出数据。当没有显式地进行核间同步时，如果各个核之间访问的 GM 内存存在重叠并且至少有一个核对重叠地址进行写入时，则会发生多核踩踏问题。这里我们通过所有者的概念来保证多核之间不会发生踩踏问题，当一块内存被某一个核写入后，这块内存就由该核所有。当其他核对这块内存进行访问时就会产生 out of bounds 异常。
 
-**Example report:**
+**示例报告：**
 
 ```text
-====== WARNING : out of bounds of size 256
-// The basic information of the anomaly, containing the number of bytes in which step was taken
-====== at 0x12c0c00150fc on GM when writing data in add_custom_kernel
-// An abnormal memory location information, including the kernel name, address space and memory address, where the memory address is the first address in a memory access
-====== in block aiv(9) on device 0
-// Anomalous code corresponds to the block index that vector has cored
-====== code in pc current 0x7b8 (serialNo: 22)
-// Current Abnormal Pc Pointer and Call api Behaviour Serial Number
-====== #0  $ {ASCEND_HOME_PATH}/compiler/tikcpp/tikcfw/impl/dav_c220/kernel_operator_data_copy_impl.h:103:9
-// call stack, with file names, rows and column numbers, with the following exception code:
+====== WARNING : out of bounds of size 256 
+// 异常的基本信息，包含发生踩踏的字节数
+====== at 0x12c0c00150fc on GM when writing data in add_custom_kernel 
+// 异常发生的内存位置信息，包含发生的核函数名、地址空间与内存地址，此处的内存地址指一次内存访问中的首地址
+====== in block aiv(9) on device 0 
+// 异常代码对应 vector 核的 block 索引
+====== code in pc current 0x7b8 (serialNo: 22) 
+// 当前异常发生的 pc 指针和调用 api 行为的序列号
+====== #0  $ {ASCEND_HOME_PATH}/compiler/tikcpp/tikcfw/impl/dav_c220/kernel_operator_data_copy_impl.h:103:9 
+// 以下为异常发生代码的调用栈，包含文件名、行号和列号
 ====== #1  $ {ASCEND_HOME_PATH}/compiler/tikcpp/tikcfw/inner_interface/inner_kernel_operator_data_copy_intf.cppm:155:9
 ====== #2  $ {ASCEND_HOME_PATH}/compiler/tikcpp/tikcfw/inner_interface/inner_kernel_operator_data_copy_intf.cppm:461:5
 ====== #3 out_of_bound/add_custom.cpp:21:5
 ```
-In the above example, 256 bytes of access took place, there was a multi-nuclear step during the visit to the "0x12c0c00150fc" address on GM, and the command leading to the anomaly corresponded to line 21 of operator to achieve the add_custom.cpp file.
+以上示例中，共有 256 个字节的访问发生踩踏，对 GM 上的“0x12c0c00150fc”地址进行访问时存在多核踩踏，且导致异常发生的指令对应于算子实现文件 add_custom.cpp 的第 21 行。
 
-### 4.3 Non-matched visits (Misaligned Access)
+### 4.3 非对齐访问 (Misaligned Access)
 
-Meaning: Access to an address does not meet the minimum particle size requirements for DMA handling (e. g. 32 byte or 128 byte alignment), which may result in data errors or AI Core anomalies.
+含义: 访问地址不符合 DMA 搬运的最小粒度要求（如 32 字节或 128 字节对齐），可能导致数据错误或 AI Core 异常。
 
-Example report:
+示例报告:
 ```text
-====== ERROR : misaligned access of size 13
-// Basic information on anomalies, including bytes in which alignment abnormalities occur
-====== at 0x6 on UB in add_custom_kernel
-// Anecdotal memory location information, including kernel name, address space and memory address
-====== in block aiv(0) on device 0
-// Anomalous code corresponds to the block index that vector has cored
-====== code in pc current 0x780 (serialNo: 33)
-// Current Abnormal Pc Pointer and Call api Behaviour Serial Number
-====== #0  $ {ASCEND_HOME_PATH}/compiler/tikcpp/tikcfw/impl/dav_c220/kernel_operator_data_copy_impl.h:103:9
-// call stack, with file names, rows and column numbers, with the following exception code:
+====== ERROR : misaligned access of size 13 
+// 异常的基本信息，包含发生对齐异常操作的字节数
+====== at 0x6 on UB in add_custom_kernel 
+// 异常发生的内存位置信息，包含发生的核函数名、地址空间与内存地址
+====== in block aiv(0) on device 0 
+// 异常代码对应 vector 核的 block 索引
+====== code in pc current 0x780 (serialNo: 33) 
+// 当前异常发生的 pc 指针和调用 api 行为的序列号
+====== #0  $ {ASCEND_HOME_PATH}/compiler/tikcpp/tikcfw/impl/dav_c220/kernel_operator_data_copy_impl.h:103:9 
+// 以下为异常发生代码的调用栈，包含文件名、行号和列号
 ====== #1  $ {ASCEND_HOME_PATH}/compiler/tikcpp/tikcfw/inner_interface/inner_kernel_operator_data_copy_intf.cppm:155:9
 ====== #2  $ {ASCEND_HOME_PATH}/compiler/tikcpp/tikcfw/inner_interface/inner_kernel_operator_data_copy_intf.cppm:461:5
 ====== #3 illegal_align/add_custom.cpp:18:5
 ```
-In the above example, there are 13 bytes of alignment abnormal visits, alignment problems at the "0x6" address on the UB, and the command leading to the anomaly corresponds to row 18 of operator to achieve the add_custom.cpp file.
-Note: The exception report will not contain call stack information without adding the compiler option.
+以上示例中，共有针对 13 个字节的对齐异常访问，对 UB 上的“0x6”地址进行访问时存在对齐问题，且导致异常发生的指令对应于算子实现文件 add_custom.cpp 的第 18 行。
+注意：不添加编译选项的情况下，异常报告将不会出现调用栈信息。
 
-### 4.4 Memory Leakage
-The memory detection detects memory leaks on the side of Device, which are usually caused by the developers' failure to release correctly the memory of applications for use of the AscendCL interface, and because the concept of memory distribution does not currently exist for the internal storage (Local Memory), the memory leak may only appear on GM. By specifying the command line parameter, --leak-check=yes, the memory leak detection can be activated.
+### 4.4 内存泄漏
+内存检测可以检测出 Device 侧的内存泄漏问题，这些问题通常是开发者没有正确释放使用 AscendCL 接口申请的内存导致的，由于内部存储（Local Memory）目前不存在内存分配的概念，因此内存泄漏只可能出现在 GM 上。通过指定命令行参数 --leak-check=yes 可以开启内存泄漏检测。
 
-Example report:
+示例报告:
 ```text
-====== ERROR : LeakCheck: detected memory leaks
-// Memory leak detected
-====== Direct leak of 100 byte(s)
-// Each specific memory leak information
+====== ERROR : LeakCheck: detected memory leaks 
+// 检测到内存泄漏
+====== Direct leak of 100 byte(s) 
+// 具体每次的内存泄漏信息
 ====== at 0x124080013000 on GM allocated in add_custom.cpp:14 (serialNo: 37)
 ====== Direct leak of 1000 byte(s)
 ====== at 0x124080014000 on GM allocated in add_custom.cpp:15 (serialNo: 55)
-====== SUMMARY: 1100 byte(s) leaked in 2 allocation(s)
-// Summary of all memory leakages, including the number of leaks and the total number of bytes leaked
+====== SUMMARY: 1100 byte(s) leaked in 2 allocation(s) 
+// 全部内存泄漏的总结，包括发生泄漏的次数以及总共泄漏了多少字节等信息
 ```
 
-In the example above, the first memory leak information contains address space, memory address, memory length and code location information, which points to the file name and line number where the memory is specifically assigned.
-### 4.5 Illegal Releases
-Illegal release refers to an operation to release an undistributed or released address, generally on GM.
+以上示例中，第一个内存泄漏信息包含了地址空间、内存地址、内存长度以及代码定位信息，代码定位信息指向具体分配这块内存的调用所在的文件名和行号。
+### 4.5 非法释放
+非法释放是指对一个未分配的地址或者已释放的地址进行了释放操作，一般发生在 GM 上。
 
-Example report:
+示例报告：
 ```text
-====== ERROR: illegal free()
-// Basic information of an unusual nature indicates that there was an irregularity of illegal release.
-====== at 0x124080013000 on GM
-// Anomalous memory location information, containing the address space and memory address that occurred
-====== code in add_custom.cpp:84 (serialNo:63)
-// Anomalous code locator information containing the serial number of the file name, line number and call api behavior
+====== ERROR: illegal free()     
+// 异常的基本信息，表明发生了非法释放异常
+====== at 0x124080013000 on GM      
+// 异常发生的内存位置信息，包含发生的地址空间与内存地址
+====== code in add_custom.cpp:84 (serialNo:63)    
+// 异常发生的代码定位信息，包含文件名、行号和调用 api 行为的序列号
 ```
-In the above example, the "0x12408013,000" address on GM was illegally released and the instructions that led to the anomaly corresponded to line 84 of the operator material add_custom.cpp.
+以上示例中，对 GM 上的“0x124080013000”地址进行了非法释放，且导致异常发生的指令对应于算子实现文件 add_custom.cpp 的第 84 行。
 
-### 4.6 Distribution memory unused
-The distribution memory is unused, meaning that operator runtime applied for the memory, but did not use it until operator's operation was completed. The anomaly scenario is usually that operator used the wrong memory or there was a problem with operator's logic, usually on GM.
+### 4.6 分配内存未使用
+分配内存未使用是指算子运行时申请了内存，但直到算子运行完成，都没有使用该内存。该异常场景一般是算子使用了错误的内存或算子逻辑存在问题，一般发生在 GM 上。
 
-Example report:
+示例报告：
 ```text
-====== WARNING : Unused memory of 1000 byte(s)
-// Basic information on anomalies, indicating that memory distribution was detected as not using an anomaly
-====== at 1240c0016000 on GM
-// Anomalous memory location information, containing the address space and memory address that occurred
-====== code in add_custom.cpp:2 (serialNo: 69)
-// Anomalous code locator information containing the serial number of the file name, line number and call api behavior
-====== SUMMARY: 1100 byte(s) unused memory in 2 allocation(s)
-// Memory Allocation Unused Summary Information, including Numbers of Unused Memory Blocks and Bytes
+====== WARNING : Unused memory of 1000 byte(s) 
+// 异常的基本信息，表明检测到内存分配未使用异常
+====== at 1240c0016000 on GM 
+// 异常发生的内存位置信息，包含发生的地址空间与内存地址
+====== code in add_custom.cpp:2 (serialNo: 69) 
+// 异常发生的代码定位信息，包含文件名、行号和调用 api 行为的序列号
+====== SUMMARY: 1100 byte(s) unused memory in 2 allocation(s) 
+// 内存分配未使用的总结信息，包括未使用内存块的个数及字节等信息
 ```

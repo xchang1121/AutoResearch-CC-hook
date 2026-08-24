@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+# Copyright 2026 Huawei Technologies Co., Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 FINISH-phase report generator — produces .ar_state/report.md with summary
 tables and an inline SVG optimization curve.
@@ -384,27 +398,27 @@ def render_report(task_dir: str) -> str:
                 or (not lower_is_better and v > prev_best)):
             prev_best = v
 
-    direction_zh = "The lower the better." if lower_is_better else "The higher the better."
+    direction_zh = "越低越好" if lower_is_better else "越高越好"
     lines = [
-        f"# {task_name} — Optimization of reporting",
+        f"# {task_name} — 优化报告",
         "",
-        "# General",
+        "## 总览",
         "",
-        "Project value",
+        "| 项目 | 值 |",
         "|------|---|",
-        f"| Tasks | {_escape_md_cell(task_name)} |",
-        f"| Total rotations | {total_rounds} |",
-        f"| Accept / Failed / Discard | {n_keep} / {n_fail} / {n_discard} |",
-        f"| Main indicator | {primary} ({direction_zh}) |",
+        f"| 任务 | {_escape_md_cell(task_name)} |",
+        f"| 总轮次 | {total_rounds} |",
+        f"| 接受 / 失败 / 丢弃 | {n_keep} / {n_fail} / {n_discard} |",
+        f"| 主指标 | {primary} ({direction_zh}) |",
     ]
     if ref_val is not None:
         lines.append(f"| **{ref_label}** | **{ref_val:.2f}** |")
     if seed_val is not None:
         lines.append(f"| Seed kernel | {seed_val} |")
-    lines.append(f"| **Best Results** | **{best_val} (Round {best_round})** |")
-    lines.append(f"| Overall improvement (vs seed) | {improvement_str} |")
+    lines.append(f"| **最优结果** | **{best_val} (Round {best_round})** |")
+    lines.append(f"| 总改进 (vs seed) | {improvement_str} |")
     if speedup_str:
-        lines.append(f"| **Best acceleration ratio (vs {ref_label})** | **{speedup_str}** |")
+        lines.append(f"| **最优加速比 (vs {ref_label})** | **{speedup_str}** |")
     lines.append("")
 
     # Multi-shape: list the tested shapes once at the top so readers know
@@ -417,7 +431,7 @@ def render_report(task_dir: str) -> str:
             case_descs = d
             break
     if len(case_descs) > 1:
-        lines.append(f"## Testshape ({len(case_descs)})")
+        lines.append(f"## 测试形状 ({len(case_descs)})")
         lines.append("")
         for i, d in enumerate(case_descs):
             lines.append(f"{i}. {d}")

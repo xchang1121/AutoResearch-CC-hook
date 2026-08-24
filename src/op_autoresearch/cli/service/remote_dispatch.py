@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Huawei Technologies Co., Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """``op-autoresearch worker --remote-host`` dispatch — thin orchestration layer.
 
 Responsibilities: idempotent ``--start``, ``--stop``, ``--status``,
@@ -64,9 +78,9 @@ def _curl_status(host: str, port: int,
 
 
 def _is_ready(st: Optional[dict]) -> bool:
-    """True if if ``/status`` returns dict and status field is ready/ok. daemon
-    server.py returns ``initializing`` (HTTP passed but works) when it comes to spawn
-    It's not loaded) - This state can't skip the spawn, it can't count as pol-loop."""
+    """True iff ``/status`` 返回 dict 且 status 字段是 ready/ok。daemon
+    刚 spawn 时 server.py 返回 ``initializing``（HTTP 已通但 worker 还
+    没装好）——这个状态既不能跳过 spawn，也不能算 poll-loop 完成。"""
     if not isinstance(st, dict):
         return False
     return str(st.get("status", "")).lower() in ("ready", "ok")
@@ -74,10 +88,10 @@ def _is_ready(st: Optional[dict]) -> bool:
 
 def _curl_health(host: str, port: int,
                  timeout: Optional[float] = None) -> Optional[dict]:
-    """``/health``: Unobstructed discovery.
+    """``/health``：非阻塞 device queue 探活。
 
-    ``timeout`` defaults to leave an extra amount of clit excess than the daemon side health_timeout.
-    The transfer failed or the old daemon returned None when the endpoint was missing.
+    ``timeout`` 默认比 daemon 侧 health_timeout 多留一段 client 余量。
+    传输失败或老 daemon 缺少 endpoint 时返回 None。
     """
     import urllib.request
     if timeout is None:
@@ -116,9 +130,9 @@ def _build_remote_start_cmd(host_cfg: dict, backend: str, arch: str,
     conda shell hook before sourcing it so non-interactive SSH behaves like
     the user's login shell.
 
-    worker.* timing Pass. env It's all over, so far away. ``worker_service.start`` not
-    Hard-code fixed start-up waiting value —— config.yaml worker.* One change, one change, and one transfer.
-    Entry into force."""
+    worker.* timing 通过 env 透传，所以远端 ``worker_service.start`` 不
+    再硬编码固定启动等待值 —— config.yaml worker.* 一处改、本机和递归远端都
+    生效。"""
     repo_path = host_cfg["repo_path"]
     env_script = host_cfg.get("env_script")
 
@@ -127,9 +141,9 @@ def _build_remote_start_cmd(host_cfg: dict, backend: str, arch: str,
         f"export PYTHONPATH={shlex.quote(repo_path)}/src:"
         f"${{PYTHONPATH:-}}"
     )
-    # Daemon bound only loopback (tunnel forward: <port> to remote 127.0.0.1).
+    # daemon 只绑 loopback（tunnel 转发 :<port> 到远端 127.0.0.1）。
     parts.append("export WORKER_HOST=127.0.0.1")
-    # Recursive remote op-autoresearch skips the start-up form and the heartbeat noise; this machine command is responsible for the user's visible output.
+    # 递归远端 op-autoresearch 跳过启动表格和心跳噪声；本机命令负责用户可见输出。
     parts.append("export OP_AUTORESEARCH_CLI_QUIET=1")
     for key, value in timing.as_env().items():
         parts.append(f"export {key}={shlex.quote(value)}")
@@ -206,9 +220,9 @@ def _build_remote_stop_cmd(host_cfg: dict, port: int) -> str:
 
 
 def _ssh_dispatch(ssh_alias: str, bash_cmd: str) -> int:
-    """SSH-run rash_cmd on arias, stdout pass through the terminal (op-autoresearch)
-    Recursive print flow back. ``-o LogLevel=ERROR`` inhibit SSH banner is irrelevant
-    RemoteForward warning, keep the real ssh error."""
+    """SSH-run bash_cmd on alias，stdout 透传给本机终端（让远端 op-autoresearch
+    递归 print 流回来）。``-o LogLevel=ERROR`` 抑制 SSH banner 和无关
+    RemoteForward warning，保留真实 ssh 错误。"""
     return subprocess.call([
         "ssh", "-o", "LogLevel=ERROR",
         ssh_alias, f"bash -lc {shlex.quote(bash_cmd)}",
@@ -250,7 +264,7 @@ def dispatch_start(alias: str, host_cfg: dict, backend: Optional[str],
     fatal, others (catlass / pypto / ...) keep it warn. Pass None to let
     dispatch read ``defaults.dsl`` from config.yaml."""
     if "repo_path" not in host_cfg:
-        _step(f"remote_worker.hosts.{alias} Missing repo_path")
+        _step(f"remote_worker.hosts.{alias} 缺 repo_path")
         return 2
     ssh_alias = host_cfg.get("ssh_alias") or alias
     log_file = f"/tmp/op_autoresearch_worker_{port}.log"
@@ -267,25 +281,25 @@ def dispatch_start(alias: str, host_cfg: dict, backend: Optional[str],
     timing = worker_timing()
     probe_device_ids = _device_ids_from_arg(devices)
 
-    _step(f"[1/4] I'm a detective. 127.0.0.1:{port}/api/v1/status ...")
+    _step(f"[1/4] 探活 127.0.0.1:{port}/api/v1/status ...")
     st = _curl_status("127.0.0.1", port, timeout=timing.status_timeout)
     if _is_ready(st):
-        _step(f"[1/4] daemon Ready — nothing to do")
+        _step(f"[1/4] daemon 已就绪 — nothing to do")
         print(json.dumps(st, indent=2, ensure_ascii=False))
         return 0
     if st is not None:
-        _step(f"[1/4] /status Back {st.get('status')!r}No, it's not. ready —— Keep going down.")
+        _step(f"[1/4] /status 返回 {st.get('status')!r}，不是 ready —— 继续往下")
     else:
-        _step(f"[1/4] It's not working. → tunnel or daemon At least one of them isn't.")
+        _step(f"[1/4] 不通 → tunnel 或 daemon 至少一个不可达")
 
-    _step(f"[2/4] Rebuild your machine. ssh -L :{port} → {ssh_alias} ...")
+    _step(f"[2/4] 重建本机 ssh -L :{port} → {ssh_alias} ...")
     tunnel_stop_silent(port, ssh_alias)
     pid = tunnel_start(ssh_alias, port)
     if pid == 0:
-        # tunnel ssh-f stderr - run once_remote reuses the same
-        # A lias inverted SSH transmissible: VPN not active / network not available / decrypt configuration error /
-        # _SSH_ERROR Path does not exist in the first line of the diagnostic form.
-        _step(f"[2/4] tunnel Failed to raise —— Reverse diagnosis SSH TRANSFER:")
+        # tunnel ssh -f 静默吞了 stderr —— 跑一次 probe_remote 复用同一
+        # 个 alias 反向探 SSH 透传：VPN 没开 / 网络不通 / 免密配置错 /
+        # alias 不存在都会通过 _SSH_ERROR 路径出现在诊断表里第一行。
+        _step(f"[2/4] tunnel 起失败 —— 反向诊断 SSH 透传：")
         facts = probe_remote(ssh_alias, env_script, port, log_file, repo_path,
                              probe_device_ids)
         render_findings(
@@ -294,25 +308,25 @@ def dispatch_start(alias: str, host_cfg: dict, backend: Optional[str],
             facts.get("LOG_TAIL", ""),
         )
         return 1
-    _step(f"[2/4] tunnel pid={pid}, I'll be back in a few minutes. /status ...")
+    _step(f"[2/4] tunnel pid={pid}, 再探活 /status ...")
     st = _curl_status("127.0.0.1", port, timeout=timing.status_timeout)
     if _is_ready(st):
-        _step(f"[2/4] Yes. tunnel The line that breaks.daemon Still there. — Completed")
+        _step(f"[2/4] 是 tunnel 那条线断的；daemon 还在 — 完成")
         print(json.dumps(st, indent=2, ensure_ascii=False))
         return 0
-    _step(f"[2/4] tunnel It's all over, but... /status Not Ready → daemon Not running or still active init")
+    _step(f"[2/4] tunnel 通了但 /status 未就绪 → daemon 未运行或还在 init")
 
-    _step(f"[3/4] Long-range diagnostics (Presentation)env / backend deps / triton / disk / port / log)...")
+    _step(f"[3/4] 远端诊断（env / backend deps / triton / disk / port / log）...")
     facts = probe_remote(ssh_alias, env_script, port, log_file, repo_path,
                          probe_device_ids)
-    # Final fallback: program-based only when CLI/env + config.yaml has not given
-    # Infer (torch_npu can import aspend, otherwise cuda).
+    # Final fallback: 只有 CLI/env + config.yaml 都没给时才用 probe-based
+    # 推断（torch_npu 能 import 就 ascend，否则 cuda）。
     if effective_backend is None:
         effective_backend = "ascend" if facts.get("TORCH_NPU") == "ok" else "cuda"
     findings = classify(facts, port, backend=effective_backend,
                         dsl=effective_dsl, for_start=True)
     if has_fatal(findings):
-        _step(f"[3/4] fatal entry, do not start daemonDiagnosis:")
+        _step(f"[3/4] fatal 项，不启动 daemon。诊断：")
         render_findings(findings, facts.get("LOG_TAIL", ""))
         return 1
 
@@ -321,41 +335,41 @@ def dispatch_start(alias: str, host_cfg: dict, backend: Optional[str],
         if backend == "ascend":
             raw_arch = (facts.get("ARCH") or "").strip().lower()
             if not raw_arch:
-                _step(f"[3/4] No automatic extrapolation ascend arch,--arch It has to be visible.")
+                _step(f"[3/4] 无法自动推断 ascend arch，--arch 必须显式传")
                 render_findings(findings, facts.get("LOG_TAIL", ""))
                 return 1
             arch = raw_arch
         elif backend == "cuda":
             raw_arch = (facts.get("CUDA_ARCH") or "").strip().lower()
             if not raw_arch:
-                _step(f"[3/4] No automatic extrapolation cuda arch,--arch It has to be visible.")
+                _step(f"[3/4] 无法自动推断 cuda arch，--arch 必须显式传")
                 render_findings(findings, facts.get("LOG_TAIL", ""))
                 return 1
             arch = raw_arch
         elif backend == "cpu":
             raw_arch = (facts.get("CPU_ARCH") or "").strip().lower()
             if not raw_arch:
-                _step(f"[3/4] No automatic extrapolation cpu arch,--arch It has to be visible.")
+                _step(f"[3/4] 无法自动推断 cpu arch，--arch 必须显式传")
                 render_findings(findings, facts.get("LOG_TAIL", ""))
                 return 1
             arch = raw_arch
         else:
-            _step(f"[3/4] backend={backend!r} No remotes. arch It's an automatic inference.--arch It has to be visible.")
+            _step(f"[3/4] backend={backend!r} 没有远端 arch 自动推断，--arch 必须显式传")
             render_findings(findings, facts.get("LOG_TAIL", ""))
             return 1
     if devices is None:
         devices = "0"
-    _step(f"[3/4] The probe. OK: backend={backend}, arch={arch}, "
+    _step(f"[3/4] 探针 OK: backend={backend}, arch={arch}, "
           f"devices={devices}, dsl={effective_dsl or '(any)'}")
 
-    _step(f"[4/4] SSH Up the far end. daemon at {ssh_alias}:{port} ...")
+    _step(f"[4/4] SSH 起远端 daemon at {ssh_alias}:{port} ...")
     remote_cmd = _build_remote_start_cmd(
         host_cfg, backend=backend, arch=arch, devices=devices, port=port,
         timing=timing,
     )
     rc = _ssh_dispatch(ssh_alias, remote_cmd)
     if rc != 0:
-        _step(f"[4/4] remote daemon launch rc={rc} —— Rediagnosing:")
+        _step(f"[4/4] remote daemon launch rc={rc} —— 重新诊断：")
         facts2 = probe_remote(ssh_alias, env_script, port, log_file, repo_path,
                               probe_device_ids)
         render_findings(
@@ -365,29 +379,29 @@ def dispatch_start(alias: str, host_cfg: dict, backend: Optional[str],
         )
         return rc
 
-    _step(f"[4/4] daemon spawned,poll /status ready(Maximum {timing.ready_timeout}s)...")
+    _step(f"[4/4] daemon spawned，poll /status ready（最长 {timing.ready_timeout}s）...")
     deadline = time.time() + timing.ready_timeout
     last_beat = time.time()
     while time.time() < deadline:
-        # Ready phase with ready_probe_timeout (round semantics), different from idle
-        # --status's status_timeout (one-time query). _is_ready accepted only
-        # Ready/ok;initializing does not count (daemon start-up period HTTP passed but working
-        # It's not ready yet. Keep waiting.
+        # ready 阶段用 ready_probe_timeout（轮询语义），区别于 idle
+        # --status 的 status_timeout（一次性查询）。_is_ready 只接受
+        # ready/ok；initializing 不算（daemon 启动期 HTTP 已通但 worker
+        # 还没装好，继续等）。
         st = _curl_status("127.0.0.1", port,
                           timeout=timing.ready_probe_timeout)
         if _is_ready(st):
-            _step(f"[4/4] /status ready — Completed")
+            _step(f"[4/4] /status ready — 完成")
             print(json.dumps(st, indent=2, ensure_ascii=False))
             return 0
         now = time.time()
         if now - last_beat >= timing.ready_poll_interval:
-            _step(f"   /status Not Ready "
+            _step(f"   /status 未就绪 "
                   f"({int(now - deadline + timing.ready_timeout)}s"
                   f"/{timing.ready_timeout}s)...")
             last_beat = now
         time.sleep(1)
 
-    _step(f"[4/4] /status {timing.ready_timeout}s Not Ready —— Rediagnosing:")
+    _step(f"[4/4] /status {timing.ready_timeout}s 未就绪 —— 重新诊断：")
     facts2 = probe_remote(ssh_alias, env_script, port, log_file, repo_path,
                           probe_device_ids)
     render_findings(
@@ -404,7 +418,7 @@ def dispatch_stop(alias: str, host_cfg: dict, port: int) -> int:
     tunnel_stop_silent(port, ssh_alias)
     print(f"[op-autoresearch] tore down local tunnel for :{port}")
     if "repo_path" not in host_cfg:
-        print(f"[op-autoresearch] remote_worker.hosts.{alias} Missing repo_path",
+        print(f"[op-autoresearch] remote_worker.hosts.{alias} 缺 repo_path",
               file=sys.stderr)
         return 2
     rc = _ssh_dispatch(ssh_alias, _build_remote_stop_cmd(host_cfg, port))
@@ -429,13 +443,13 @@ def dispatch_status(alias: str, host_cfg: dict, port: int, *,
     if st is None:
         holder = who_holds_port(port)
         if holder is None:
-            print(f"Worker 127.0.0.1:{port} Unattainable; live :port Free → Run! `--start`.")
+            print(f"Worker 127.0.0.1:{port} 不可达；本机 :port 空闲 → 跑 `--start`。")
         else:
             print(
-                f"Worker 127.0.0.1:{port} Unattainable;:port By PID={holder['pid']} Hold on.\n"
+                f"Worker 127.0.0.1:{port} 不可达；:port 被 PID={holder['pid']} 占着\n"
                 f"  cmdline: {holder['cmdline'][:120]}\n"
-                f"  → Residues tunnel:`{kill_pid_hint(holder['pid'])}` after --start;"
-                f"Far daemon Stopped:--stop + --start"
+                f"  → 残留 tunnel：`{kill_pid_hint(holder['pid'])}` 后 --start；"
+                f"远端 daemon 已停：--stop + --start"
             )
         ssh_alias = host_cfg.get("ssh_alias") or alias
         if ssh_alias != "local":
@@ -468,8 +482,8 @@ def dispatch_status(alias: str, host_cfg: dict, port: int, *,
     print(json.dumps(out, indent=2, ensure_ascii=False))
     if health is not None and not health.get("healthy"):
         print(
-            f"\n[op-autoresearch] /status OK but /health Report! degraded —— "
-            f"daemon handler Possible blocking. Error:{health.get('error')!r}",
+            f"\n[op-autoresearch] /status OK 但 /health 报 degraded —— "
+            f"daemon handler 可能阻塞。错误：{health.get('error')!r}",
             file=sys.stderr,
         )
         return 1
@@ -490,7 +504,7 @@ def dispatch_reconnect_tunnel(alias: str, host_cfg: dict, port: int) -> int:
     st = _curl_status("127.0.0.1", port)
     if st is None:
         print(
-            f"[op-autoresearch] /status It's still not working.daemon Maybe it stopped. — Use it. --stop + --start.",
+            f"[op-autoresearch] /status 仍不通；daemon 可能也已停 — 用 --stop + --start。",
             file=sys.stderr,
         )
         return 1

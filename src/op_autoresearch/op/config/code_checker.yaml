@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Huawei Technologies Co., Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # CodeChecker static-analysis policy. This file is the sole source of
 # truth for every keyword / identifier the checker relies on — the
 # Python module `op_autoresearch.op.utils.code_checker` has zero fallback
@@ -371,17 +385,17 @@ autotune:
 
 
 a5_compliance:
-  # Atlas A5 - Triton_ascend to enable the integration of Cube and Victor
+  # Atlas A5 - triton_ascend 可以使能亲和写法实现Cube和Vector的融合
   # al.scope
-  # Al.fixpipe go fixpipe data removal
-  # bl.alloc distributionbuffer
-  # bl.to_buffer buffer
-  # bl.to_tensor tensor to buffer
-  # bl.subview do slices of buffer
-  # bl.sub_vec_id to get the current AI Core's sub-author ID
-  # Bl. sync_block_set to send a cross-nuclear sync event
-  # bl.sync_block_waiting for cross-nuclear sync event
-  # Prosthetic switch, default close
+  # al.fixpipe 走fixpipe搬运数据
+  # bl.alloc 分配buffer
+  # bl.to_buffer buffer转tensor
+  # bl.to_tensor tensor转buffer
+  # bl.subview 对buffer做切片
+  # bl.sub_vec_id 获取当前AI Core的子vector核编号
+  # bl.sync_block_set 发出跨核同步事件
+  # bl.sync_block_wait 等待跨核同步事件
+  # 亲和写法开关，默认关闭
   enable_triton_ascend_affinity_check: false
   arch_prefix: ascend950
   dsl: triton_ascend

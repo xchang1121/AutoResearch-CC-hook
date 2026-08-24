@@ -1,6 +1,6 @@
 ---
 name: tilelang-cuda-optimization
-description: "TileLang CUDA performance optimizes a generic policy, best practice and debugging techniques. This applies to the generation and optimization of kernel codes that require upgrading of TileLang internal nuclei, checking in case of compilation/run error, or knowledge of TileLang platform limitations"
+description: "TileLang CUDA 性能优化通用策略、最佳实践和调试技巧汇总。适用于需要提升 TileLang 内核性能、遇到编译/运行错误需要排查、或需要了解 TileLang 平台限制的内核代码生成和优化场景"
 category: method
 version: "1.0.0"
 metadata:
@@ -13,76 +13,76 @@ structure:
     - tilelang-cuda-gemm
 ---
 
-# TileLang CUDA Performance Optimization Guide
+# TileLang CUDA 性能优化指南
 
-## 1. Performance Optimization Policy
+## 1. 性能优化策略
 
-### 1.1 Segment size selection
+### 1.1 分块大小选择
 
-- **Principle**: Balancing parallelity and resource occupation
-- **Recommend**: use 2 quartz
-- **Common use**: block_M/block_N = 64, 128, 256; block_K = 16, 32, 64
+- **原则**: 平衡并行度与资源占用
+- **建议**: 使用 2 的幂次
+- **常用值**: block_M/block_N = 64, 128, 256; block_K = 16, 32, 64
 
-| operator Type | Recommended block size | Threads |
+| 算子类型 | 推荐分块大小 | 线程数 |
 |---------|-------------|-------|
 | Element-wise | block = 256-1024 | 128-256 |
 | GEMM | block_M=128, block_N=128, block_K=32 | 128 |
 | Reduce | block = 256-512 | 128-256 |
 
-### 1.2 Software pipeline Optimization
+### 1.2 软件流水线优化
 
 ```python
 def pipelined_computation():
-    # Select the appropriate pipeline depth
-    num_stages = 3  # Usually. 2-4 It's the best stage.
-
+    # 选择合适的流水线深度
+    num_stages = 3  # 通常 2-4 个阶段效果最好
+    
     for ko in T.Pipelined(T.ceildiv(K, block_K), num_stages=num_stages):
-        # Overlap memory operations and calculations
+        # 重叠内存操作和计算
         T.copy(A[by * block_M, ko * block_K], A_shared)
         T.copy(B[ko * block_K, bx * block_N], B_shared)
         T.gemm(A_shared, B_shared, C_local)
 ```
 
-**pipeline Depth selection**:
-- `num_stages=2`: Minimum shared memory usage
-- `num_stages=3`: Usually best (recommended default value)
-- `num_stages=4`: More overlap but more shared memory
-- `num_stages=5+`: Could exceed the shared memory limit
+**流水线深度选择**：
+- `num_stages=2`: 最少的共享内存使用
+- `num_stages=3`: 通常最优（推荐默认值）
+- `num_stages=4`: 更多重叠但占用更多共享内存
+- `num_stages=5+`: 可能超出共享内存限制
 
-### 1.3 Parallelization strategies
+### 1.3 并行化策略
 
 ```python
-# 1. Coincidence of fine particles
+# 1. 细粒度并行
 for i, j in T.Parallel(block_M, block_N):
-    # AutoMap to Thread
+    # 自动映射到线程
     pass
 
-# 2. vector optimization
+# 2. 向量化优化
 for k in T.vectorized(TILE_K):
     A_local[k] = A[bk * BLOCK_K + tk * TILE_K + k]
 
-# 3. Serial cycle (used when necessary)
+# 3. 串行循环（必要时使用）
 for k in T.serial(block_K):
-    # Order execution
+    # 顺序执行
     pass
 ```
 
-### 1.4 data type Optimization
+### 1.4 数据类型优化
 
 ```python
-# 1. Use mixed accuracy
-input_dtype = "float16"    # Enter Data
-accum_dtype = "float"      # Increased use of compressoraccuracy
+# 1. 使用混合精度
+input_dtype = "float16"    # 输入数据
+accum_dtype = "float"      # 累加器使用更高精度
 
-# 2. Type conversion optimization
+# 2. 类型转换优化
 result = A[i].astype(accum_dtype) * B[i].astype(accum_dtype)
 
-# 3. Avoid unnecessary type conversion (Uniform conversion before calculation)
+# 3. 避免不必要的类型转换（在计算前统一转换）
 ```
 
-## 2. Memory Optimization Policy
+## 2. 内存优化策略
 
-### 2.1 Memory level structure optimization
+### 2.1 内存层次结构优化
 
 ```python
 def memory_optimized_matmul(M, N, K, block_M, block_N, block_K):
@@ -90,42 +90,42 @@ def memory_optimized_matmul(M, N, K, block_M, block_N, block_K):
     def main(A: T.Tensor((M, K), "float16"),
              B: T.Tensor((K, N), "float16"),
              C: T.Tensor((M, N), "float16")):
-
+        
         with T.Kernel(T.ceildiv(N, block_N), T.ceildiv(M, block_M), threads=128) as (bx, by):
-            # 1. shared memory Allocation - Cache data for frequent access
+            # 1. 共享内存分配 - 缓存频繁访问的数据
             A_shared = T.alloc_shared((block_M, block_K), "float16")
             B_shared = T.alloc_shared((block_K, block_N), "float16")
-
-            # 2. Depositor segment distribution - cumulative and temporary storage
+            
+            # 2. 寄存器片段分配 - 累加和临时存储
             C_local = T.alloc_fragment((block_M, block_N), "float")
-
-            # 3. Enable swizzle to enhance the L2 cache locale
+            
+            # 3. 启用 swizzle 以提高 L2 缓存局部性
             T.use_swizzle(panel_size=10, enable=True)
-
+            
             T.clear(C_local)
-
-            # 4. Software pipeline optimized memory bandwidth
+            
+            # 4. 软件流水线优化内存带宽
             for ko in T.Pipelined(T.ceildiv(K, block_K), num_stages=3):
                 T.copy(A[by * block_M, ko * block_K], A_shared)
                 T.copy(B[ko * block_K, bx * block_N], B_shared)
                 T.gemm(A_shared, B_shared, C_local)
-
+            
             T.copy(C_local, C[by * block_M, bx * block_N])
-
+    
     return main
 ```
 
-### 2.2 Memory access mode optimization
+### 2.2 内存访问模式优化
 
 ```python
-# 1. Load with vector
+# 1. 使用向量化加载
 for k in T.vectorized(TILE_K):
     A_local[k] = A[bk * BLOCK_K + tk * TILE_K + k]
 
-# 2. Consolidation of memory access
-T.copy(A[start:end], A_shared)  # Automatically merge access
+# 2. 合并内存访问
+T.copy(A[start:end], A_shared)  # 自动合并访问
 
-# 3. Optimizing the use of layout to avoid bank conflicts
+# 3. 使用布局优化避免银行冲突
 from tilelang.intrinsics import make_mma_swizzle_layout
 T.annotate_layout({
     A_shared: make_mma_swizzle_layout(A_shared),
@@ -133,124 +133,124 @@ T.annotate_layout({
 })
 ```
 
-### 2.3 L2 Cache Optimization
+### 2.3 L2 缓存优化
 
 ```python
-# Enable rasterization to improve L2 cache locality
+# 启用光栅化以提高 L2 缓存局部性
 T.use_swizzle(panel_size=10, enable=True)
 ```
 
-## 3. Sync Security Optimization
+## 3. 同步安全优化
 
-### 3.1 Use of built-in attribution functions (recommended strongly)
+### 3.1 使用内置归约函数（强烈推荐）
 
 ```python
-# ✅ recommended: use an internal attribute function without manual synchronization
+# ✅ 推荐：使用内置归约函数，无需手动同步
 T.reduce_sum(input_tensor, output_tensor, dim=axis)
 T.reduce_max(input_tensor, output_tensor, dim=axis)
 T.reduce_min(input_tensor, output_tensor, dim=axis)
 T.reduce_mean(input_tensor, output_tensor, dim=axis)
 ```
 
-### 3.2 Avoidance of manual return
+### 3.2 避免手动归约
 
 ```python
-# ❌ absolutely forbidden: date by hand leads to death of thread card
+# ❌ 绝对禁止：手动归约会导致线程卡死
 while stride > 0:
     if tid < stride:
         shared[tid] += shared[tid + stride]
-    T.sync_threads()  # The risk of a dead lock.
+    T.sync_threads()  # 死锁风险
     stride //= 2
 
-# ✅ Correct: Use internal union
-T.reduce_sum(input, output, dim=1)  # Synchronising folder
+# ✅ 正确：使用内置归约
+T.reduce_sum(input, output, dim=1)  # 无需同步
 ```
 
-### 3.3 Recommended parallel mode of calculation
+### 3.3 推荐的并行计算模式
 
 ```python
-# 1. Parallel calculations using T. Parallel
+# 1. 使用 T.Parallel 进行并行计算
 for i, j in T.Parallel(M, N):
     result[i, j] = input[i, j] * scale[i]
 
-# 2. vector conversion using T.vectorized
+# 2. 使用 T.vectorized 进行向量化
 for i in T.vectorized(N):
     result[i] = input[i] * scale
 
-# 3. Use T. Pipelined for pipeline
+# 3. 使用 T.Pipelined 进行流水线
 for k in T.Pipelined(K, num_stages=3):
     T.copy(A[k], shared_A)
     T.gemm(shared_A, shared_B, result)
 ```
 
-## 4. Numerical stability
+## 4. 数值稳定性
 
-### 4.1 Spill protection
+### 4.1 防溢出处理
 
 ```python
-# Softmax numerical stabilization
+# Softmax 数值稳定化
 T.fill(scores_max, -T.infinity("float"))
 T.reduce_max(acc_s, scores_max, dim=1)
 for i, j in T.Parallel(block_M, block_N):
     acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
 ```
 
-### 4.2 accuracy Upgrade
+### 4.2 精度提升
 
-- **excrete with float32**: even if input is float16/bflota16
-- **Final re-conversion**: returns target accuracy after calculation is completed
+- **使用 float32 进行累加**: 即使输入是 float16/bfloat16
+- **最后再转换**: 计算完成后再转回目标精度
 
 ```python
-# Use high accuracy
-C_local = T.alloc_fragment((block_M, block_N), "float")  # float32 Gradient
-# Conversion after calculation
+# 累加器使用高精度
+C_local = T.alloc_fragment((block_M, block_N), "float")  # float32 累加
+# 计算完成后转换
 result = C_local.astype("float16")
 ```
 
-## 5. Performance Checklist
+## 5. 性能检查清单
 
-### Memory Access
-- [ ] Optimizing memory access mode (merger access, vector)
-- [ ] Rational use of shared memory cache data
-- [ ] Enable swizzle to optimize the L2 cache
+### 内存访问
+- [ ] 优化内存访问模式（合并访问、向量化）
+- [ ] 合理使用共享内存缓存数据
+- [ ] 启用 swizzle 优化 L2 缓存
 
-### Parallel Configuration
-- [ ] Whether the size of the fraction is reasonable (2 times)
-- [ ] Suitability of threads (128/256)
-- [ ] Appropriate depth of software pipeline (2-4)
+### 并行度配置
+- [ ] 分块大小是否合理（2 的幂次）
+- [ ] 线程数是否合适（128/256）
+- [ ] 软件流水线深度是否合适（2-4）
 
-### Calculator Optimization
-- [ ] Rational use of software pipeline `T.Pipelined`
-- [ ] Calculate using mixed accuracy
-- [ ] Use the inline language (T.gemm, T.reduce_*, etc.)
+### 计算优化
+- [ ] 合理使用软件流水线 `T.Pipelined`
+- [ ] 使用混合精度计算
+- [ ] 利用内置原语（T.gemm, T.reduce_* 等）
 
-### Security
-- [ ] **Check the use security**: ensure that all threads are synchronized
-- [ ] **Avoiding Synchronization in Conditional Branch**: Preventing Death Locks
-- [ ] **Use internal attribute function**: Avoiding the death of a linear card as a result of manual surrender
-- [ ] **Correct use of thread index**: use T. Parallel instead of T.get_thread_binding
+### 安全性
+- [ ] **检查同步使用安全性**: 确保所有线程都参与同步
+- [ ] **避免条件分支中的同步**: 防止死锁
+- [ ] **使用内置归约函数**: 避免手动归约导致的线程卡死
+- [ ] **正确使用线程索引**: 使用 T.Parallel 而不是 T.get_thread_binding
 
-### Numerical stability
-- [ ] Reduce Operation Is There Spill Responsive
-- [ ] Whether to use float32 for intermediate accumulation
-- [ ] Whether border situations, such as zero, negative number openings, have been addressed
+### 数值稳定性
+- [ ] Reduce 操作是否有防溢出处理
+- [ ] 是否使用 float32 进行中间累加
+- [ ] 是否处理了除零、负数开方等边界情况
 
-## 6. Common performance traps
+## 6. 常见性能陷阱
 
-1. **Overdivided**: Too small file leads to inefficient memory access
-2. **pipeline Depth inappropriate**: too deep or too shallow pipeline influence performance
-3. **Memory Bank Conflict**: shared memory Access Malformed Mode
-4. **Typologies conversion costs**: Frequent type conversions affect performance
-5. **Sync cost**: unnecessary thread sync
-6. **Sync Deadlock**: Synchronization in Conditional Branch resulted in the death of a thread card
-7. **Line Index Error**: Using Wrong Thread Index
-8. **shared memory distribution error**: allocation of shared memory in conditional branch
+1. **过度分块**: 过小的 tile 导致内存访问效率低
+2. **流水线深度不当**: 过深或过浅的流水线影响性能
+3. **内存银行冲突**: 共享内存访问模式不当
+4. **类型转换开销**: 频繁的类型转换影响性能
+5. **同步开销**: 不必要的线程同步
+6. **同步死锁**: 条件分支中的同步导致线程卡死
+7. **线程索引错误**: 使用错误的线程索引获取方式
+8. **共享内存分配错误**: 在条件分支中分配共享内存
 
-## Summary of best practice
+## 最佳实践总结
 
-1. **Correct performance before performance**: Ensure kernel correctness before optimizing performance
-2. **Memory priority**: Prioritize memory access mode
-3. **Synthetic security**: strict adherence to the synchronous use code, avoiding death locks
-4. **Inline language**: priority is given to T.gemm, T.reduce_*, etc.
-5. **Mixed accuracy**: Input with low accuracy, cumulative with high accuracy
-6. **pipeline**: Hide memory latency by T. Pipelined
+1. **先正确性后性能**: 确保内核正确性后再优化性能
+2. **内存优先**: 优先优化内存访问模式
+3. **同步安全**: 严格遵循同步使用规范，避免死锁
+4. **使用内置原语**: 优先使用 T.gemm、T.reduce_* 等内置函数
+5. **混合精度**: 输入用低精度，累加用高精度
+6. **流水线**: 通过 T.Pipelined 隐藏内存延迟

@@ -1,52 +1,52 @@
-# Reduce Class operator - AR Col-Spit branch
+# Reduce 类算子 - AR Col-Split 分支
 
-> **Applicable scene**: A0=1 (endaxis), R > present (distribution mode)
-
----
-
-## Contents
-
-- [I. Branch characteristics](#a branch feature)
-- [II, Buffer Planning](#2 Buffer - Planning)
-- [III, Tiling Parameter Calculation](#triling - Parameter Calculation)
-- [IV. Kernel Achievement Point](#4kernel - Achievement Point)
-- [V, common issue](#5 common issue)
-- [Performanceoptimization recommendation](#Six.optimization recommendation)
+> **适用场景**: A0=1（尾轴）, R > threshold（分载模式）
 
 ---
 
-## I. SPECIFIC STATE
+## 目录
 
-| Features | Annotations |
+- [一、分支特征](#一分支特征)
+- [二、Buffer 规划](#二buffer-规划)
+- [三、Tiling 参数计算](#三tiling-参数计算)
+- [四、Kernel 实现要点](#四kernel-实现要点)
+- [五、常见问题](#五常见问题)
+- [六、性能优化建议](#六性能优化建议)
+
+---
+
+## 一、分支特征
+
+| 特征 | 说明 |
 |------|------|
-| **Template type** | AR Template (Axes + R) |
-| **Shape Abstract** | (A1, R) |
-| **Load mode** | Split (unable to leave whole row, split chunk processing) |
-| **Conditions applicable** | A0 = 1, R > [full load threshold](#3.1 full load threshold) |
-| **Critical direction** | Column Orientation (in R-point chunk) |
-| **Data continuity** | R elements per row continuous |
-| **Reduce Results** | scalar (1 value) |
+| **模板类型** | AR 模板（A 轴 + R 轴） |
+| **Shape 抽象** | (A1, R) |
+| **载入模式** | 分载（整行放不下，分 chunk 处理） |
+| **适用条件** | A0=1, R > [全载阈值](#3.1全载阈值) |
+| **切分方向** | 列方向（沿 R 分 chunk） |
+| **数据连续性** | 每行 R 个元素连续 |
+| **Reduce 结果** | 标量（1 个值） |
 
 ---
 
-## II. Buffer Planning
+## 二、Buffer 规划
 
-### 2.1 FP32 scene (Kernel side)
+### 2.1 FP32 场景（Kernel侧）
 
 ```cpp
-// Single Buffer mode (in chunk processing)
+// Single Buffer 模式（分 chunk 处理）
 pipe->InitBuffer(inQueueX, 1, chunkCols * sizeof(float));
-pipe->InitBuffer(outQueueY, 1, 32);  // ReduceOutcome (%)1individualscalar)
-pipe->InitBuffer(chunkResultBuf, 1, 32);  // chunkIntermediate result
+pipe->InitBuffer(outQueueY, 1, 32);  // Reduce结果（1个标量）
+pipe->InitBuffer(chunkResultBuf, 1, 32);  // chunk中间结果
 pipe->InitBuffer(tmpBuf, 1, tmpBufSize);
 
-// UB = chunkCols×4 + 32 + tmpBufSize
+// 总 UB = chunkCols×4 + 32 + 32 + tmpBufSize
 ```
 
-### 2.2 ChinkCols Calculation (Host side)
+### 2.2 chunkCols 计算（Host侧）
 
 ```cpp
-// UB-based capacity calculation: Maximum number of columns to support when 1 line calculation is completed
+// 基于 UB 容量计算：完成1行数据计算时，支持的最大列数chunkCols
 chunkCols = std::min(chunkCols, R);
 uint32_t numChunks = (R + chunkCols - 1) / chunkCols;
 uint32_t lastChunkSize = R - (numChunks - 1) * chunkCols;
@@ -54,16 +54,16 @@ uint32_t lastChunkSize = R - (numChunks - 1) * chunkCols;
 
 ---
 
-## III. Tiling Parameter Calculation
+## 三、Tiling 参数计算
 
-### 3.1 Divisional determinations
+### 3.1 分载判定
 
-Explanation: When you complete the calculation of one line of data in the UB, the maximum number of columns to be supported is chunkcols. If R > chunkcols is required to be divided.
+解释：在UB中完成1行数据计算时，支持的最大列数chunkCols。若R > chunkCols，则需要分载。
 
-### 3.2 Polynuclear cut parameters (Host side)
+### 3.2 多核切分参数（Host侧）
 
 ```cpp
-// Split by A1 (line)
+// 按 A1（行）切分
 uint32_t rowsPerCore = (A1 + blockDim - 1) / blockDim;
 uint32_t usedCoreNum = (A1 + rowsPerCore - 1) / rowsPerCore;
 uint32_t tailCoreRows = A1 % rowsPerCore;
@@ -72,45 +72,45 @@ if (tailCoreRows == 0 && A1 > 0) tailCoreRows = rowsPerCore;
 
 ---
 
-## IV. KERNEL IMPLEMENTS
+## 四、Kernel 实现要点
 
-### 4.1 Data flows
+### 4.1 数据流
 
 ```
-GM (A1, R) → min chunk Processing
+GM (A1, R) → 分 chunk 处理
     ↓
 Chunk 0: GM[0:chunkCols] → UB
     ↓
 [ReduceMax] → chunkResult_0
     ↓
-[Update globalResult] → globalResult = merge(globalResult, chunkResult_0)
+[更新 globalResult] → globalResult = merge(globalResult, chunkResult_0)
     ↓
-Chunk 1, 2, ... (Repeat)
+Chunk 1, 2, ... (重复)
     ↓
 UB → GM (A1)
 ```
 
-### 4.2 Core API Call
+### 4.2 核心 API 调用
 
-#### ReduceMax Distribution Achieved (Kernel side)
+#### ReduceMax 分载实现（Kernel侧）
 
 ```cpp
-// Initialize global maximum value -∞
+// 初始化全局最大值为 -∞
 float globalMax = -INFINITY;
 
 for (uint32_t chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
     uint32_t chunkStart = chunkIdx * chunkCols;
     uint32_t chunkSize = (chunkIdx == numChunks - 1) ? lastChunkSize : chunkCols;
-
+    
     // Load chunk. use `DataCopyPad` in case last chunk is not 32 bytes aligned.
     DataCopyExtParams copyParams{1, static_cast<uint32_t>(chunkSize * sizeof(float)), 0, 0, 0};
     DataCopyPadExtParams<float> padParams{false, 0, 0, 0};
     DataCopyPad(xLocal, xGm[chunkStart], copyParams, padParams);
-
+    
     // ReduceMax for this chunk
     ReduceMax<float>(chunkResultLocal, xLocal, tmpLocal, chunkSize, false);
     float chunkMax = chunkResultLocal.GetValue(0);
-
+    
     // Update `globalMax`. DO NOT use `std::` function.
     if (chunkMax > globalMax) {
         globalMax = chunkMax;
@@ -120,30 +120,30 @@ for (uint32_t chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
 // use `globalMax` to complete the reset calculation...
 ```
 
-### 4.3 Key Care Points
+### 4.3 关键注意点
 
-1. **cross chunk merger**:
-   - ReduceMax: use `if` or 'Trimenc 'to take maximum value
-   - ReduceSum: use `+=` API cumulative
-2. **Border processing**: last chunk may be smaller than chunkcols. Use `CopyDataPad` when moving in/out
-3. **Initialization**:
-   - ReduceMax: Initialize to the minimum values of `-INFINITY` or data type
-   - ReduceSum: Initialize as `0`
+1. **跨 chunk 合并**: 
+   - ReduceMax: 使用 `if` 或者 `三目运算` 取最大值
+   - ReduceSum: 使用 `+=` API 累加
+2. **边界处理**: 最后一个 chunk 的大小可能小于 chunkCols。搬入/搬出时需要使用`CopyDataPad`
+3. **初始化**: 
+   - ReduceMax: 初始化为 `-INFINITY` 或数据类型的最小值
+   - ReduceSum: 初始化为 `0`
 
 ---
 
-## V. common issue
+## 五、常见问题
 
-| Problem | Reason | Solutions |
+| 问题 | 原因 | 解决方案 |
 |-----|------|---------|
-| accuracy drop | chunk merge logical error | Ensure correct merger (Max takes maximum value, Sum add) |
-| Output Error | Last chunk size processing error | Use lastChunkSize instead of chunkCols |
-| Poor performance | Over and over again. | Optimize the chunk strategy and reduce the number of times |
-| Buffer Insufficient | cunkCols Calculator Error | Based on UB capacity correct calculation |
+| 精度下降 | chunk 合并逻辑错误 | 确保正确合并（Max取最大值，Sum累加） |
+| 输出错误 | 最后一个 chunk 大小处理错误 | 使用 lastChunkSize 而非 chunkCols |
+| 性能差 | 多次遍历数据 | 优化 chunk 策略，减少遍历次数 |
+| Buffer 不足 | chunkCols 计算错误 | 基于 UB 容量正确计算 |
 
 ---
 
-## VI. PERFORMANCEoptimization recommendation
+## 六、性能优化建议
 
-1. **chunk Optimization**: Select the best chunk size based on UB capacity to minimize the number of chunks
-2. **Avoiding unnecessary copies of data**: consolidation directly on chunk results and reduction of intermediate storage
+1. **chunk 大小优化**: 根据 UB 容量选择最优 chunk 大小，尽量大以减少chunk数量
+2. **避免不必要的数据拷贝**: 直接在chunk结果上合并，减少中间存储

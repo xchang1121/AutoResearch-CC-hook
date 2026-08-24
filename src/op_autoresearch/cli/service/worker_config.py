@@ -1,3 +1,17 @@
+# Copyright 2025-2026 Huawei Technologies Co., Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Single-source-of-truth config loader for ``op-autoresearch worker``.
 
 Replaces four sibling helpers (``load_default_port`` / ``load_default_dsl``
@@ -13,13 +27,13 @@ from dataclasses import dataclass, field
 from typing import Dict, Optional
 
 from op_autoresearch.op.utils.hw_detect import derive_arch
-# The only result of config.yaml resolution/reading lives on eval_config (core level); cli reuses it,
-# Only turn the walk_parents/tag into the workingr side semantic. core←cli is the right dependent direction.
+# config.yaml 解析/读取的唯一实现住在 eval_config（core 层）；cli 复用它，
+# 只把 walk_parents/tag 调成 worker 侧语义。core←cli 是正确的依赖方向。
 from op_autoresearch.core.worker.eval_config import _resolve, _load_yaml
 
 
-# 11 knobs for working: field name - > env var name. Only table, as_env()/
-# Walk it all, load() read yaml directly by field name.
+# worker timing 的 11 个旋钮：字段名 -> env var 名。唯一一张表，as_env()/
+# worker_timing() 都走它，load() 直接按字段名读 yaml（yaml key == 字段名）。
 _TIMING_ENV = {
     "ready_timeout": "OP_AUTORESEARCH_WORKER_READY_TIMEOUT",
     "ready_poll_interval": "OP_AUTORESEARCH_WORKER_READY_POLL_INTERVAL",
@@ -38,23 +52,23 @@ _TIMING_ENV = {
 @dataclass(frozen=True)
 class WorkerTiming:
     """``worker.*`` timing knobs from config.yaml. All in seconds (float)."""
-    ready_timeout: float = 60.0          # How long does it take for daemon/status to be ready?
-    ready_poll_interval: float = 5.0     # Heart beat tick interval
-    ready_probe_timeout: float = 3.0     # Every /status probe single timeout
-    status_timeout: float = 3.0          # idle --status Discovery single timeout
-    lease_ttl: float = 120.0             # How long after request closes/clients are missing
-    lease_reap_interval: float = 30.0    # daemon scanned timeout space
-    acquire_timeout: float = 600.0       # /acquire_device for how long to spare device
-    http_read_margin: float = 10.0       # Clint read timeout extra
-    release_timeout: float = 10.0        # /release_device Read Timeout
-    doc_timeout: float = 20.0            # /docs/<name> Read timeout
-    health_timeout: float = 5.0          # daemon / health cycle detection timed out
+    ready_timeout: float = 60.0          # 总等 daemon /status ready 多久
+    ready_poll_interval: float = 5.0     # 心跳 tick 间隔
+    ready_probe_timeout: float = 3.0     # 每次 /status probe 单次 timeout
+    status_timeout: float = 3.0          # idle --status 探活的单次 timeout
+    lease_ttl: float = 120.0             # 请求结束/客户端失联后多久回收 lease
+    lease_reap_interval: float = 30.0    # daemon 扫描过期 lease 的间隔
+    acquire_timeout: float = 600.0       # /acquire_device 等空闲设备多久
+    http_read_margin: float = 10.0       # client read timeout 额外余量
+    release_timeout: float = 10.0        # /release_device 读超时
+    doc_timeout: float = 20.0            # /docs/<name> 读超时
+    health_timeout: float = 5.0          # daemon /health 事件循环探活超时
 
     def as_env(self) -> Dict[str, str]:
-        """Converts to the environmental variable of detached worker daemon consumption.
+        """转成 detached worker daemon 消费的环境变量。
 
-        Cwd does not necessarily have config.yaml;op-autoresearch first parsed at remote worker startup
-        tasker.*, and via env to daemon to avoid daemon side growing a default set.
+        远端 worker 启动时 cwd 不一定有 config.yaml；op-autoresearch 先解析一次
+        worker.*，再通过 env 透传给 daemon，避免 daemon 侧再长出一套默认值。
         """
         return {env: str(getattr(self, field)) for field, env in _TIMING_ENV.items()}
 
@@ -63,14 +77,14 @@ class WorkerTiming:
 class WorkerConfig:
     """Top-level worker config — read once, passed around as a value object.
 
-    All non-DSL fields have concrete defaults baked in(``port=9001``,
-    ``backend="cuda"``, wait. ``WorkerConfig`` is the single source of
-    truth: Callers read ``cfg.port`` / ``cfg.backend`` no longer everywhere `or
-    \"cuda\"`` / ``else9001`bar. Overwrite is allowed up only (CLI > env > yaml),
-    Fallback will always be this one.
+    All non-DSL fields have concrete defaults baked in（``port=9001``、
+    ``backend="cuda"`` 等），所以 ``WorkerConfig`` 就是 single source of
+    truth：callers 直接读 ``cfg.port`` / ``cfg.backend`` 不再各处 ``or
+    "cuda"`` / ``else 9001`` 兜底。覆盖只允许向上 (CLI > env > yaml)，
+    fallback 永远只这一处。
 
-    ``dsl`` retains Optional - ``None`` semantic ( \"unspecified DSL\", trigger classify
-    The warn instead of the fatal) cannot be replaced by \"\"\""""
+    ``dsl`` 保留 Optional —— ``None`` 有语义（"未指定 DSL"，触发 classify
+    的 warn 而不是 fatal），不能用 "" 顶替。"""
     port: int = 9001
     backend: str = "cuda"
     arch: str = "a100"
@@ -78,13 +92,13 @@ class WorkerConfig:
     dsl: Optional[str] = None
     hosts: Dict[str, dict] = field(default_factory=dict)
     timing: WorkerTiming = field(default_factory=WorkerTiming)
-    source_path: Optional[str] = None    # Parsing the absolute path of yaml, diag
+    source_path: Optional[str] = None    # 解析 yaml 的绝对路径，diag 用
 
     @classmethod
     def load(cls, config_path: Optional[str] = None) -> "WorkerConfig":
-        """Road from exclusive path or default ``cwd/config.yaml``. yaml is missing
-        Missing or missing → with default dataclass. Never return None, Callers
-        null-check."""
+        """Load from explicit path or default ``cwd/config.yaml``. yaml 缺
+        失或字段缺失 → 用 dataclass 默认。绝不返回 None，callers 不用
+        null-check。"""
         resolved = _resolve(config_path, walk_parents=False)
         if resolved is None:
             return cls()
@@ -103,7 +117,7 @@ class WorkerConfig:
         dsl_raw = defaults.get("dsl")
         dsl_v: Optional[str] = str(dsl_raw) if isinstance(dsl_raw, str) else None
 
-        # Timing Defaults are taken only from WorkerTiming, avoiding two dataclass duplicates of numbers.
+        # Timing 默认值只从 WorkerTiming 取，避免两个 dataclass 重复写数字。
         td = WorkerTiming()
         timing = WorkerTiming(**{
             field: _float(worker.get(field), getattr(td, field))
@@ -144,10 +158,10 @@ def _env_float(key: str, default: float) -> float:
 
 
 def worker_timing(config_path: Optional[str] = None) -> WorkerTiming:
-    """Parsing the working timing configuration that is finally valid.
+    """解析最终生效的 worker timing 配置。
 
-    Priority: OP_AUTORESEARCH_WORKER_* env (detached/remote daemon path)
-    config.yaml worker.* > WorkerTiming dataclass default.
+    优先级：OP_AUTORESEARCH_WORKER_* env（detached/remote daemon 路径）>
+    config.yaml worker.* > WorkerTiming dataclass 默认值。
     """
     cfg = WorkerConfig.load(config_path).timing
     return WorkerTiming(**{

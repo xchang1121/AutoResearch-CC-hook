@@ -1,52 +1,52 @@
-# Scalar Base / Small Case Optimizing Policy
+# Scalar Bound / 小 case 优化策略
 
-## Conditions for determination
+## 判定条件
 
-- Total calculated amount is very small (e. g. element count < threshold)
-- Scalar commands are high, Victor/Cube units are idle
-- Low command launch rate, low IPC
+- 总计算量极小（如 element count < 阈值）
+- Scalar 指令占比高，Vector/Cube 单元空闲
+- 指令发射率低，IPC 偏低
 
-## Elements of a simulation map analysis
+## 仿真图分析要点
 
-- Positioning Scalar command for the larger time window
-- Recognize unnecessary sync waiting between Scalar and Victor
+- 定位 Scalar 指令占比较大的时间窗口
+- 识别 Scalar 与 Vector 间不必要的同步等待
 
-## Optimizing Policy
+## 优化策略
 
-| Policy | Operation | Effects |
+| 策略 | 操作 | 效果 |
 |------|------|------|
-| **Scalar Optimization** | Reduce redundancy scalar calculation, merge condition branches | Decrease the number of scalar commands |
-| **Circle development** | Start small cycles to reduce branch costs | Raise IPC |
-| **Reducing circulation axes** | Simplified Loop Axes by Tiling | Lower scalar |
-| **Command Selection** | Use efficient scalar command instead of inefficient sequences | Shorten critical path |
-| **Reductionscalar-vectorConvert** | Avoid unnecessary Scalar ↔ Victor data migration | Reduce removal costs |
-| **Use of performance-friendly API** | Replace Queue with set_frag and wait_frag, use LocalTensor instead of Tbuffer and remove Tpipe | Scalar with reduced seals |
+| **Scalar 优化** | 减少冗余 scalar 计算，合并条件分支 | 降低 scalar 指令数 |
+| **循环展开** | 展开小循环减少分支代价 | 提升 IPC |
+| **减少循环轴** | 根据tiling最简化循环轴 | 降低scalar |
+| **指令选择** | 使用高效 scalar 指令替代低效序列 | 缩短关键路径 |
+| **减少标量-向量转换** | 避免不必要的 Scalar ↔ Vector 数据搬移 | 减少搬移开销 |
+| **使用性能友好的API** | 使用set_flag和wait_flag代替Queue，使用LocalTensor代替Tbuffer，去除Tpipe | 减少封装带来的scalar |
 
-## Operational Mode
+## 实战模式
 
-### 1. Move index algorithms out of the inner layer
+### 1. 将索引算术移出内层
 
-When `div/mod`, multi-stage stride multiplication, Shape branch appears in the inner layer, they are usually first transformed into a catch level variable or a host tilling field:
+内层出现 `div/mod`、多级 stride 乘加、shape 分支时，通常先把它们变成 batch 级变量或 host tiling 字段：
 
 ```cpp
-// Difference: Each element repeats the linear subscript.
+// 差：每个元素重复解析线性下标。
 int64_t n = linear / (C * H * W);
 int64_t c = (linear / (H * W)) % C;
 int64_t h = (linear / W) % H;
 int64_t w = linear % W;
 
-// Good: Push on a straight line.
+// 好：按连续行推进。
 int64_t rowBase = ((n * C + c) * H + h) * W;
 for (int32_t w = wStart; w < wEnd; ++w) {
   Compute(rowBase + w);
 }
 ```
 
-If the range is sufficient, the inner layer counter will give priority to `int32_t`/`uint32_t`, reducing the 64-bit integer command pressure.
+如果范围足够，内层计数器优先使用 `int32_t`/`uint32_t`，减少 64 位整数指令压力。
 
-### 2. Quantified small results
+### 2. 批量化小结果
 
-In scenarios such as aragmax, cros entropy, Foreach norm, only one or more elements per line. Do not separate copy from each row:
+argmax、cross entropy、foreach norm 等场景中，每行只输出 1 个或几个元素。不要每行单独 CopyOut：
 
 ```cpp
 constexpr int32_t BATCH = 32;
@@ -61,9 +61,9 @@ for (int32_t base = 0; base < rows; base += BATCH) {
 }
 ```
 
-### 3. Little D, the Statute is open to scalar
+### 3. 小 D 规约可走标量
 
-When `D <= 32` or `D <= 64`, the Synchronization and Temporary Buffer of vector's Statute may be more expensive than scalar's cycle:
+当 `D <= 32` 或 `D <= 64` 时，向量规约的同步和临时 buffer 可能比标量循环更贵：
 
 ```cpp
 if (D <= smallDThreshold) {
@@ -82,12 +82,12 @@ if (D <= smallDThreshold) {
 }
 ```
 
-### 4. Move Branch Up
+### 4. 分支上移
 
-Fixed mode judgement should not be placed on the tile inner layer:
+固定模式判断不要放在 tile 内层：
 
 ```cpp
-// Init or Process begins with a decision.
+// Init 或 Process 开头决定。
 bool sameShape = mode_ == MODE_SAME_SHAPE;
 
 if (sameShape) {
@@ -97,10 +97,10 @@ if (sameShape) {
 }
 ```
 
-Do not repeatedly judge dtype, rank, Broadcast mode in `for tile` or `for element`.
+不要在 `for tile` 或 `for element` 中反复判断 dtype、rank、broadcast 模式。
 
-## Tiling Amendments
+## Tiling 修正建议
 
-- Appropriately increase the size of single-processed particles and reduce the number of cycles
-- Consider integrating with other kernels to reduce lanch costs
-- For small lines/small result scenes, priority is given to the search for `rowsPerTile`, `outputsPerCopy`, `smallDThreshold`, rather than only to `TILE_LENGTH`.
+- 适当增大单次处理粒度，减少循环次数
+- 考虑与其他 kernel 融合以减少 launch 开销
+- 对小行/小结果场景，优先搜索 `rowsPerTile`、`outputsPerCopy`、`smallDThreshold`，而不是只调 `TILE_LENGTH`。

@@ -4,6 +4,6 @@
 def kernel_function(...):
     pass
 ```
-- **Fact**: Compile the Python function into the hardware kernel
-- **Constraint**: `return`, `break`, `continue` statements cannot be used inside the function
+- **作用**: 将 Python 函数编译为硬件内核
+- **约束**: 函数内部不能使用 `return`、`break`、`continue` 语句
 

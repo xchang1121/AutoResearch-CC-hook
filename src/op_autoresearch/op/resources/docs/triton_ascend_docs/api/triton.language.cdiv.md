@@ -2,7 +2,7 @@
 ```python
 result = tl.cdiv(offset, BLOCK_SIZE)
 ```
-- **Parameters**: `a`, `b` - divided and divided
-- **Return**: Take the division result up ⌈a/ b⌉
-- **Practice**: internal use in Kernel, calculation of upward decomposition result, equivalent to `(a + b - 1) // b`
+- **参数**: `a`, `b` - 被除数和除数
+- **返回**: 向上取整的除法结果 ⌈a/b⌉
+- **用途**: kernel内部使用，计算向上整除结果，等价于 `(a + b - 1) // b`
 

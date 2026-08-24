@@ -2,9 +2,9 @@
 ```python
 block_ptr = tl.advance(block_ptr, (BLOCK_M, 0))
 ```
-- **Parameters**:
-  - `ptr`: Block pointer
-  - `offsets`: Offset of dimensions
-- **Return**: block pointer after moving
-- **Pilot**: Move Block Pointer to Next Location
+- **参数**:
+  - `ptr`: 块指针
+  - `offsets`: 各维度的偏移量
+- **返回**: 移动后的块指针
+- **用途**: 移动块指针到下一个位置
 

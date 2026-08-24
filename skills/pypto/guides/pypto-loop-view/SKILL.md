@@ -1,6 +1,6 @@
 ---
 name: pypto-loop-view
-description: "The correct writing for pypto.loop + pypto.view: View Shape must be a constant compilation period for all loop scenes such as matmul, nom, elementwise"
+description: "pypto.loop + pypto.view 的正确写法：view shape 必须是编译期常量，适用于 matmul、norm、elementwise 等所有 loop 场景"
 category: implementation
 version: "1.0.0"
 metadata:
@@ -9,32 +9,32 @@ metadata:
   operator_patterns: "matmul,norm,elementwise,reduction,loop,view"
 ---
 
-# Loop + View: Compiler Constant Rule
+# Loop + View：编译期常量规则
 
-## Fatal error: `ValueError: Not concrete value`
+## 致命错误：`ValueError: Not concrete value`
 
-**The most common first-time generation error**. All `pypto.view` parameters must be**compilation period constant**(physical or closed-pack variables).
+**最常见的首次生成错误**。所有 `pypto.view` 的 shape 参数必须是**编译期常量**（字面量或闭包变量）。
 
 ```python
-# WRONG — min() contains loop variable offset and is runtime value
+# WRONG — min() 含 loop 变量 offset，是运行时值
 for idx in pypto.loop(0, num_iters, 1, ...):
     offset = idx * BASIC_BATCH
     current = min(BASIC_BATCH, total_size - offset)      # runtime!
     chunk = pypto.view(x, [current, n], [offset, 0])     # ValueError!
 ```
 
-**Any expression with loop idx is a runtime value**and cannot be used for viewshape.
+**任何含 loop idx 的表达式都是运行时值**，不能用于 view shape。
 
-## Common correct writing
+## 通用正确写法
 
-### Method A: Ensure completeness (recommended)
+### 方法 A：确保整除（推荐）
 
-Select BASIC_BATCH to enable total_size to be severed, or assert to be severed in forward:
+选择 BASIC_BATCH 使 total_size 可整除，或在 forward 中 assert 整除性：
 
 ```python
 def create_kernel(total_rows, cols, basic_batch):
     assert total_rows % basic_batch == 0
-    num_iters = total_rows // basic_batch  # Closed constant
+    num_iters = total_rows // basic_batch  # 闭包常量
 
     @pypto.frontend.jit(...)
     def kernel(x: pypto.Tensor((total_rows, cols), ...)) -> ...:
@@ -43,7 +43,7 @@ def create_kernel(total_rows, cols, basic_batch):
         for idx in pypto.loop(0, num_iters, 1, name="LOOP", idx_name="idx"):
             off = idx * basic_batch
             chunk = pypto.view(x, [basic_batch, cols], [off, 0])
-            result_chunk = chunk * 2.0  # Example Operations
+            result_chunk = chunk * 2.0  # 示例操作
             pypto.assemble(result_chunk, [off, 0], output)
         return output
     return kernel
@@ -51,23 +51,23 @@ def create_kernel(total_rows, cols, basic_batch):
 class ModelNew(torch.nn.Module):
     def forward(self, x):
         total_rows = x.shape[0] * x.shape[1]
-        # Interference by loop_count space driver: try 16/32 first and then reverse Basic_batch
+        # 调参由 loop_count 空间驱动：先试 16/32，再反推 basic_batch
         target_loop_count = 16
         assert total_rows % target_loop_count == 0
         basic_batch = total_rows // target_loop_count
         ...
 ```
 
-### Method B: Main Loop + End
+### 方法 B：主循环 + 尾部
 
-When there is no guarantee that the whole will be divided:
+当无法保证整除时：
 
 ```python
 def create_kernel(total_rows, cols, basic_batch):
     full_iterations = total_rows // basic_batch
     tail = total_rows % basic_batch
     tail_offset = full_iterations * basic_batch
-    # Full_actions, tail, tail_offset are all closed constants.
+    # full_iterations, tail, tail_offset 都是闭包常量
 
     @pypto.frontend.jit(...)
     def kernel(x: pypto.Tensor((total_rows, cols), ...)) -> ...:
@@ -79,20 +79,20 @@ def create_kernel(total_rows, cols, basic_batch):
             chunk = pypto.view(x, [basic_batch, cols], [off, 0])
             pypto.assemble(chunk * 2.0, [off, 0], output)
 
-        if tail > 0:  # Compiler-time request (%1)tail It's a closed constant.
+        if tail > 0:  # 编译期求值（tail 是闭包常量）
             tail_chunk = pypto.view(x, [tail, cols], [tail_offset, 0])
             pypto.assemble(tail_chunk * 2.0, [tail_offset, 0], output)
         return output
     return kernel
 ```
 
-## 1D Loop (global return/large vector)
+## 1D Loop（全局归约/大向量）
 
 ```python
 LOOP_CHUNKS = 8
 
 def create_frobenius_kernel(flat_size):
-    chunk_size = flat_size // LOOP_CHUNKS  # Closed constant
+    chunk_size = flat_size // LOOP_CHUNKS  # 闭包常量
 
     @pypto.frontend.jit(...)
     def kernel(x: pypto.Tensor((flat_size,), ...)) -> ...:
@@ -115,9 +115,9 @@ class ModelNew(torch.nn.Module):
         ...
 ```
 
-## Key principles
+## 关键原则
 
-1. **view Shape can only be used as a word or closed variable**. Loop idx and its expression with idx is runtime values.
-2. **`if tail > 0:` is requested during the compilation period**(tail is a closed-pack constant), not a branch of runtime.
-3. **Priority is given to ensuring completeness**and avoiding the complexity of tail processing.
-4. **Matmul does not fix BASIC_BATCH**. First in `loop_count` Space Selection (`1~128` usually starts from `16/32`), then invert `BASIC_BATCH`; if necessary, expand to `8/64` and lastly fill the endpoint.
+1. **view shape 只能用字面量或闭包变量**。loop idx 及含 idx 的表达式是运行时值。
+2. **`if tail > 0:` 在编译期求值**（tail 是闭包常量），不是运行时分支。
+3. **优先确保整除**，避免尾部处理的复杂度。
+4. **Matmul 不要固定 BASIC_BATCH**。先在 `loop_count` 空间选中段（`1~128` 常见从 `16/32` 起步），再反推 `BASIC_BATCH`；必要时扩到 `8/64`，最后再补端点。

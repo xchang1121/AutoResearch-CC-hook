@@ -1,6 +1,6 @@
 ---
 name: ascendc-direct-invoke
-description: "AscendC direct-invoke project contract: The job directory uses kernel.py + ascendc_op/, ModelNew calls Torch.ops.npu.*. The adaptor is responsible for copying the project, CMake construction and npu-arch Patch. operator generation and validation missions for dsl=ascendc."
+description: "AscendC direct-invoke 工程契约：任务目录使用 kernel.py + ascendc_op/，ModelNew 调用 torch.ops.npu.*，适配器负责复制工程、CMake 构建和 npu-arch patch。适用于 dsl=ascendc 的算子生成与验证任务。"
 category: fundamental
 version: "1.0.0"
 metadata:
@@ -10,9 +10,9 @@ metadata:
   operator_patterns: "all"
 ---
 
-# AscendC Direct-Invoke Works Contract
+# AscendC Direct-Invoke 工程契约
 
-The `dsl=ascendc` task directory is not an old three-part string protocol, nor is it a fully registered customised operator project. The standard delivery form is a Python wrapper plus an AscendC project that can be constructed by CMake:
+`dsl=ascendc` 的任务目录不是旧的三段字符串协议，也不是完整注册式自定义算子工程。标准交付形态是一个 Python wrapper 加一个可由 CMake 构建的 AscendC 工程：
 
 ```text
 task_dir/
@@ -25,16 +25,16 @@ task_dir/
     scripts/
 ```
 
-## 1. A hard deal.
+## 1. 硬性约定
 
-- `kernel.py` is exposed to only one open-entry category: `ModelNew`.
-- `ModelNew.forward()` calls for compiled extensions via `torch.ops.npu.<op>(...)` or project-registered namespace.
-- `ascendc_op/` saves the CMake project; do not embed the C++/AscendC source code in the Python string.
-- `kernel.py` is not responsible for calling CMake, nor is it compiled at the Import stage.
-- wrapper code does not call `.npu()`; verifier moves input to target device.
-- `.so` has been lazied in `ModelNew._load()` or `forward()` to avoid the side effects of the Import phase.
+- `kernel.py` 只暴露一个公开入口类：`ModelNew`。
+- `ModelNew.forward()` 通过 `torch.ops.npu.<op>(...)` 或工程注册的 namespace 调用编译后的扩展。
+- `ascendc_op/` 保存 CMake 工程；不要在 Python 字符串里内嵌 C++/AscendC 源码。
+- `kernel.py` 不负责调用 CMake，也不在 import 阶段编译。
+- wrapper 代码不要调用 `.npu()`；验证器会把输入移动到目标设备。
+- `.so` 在 `ModelNew._load()` 或 `forward()` 中懒加载，避免 import 阶段副作用。
 
-## 2. Python Wrapper Template
+## 2. Python Wrapper 模板
 
 ```python
 from __future__ import annotations
@@ -65,16 +65,16 @@ class ModelNew(torch.nn.Module):
         return torch.ops.npu.my_op(x, y)
 ```
 
-If there may be multiple `.so`s under `build/`, priority is given to sifting by a stable filename, such as `libmy_op_ops.so`; the first result after sorting is finally used.
+若 `build/` 下可能存在多个 `.so`，优先按稳定文件名筛选，例如 `libmy_op_ops.so`；最后再使用排序后的第一个结果。
 
-## 3. CMake Project Structure
+## 3. CMake 工程结构
 
-The common project consists of two parts:
+常见工程包含两个部分：
 
-- Optional standalone executable for local Kernel launch and debugging.
-- PyTorch shared library, registered operator through `TORCH_LIBRARY_FRAGMENT`/`TORCH_LIBRARY_IMPL`.
+- 可选的 standalone 可执行文件，用于本地 kernel launch 和调试。
+- PyTorch shared library，通过 `TORCH_LIBRARY_FRAGMENT` / `TORCH_LIBRARY_IMPL` 注册算子。
 
-Recommended file layout:
+推荐文件布局：
 
 ```text
 ascendc_op/
@@ -87,7 +87,7 @@ ascendc_op/
   op_extension/ops.h
 ```
 
-PyTorch Extension Registration Example:
+PyTorch 扩展注册示例：
 
 ```cpp
 TORCH_LIBRARY_FRAGMENT(npu, m) {
@@ -99,21 +99,21 @@ TORCH_LIBRARY_IMPL(npu, PrivateUse1, m) {
 }
 ```
 
-## 4. Host Launch Duty
+## 4. Host Launch 职责
 
-Host bridge code needs to be completed:
+host 侧桥接代码需要完成：
 
-- Distributes output on the input device.
-- From Shape, dtype, stride extrapolating tilling.
-- Copy tilling data to a readable memory or tensor on the device side.
-- Get the current NPU stream through `c10_npu::getCurrentNPUStream()`.
-- Call launcher in the order of kernel entry.
+- 在输入所在设备上分配输出 tensor。
+- 从 shape、dtype、stride 推导 tiling。
+- 将 tiling 数据复制到设备侧可读的内存或 tensor。
+- 通过 `c10_npu::getCurrentNPUStream()` 获取当前 NPU stream。
+- 按 kernel entry 的 ABI 顺序调用 launcher。
 
-The Meta function must return the exact output Shape and dtype. The wrong Meta will cause verifier to read the error Shape and then judge the correct Kernel as a failure.
+Meta 函数必须返回精确的输出 shape 和 dtype。错误的 Meta 会导致验证器读取错误 shape，进而把正确 kernel 判断为失败。
 
-## 5. CMake engagement
+## 5. CMake 约定
 
-The adaptor will transfer to CMake:
+适配器会向 CMake 传入：
 
 ```text
 NPU_ARCH
@@ -123,29 +123,29 @@ Python_EXECUTABLE
 Python3_EXECUTABLE
 ```
 
-The new project gives preference to `${NPU_ARCH}`. If a hard code such as `--npu-arch=dav-2201` or `--npu-arch=dav-3510` exists in an old project, the buildup of a suitable layer will try to catch, but do not continue writing death in the new code.
+新工程优先使用 `${NPU_ARCH}`。若旧工程中存在 `--npu-arch=dav-2201` 或 `--npu-arch=dav-3510` 之类硬编码，构建适配层会尝试 patch，但不要在新代码里继续写死。
 
-The project must generate loadable `.so` under `ascendc_op/build/`; the search is retrievable, but the stability of the file name reduces the risk of misloading.
+工程必须在 `ascendc_op/build/` 下生成可加载的 `.so`；搜索是递归的，但文件名稳定会降低误加载风险。
 
-## 6. Vector-type operator conversion path
+## 6. Vector 类算子改造路径
 
-A single Vector template can be used:
+elementwise、broadcast、简单 reduction 可以采用统一的 Vector 模板：
 
-- `op_kernel/<op>_tiling.h`: host/kernel shared tiling story.
-- `op_kernel/<op>_kernel.asc`: `KernelXxx` class, consisting of `Init`, `CopyIn`, `Compute`, `CopyOut`, `Process`.
-- `op_extension/<op>_torch.cpp`: PyTorch Bridge, Tiling Calculating, Steam Selection, Kirnel lanch.
-- `register.cpp`: `torch.ops.npu.<op>` registration and Meta realization.
+- `op_kernel/<op>_tiling.h`：host/kernel 共用的 tiling struct。
+- `op_kernel/<op>_kernel.asc`：`KernelXxx` 类，包含 `Init`、`CopyIn`、`Compute`、`CopyOut`、`Process`。
+- `op_extension/<op>_torch.cpp`：PyTorch 桥接、tiling 计算、stream 选择、kernel launch。
+- `register.cpp`：`torch.ops.npu.<op>` 注册和 Meta 实现。
 
-When you migrate an existing template, replace the name operator with a global name and change only the semantic point: number of inputs/outputs, tilling fields, calculation expression, output Shape, dtype check, CMake target name.
+迁移已有模板时，先全局替换算子名，再只改语义点：输入/输出数量、tiling 字段、计算表达式、输出 shape、dtype 检查、CMake target 名称。
 
-## 7. Prevent Generating Forms
+## 7. 禁止生成的形态
 
-Do not generate:
+不要生成：
 
-- `host_tiling_src = """..."""` such Python embedded source code.
-- `kernel_src = """..."""` such as runtime collating source code.
-- Only depend on `run.sh` for a one-time workflow.
-- The iport phase compiles and iport phase selects device.
-- Hard-coding local data id.
+- `host_tiling_src = """..."""` 这类 Python 内嵌源码。
+- `kernel_src = """..."""` 这类运行时拼接源码。
+- 只依赖 `run.sh` 的一次性工作流。
+- import 阶段编译、import 阶段选设备。
+- 硬编码本地 device id。
 
-The mission product should be re-engineered, capable of being taken over by a certification link, rather than a single local script.
+任务产物应是可重复构建、可由验证链路接管的工程，而不是单次本地脚本。

@@ -1,6 +1,6 @@
 ---
 name: triton-ascend-example-double-kernel
-description: "Triton Ascend is an example of a two-kernel mode of call. Shows two standard kernels in forward: the distribution of the intermediate result buffer zone, and two kernels. This applies to the integration of operator, which needs to be calculated in stages."
+description: "双内核调用模式的 Triton Ascend 实现示例。展示在 forward 中先后调用两个 kernel 的标准写法：中间结果缓冲区分配、两次 kernel 启动。适用于需要分阶段计算的融合算子。"
 category: example
 version: "1.0.0"
 metadata:
@@ -10,9 +10,9 @@ metadata:
   framework: torch
 ---
 
-# Double Kernel (Biker Call) - Triton Ascend Example
+# Double Kernel（双内核调用）— Triton Ascend 示例
 
-When an operator requires a two-step calculation (e.g., a transformation before a contract is contracted), two Kernels can be started in `forward` in turn:
+当一个算子需要分两步计算（如先做变换再做归约），可在 `forward` 中依次启动两个 kernel：
 
 ```python
 class ModelNew(torch.nn.Module):
@@ -38,6 +38,6 @@ class ModelNew(torch.nn.Module):
         return output
 ```
 
-**Element**
-- Middle buffer with `torch.empty_like` or specified shape distribution
-- Ensure stage1 to read after writing (Triton Ascend default hidden sync)
+**要点**：
+- 中间缓冲区用 `torch.empty_like` 或指定 shape 分配
+- 确保 stage1 写完后 stage2 再读（Triton Ascend 默认隐式同步）

@@ -2,10 +2,10 @@
 ```python
 result = tl.dot(a, b, acc=accumulator)
 ```
-- **Parameters**:
-  - `a`, `b`: Enter Matrix
-  - `acc`: Composer (optional)
-  - `allow_tf32`: Allow TF32 accuracy
-- **Return**: matrix multiplication result
-- **Practice**: Core matrix multiplication Operations
+- **参数**:
+  - `a`, `b`: 输入矩阵
+  - `acc`: 累加器 (可选)
+  - `allow_tf32`: 是否允许 TF32 精度
+- **返回**: 矩阵乘法结果
+- **用途**: 核心矩阵乘法操作
 

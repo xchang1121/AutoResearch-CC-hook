@@ -1,6 +1,6 @@
 ---
 name: tilelang-ascend-example-matmul
-description: "The standard matrix multiplication TileLang Ascend Express model achieves an example. Cube core program: L1/L0C active memory allocation, T.gemm_v0 call, T. Scape (\"C\") nuclear separation, T.barrier_all() sync, K-D-Rype add. The code structure of this example can be consulted when generating matmul type operator."
+description: "标准矩阵乘法的 TileLang Ascend Expert 模式实现示例。展示 Cube 核编程：L1/L0C 显式内存分配、T.gemm_v0 调用、T.Scope(\"C\") 核分离、T.barrier_all() 同步、K 维循环累加。当生成 matmul 类算子时可参考此示例的代码结构。"
 category: example
 version: "1.0.0"
 metadata:
@@ -10,16 +10,16 @@ metadata:
   operator_type: "matmul"
 ---
 
-# matrix multiplication - TileLang Ascend Achievement Example (Expert Mode)
+# 矩阵乘法 — TileLang Ascend 实现示例（Expert 模式）
 
-**Programming mode**: Express (manual management of L1/L0C memory level)
+**编程模式**：Expert（手动管理 L1/L0C 内存层级）
 
-**Key technical points**:
-- `T.alloc_L1` / `T.alloc_L0C` Visible Memory Allocation
-- `T.gemm_v0(A_L1, B_L1, C_L0C, init=(k==0))` Cube Matrix Multiplication
-- `T.Scope("C")` Cube Nuclear Separation
-- `T.barrier_all()` Nuclear Synchronization
-- K-Direct Cyclops, first iterative `init=True` Zero L0C
+**关键技术点**：
+- `T.alloc_L1` / `T.alloc_L0C` 显式内存分配
+- `T.gemm_v0(A_L1, B_L1, C_L0C, init=(k==0))` Cube 矩阵乘
+- `T.Scope("C")` Cube 核分离
+- `T.barrier_all()` 核内同步
+- K 维循环累加，首次迭代 `init=True` 清零 L0C
 
 ```python
 import tilelang
@@ -64,11 +64,11 @@ def matmul(M, N, K, block_M, block_N, K_L1, dtype="float16", accum_dtype="float"
     return main
 ```
 
-**Called**:
+**调用方式**：
 
 ```python
 func = matmul(M, N, K, 128, 256, 64)
 c = func(a, b)
 ```
 
-**Constraint**: M, N must be an integer multiple of block_M, block_N. The non-integrated scene needs to be trimmed after zero-padding on the Python level, or using the Devloper mode + `T.ceildiv`.
+**约束**：M、N 必须是 block_M、block_N 的整数倍。非整除场景需在 Python 层 zero-padding 后裁剪，或使用 Developer 模式 + `T.ceildiv`。

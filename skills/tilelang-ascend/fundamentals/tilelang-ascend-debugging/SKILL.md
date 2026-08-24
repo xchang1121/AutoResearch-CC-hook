@@ -1,6 +1,6 @@
 ---
 name: tilelang-ascend-debugging
-description: "TileLang-Ascend operator coding problem."
+description: "TileLang-Ascend 算子编码常见编码模式问题。"
 category: fundamental
 version: "1.0.0"
 metadata:
@@ -8,43 +8,43 @@ metadata:
   dsl: tilelang_ascend
 ---
 
-# TileLang-Ascend operator coding problem
+# TileLang-Ascend 算子编码常见编码模式问题
 
 ## Checklist
 
-After generating code, check item by item:
+生成代码后逐项检查：
 
-### Basic inspection
+### 基础检查
 
-| # | Checkpoint |
+| # | 检查项 |
 |---|--------|
-| 1 | `out_idx` corresponds to the position of output parameter in the function signature |
-| 2 | `block_M // VEC_NUM` used consistently in the Buffer Allocation and Index |
-| 3 | Shape product of all `T.alloc_ub`s does not exceed UB capacity |
-| 4 | Expert mode with `T.Scope("V")` and `T.barrier_all()` |
-| 5 | Devloper mode with corresponding `pass_configs` |
-| 6 | Test contains at least 2 configurations (small + typical size) |
-| 7 | The Golden function is performed using the PyTorch standard |
+| 1 | `out_idx` 与函数签名中的输出参数位置一致 |
+| 2 | `block_M // VEC_NUM` 在 buffer 分配和索引中一致使用 |
+| 3 | 所有 `T.alloc_ub` 的 shape 乘积不超 UB 容量 |
+| 4 | Expert 模式有 `T.Scope("V")` 和 `T.barrier_all()` |
+| 5 | Developer 模式有对应的 `pass_configs` |
+| 6 | 测试包含至少 2 个配置（小规模 + 典型规模） |
+| 7 | golden 函数使用 PyTorch 标准实现 |
 
-### Combining operator check
+### 融合算子检查
 
-| # | Checkpoint | Annotations |
+| # | 检查项 | 说明 |
 |---|--------|------|
-| 8 | **workspace_idx corresponds to function signature** | Workspace parameter position correct |
-| 9 | **AUTO_CV_COMBINE / AUTO_CV_SYNC Configuration** | Devloper mode to open |
-| 10 | **Cube → workspace → Victor data stream is correct** | T.copy handle path complete |
-| 11 | **Nuclear separation matches pass_configs** | Devloper mode does not need to be visible T. Scope |
+| 8 | **workspace_idx 与函数签名一致** | workspace 参数位置正确 |
+| 9 | **AUTO_CV_COMBINE / AUTO_CV_SYNC 配置** | Developer 模式需开启 |
+| 10 | **Cube → workspace → Vector 数据流正确** | T.copy 搬运路径完整 |
+| 11 | **核分离方式与 pass_configs 匹配** | Developer 模式无需显式 T.Scope |
 
-## 1. How to deal with dynamic Shape?
+## 1. 如何处理动态shape?
 
-Use `T.symbolic`:
+使用 `T.symbolic`：
 ```python
 N = T.symbolic('N', 'int32')
 ```
 
-## 2. How do you achieve operator with parameters?
+## 2. 如何实现带参数的算子?
 
-Use function parameters to pass:
+使用函数参数传递：
 ```python
 def my_op(M, N, block_M, param1=0.1, dtype="float"):
     @T.prim_func
@@ -52,9 +52,9 @@ def my_op(M, N, block_M, param1=0.1, dtype="float"):
         T.tile.add(a_ub, a_ub, param1)
 ```
 
-## 3. How are non-2D data treated?
+## 3. 如何处理非2D数据?
 
-Adjust index and segment policy:
+调整索引和分块策略：
 ```python
 @T.prim_func
 def main(A: T.Tensor((N,), dtype), B: T.Tensor((N,), dtype)):
@@ -63,45 +63,45 @@ def main(A: T.Tensor((N,), dtype), B: T.Tensor((N,), dtype)):
 def main(A: T.Tensor((B, M, N), dtype), ...):
 ```
 
-## 4. How can memory use be optimized?
+## 4. 如何优化内存使用?
 
-1. Enable automatic memory planning
-2. Restart Middlebuffer
-3. Avoid unnecessary buffer distribution
+1. 开启自动内存规划
+2. 复用中间buffer
+3. 避免不必要的buffer分配
 
-## 5. scalar and vector must be operated using T. t.tile API, scalar can only be placed in the second operating number, and some API does not support scalar
+## 5. 标量与向量运算必须用 T.tile API，标量只能放在第二个操作数，部分 API 不支持标量
 
-The arithmetic between scalar and vector does not allow the operation of an operator such as `+ - * /`, and must use an API series of `T.tile`.
+标量与向量之间的算术运算不能用 `+ - * /` 等运算符，必须用 `T.tile` 系列 API。
 
-Correct practice:
+正确做法：
 
-| Expressions to write | Means of implementation |
+| 想写的表达式 | 实现方式 |
 |------------|---------|
-| `1.0 - x` | `T.tile.mul(x, x, -1.0)`, again, `T.tile.add(x, x, 1.0)`. |
-| `2.0 / x` | `T.tile.div(dst, T.broadcast(2.0, shape), x)` (**significant**: `T.tile.reciprocal` accuracy inadequate, prohibition on use) |
+| `1.0 - x` | `T.tile.mul(x, x, -1.0)` 再 `T.tile.add(x, x, 1.0)` |
+| `2.0 / x` | `T.tile.div(dst, T.broadcast(2.0, shape), x)`（**重要**：`T.tile.reciprocal`精度不足，禁止使用） |
 | `x + 1.0` | `T.tile.add(x, x, 1.0)` |
 
-## 6. T. Kernel (n_num) and T. Serial (n_num) do not mix
+## 6. T.Kernel(n_num) 和 T.serial(n_num) 不要混用
 
-- `T.Kernel(n_num, is_npu=True) as (cid, vid)` decides how many blocks to run in parallel, and each block runs again, Kernel body
-- `for by in T.serial(n_num):` is a single block internal serial cycle for a nuclear that requires multiple processing of multiple pieces of data
+- `T.Kernel(n_num, is_npu=True) as (cid, vid)` 决定 launch 多少个 block 并行执行，每个 block 跑一遍 kernel body
+- `for by in T.serial(n_num):` 是单个 block 内部的串行循环，用于一个核需要分多次处理多块数据
 
-The semantics are independent and do not use `for by in T.serial(n_num)` in the body of `T.Kernel(n_num)`:
+两者语义独立，不要在 `T.Kernel(n_num)` 的 body 里再用 `for by in T.serial(n_num)`：
 
 ```python
-# Error: n_num controls block numbers while controlling serial loops, semantic repetition
+# 错误：n_num 同时控制 block 数又控制 serial 循环，语义重复
 with T.Kernel(n_num, is_npu=True) as (cid, vid):
-    for by in T.serial(n_num): ...  # I don't need this cycle, every one. (cid, vid) Just deal with yourself. partition
+    for by in T.serial(n_num): ...  # 不需要这个循环，每个 (cid, vid) 直接处理自己的 partition
 ```
 
-## 7. Prohibit the use of Python built-in functions in Kernel
+## 7. 禁止在 Kernel 内使用 Python 内置函数
 
-The TVM `Expr` in TileLang Kernel is a symbolic expression and cannot be operated using Python 's built-in functions (e. g. `min()`, `max()`, `and`, `or`, `not`).
+TileLang kernel 中的 TVM `Expr` 对象是符号化表达式，不能使用 Python 的内置函数（如 `min()`、`max()`、`and`、`or`、`not`）进行操作。
 
 ```python
-# Error ❌ - Ban Python min()
-hw_end = min(hw_start + block_HW, H * W)       # ❌ Not supported Python min
+# 错误 ❌ - 禁止使用 Python min()
+hw_end = min(hw_start + block_HW, H * W)       # ❌ 不支持 Python min
 
-# Correct ✅ - Use T.min
+# 正确 ✅ - 使用T.min
 hw_end = T.min(hw_start + block_HW, H * W)
 ```
